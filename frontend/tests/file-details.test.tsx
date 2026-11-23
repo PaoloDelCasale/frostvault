@@ -177,7 +177,7 @@ describe("deliberate file Details", () => {
     await waitFor(() => expect(calls).toContain("/api/cloud-purge?vault_id=2"));
   });
   it("shows a cloud deletion failure inside the open dialog, not in the hidden Details sheet (#651)", async () => {
-    purgeFailure = { message: "Bucket refused the deletion" };
+    purgeFailure = { detail: "Bucket refused the deletion", code: "conflict", message_key: "api.cloud_purge_refused", message_params: {} };
     const calls = setup("cloud_only", false);
     await screen.findByText("exact");
     const user = userEvent.setup(); await user.click(screen.getByText("essential.danger_zone"));

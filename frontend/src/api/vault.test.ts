@@ -17,7 +17,7 @@ describe("immutable Vault request scope", () => {
     const calls: { url: string; csrf: string | null }[] = [];
     configureApiClient({ csrfToken: "csrf", getAuthMethod: () => "local", requestPassword: async () => "test-password", fetch: vi.fn(async (url, init) => {
       calls.push({ url: String(url), csrf: new Headers(init?.headers).get("X-CSRF-Token") });
-      if (String(url).startsWith("/api/cloud-purge") && sent++ === 0) return json({ error: "reauth_required" }, 403);
+      if (String(url).startsWith("/api/cloud-purge") && sent++ === 0) return json({ code: "reauth_required" }, 403);
       return json({});
     }) });
     await vaultApi(2).cloudPurge({ path: "same.jpg", confirmation: "Second", reason: "test" });

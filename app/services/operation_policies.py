@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
+from ..errors import DomainError, Invalid
 from .job_queue import open_job_sql
 from .path_rules import (
     MAX_GLOBS_PER_POLICY, GlobSet, ParsedPath, UnsafeGlob, any_name_glob, name_matches,
@@ -126,18 +127,45 @@ def _load_json_list(raw: str | None) -> tuple[Any, ...]:
     return tuple(data)
 
 
+class InvalidPolicy(Invalid, ValueError):
+    """A Vault policy value outside what the policy allows."""
+
+
+class RefusedGlob(InvalidPolicy, UnsafeGlob):
+    """A glob the Vault policy cannot store; still the ``UnsafeGlob`` of ``path_rules``."""
+
+
+def request_globs(values: Sequence[str]) -> tuple[str, ...]:
+    """``normalize_globs`` of globs a request sent: a refused one is the caller's to read."""
+    try:
+        return normalize_globs(values)
+    except ValueError as exc:
+        raise InvalidPolicy("api.policy.glob_absolute") from exc
+
+
+class VaultUnavailable(DomainError, LookupError):
+    """The Vault of a policy is gone or no longer protected; ``str()`` is the reason."""
+
+    def __init__(self, reason: str) -> None:
+        LookupError.__init__(self, reason)
+        if reason == "vault_quiesced":
+            self.describe("api.vault_no_longer_protected", code="conflict")
+        else:
+            self.describe("api.vault_not_found", code="not_found")
+
+
 def validate_policy(policy: OperationPolicy) -> None:
     if policy.upload_verification not in {None, "s3_checksum", "read_back"}:
-        raise ValueError("upload_verification must be null, s3_checksum or read_back")
+        raise InvalidPolicy("api.policy.upload_verification")
     if policy.stability_seconds < 0:
-        raise ValueError("stability_seconds must be nonnegative")
+        raise InvalidPolicy("api.policy.stability_seconds")
     if policy.local_release_after_days is not None and (
         type(policy.local_release_after_days) is not int
         or policy.local_release_after_days not in LOCAL_RELEASE_PERIODS
     ):
-        raise ValueError("local_release_after_days must be null, 90, 180, 365 or 730")
-    normalize_globs(policy.include_globs)
-    normalize_globs(policy.exclude_globs)
+        raise InvalidPolicy("api.policy.local_release_days")
+    request_globs(policy.include_globs)
+    request_globs(policy.exclude_globs)
 
 
 def validate_policy_globs(policy: OperationPolicy, *, stored: OperationPolicy | None = None) -> None:
@@ -151,9 +179,12 @@ def validate_policy_globs(policy: OperationPolicy, *, stored: OperationPolicy | 
     globs = (*normalize_globs(policy.include_globs), *normalize_globs(policy.exclude_globs))
     new = [glob for glob in globs if glob not in kept]
     if new and len(globs) > MAX_GLOBS_PER_POLICY:
-        raise UnsafeGlob(f"at most {MAX_GLOBS_PER_POLICY} globs per policy")
+        raise RefusedGlob("api.policy.too_many_globs", limit=MAX_GLOBS_PER_POLICY)
     for glob in new:
-        validate_glob(glob)
+        try:
+            validate_glob(glob)
+        except UnsafeGlob as exc:
+            raise RefusedGlob("api.policy.glob_unsafe", reason=str(exc)) from exc
 
 
 def lock_vault_policy(connection: Any, vault_id: int) -> None:
@@ -191,9 +222,9 @@ def set_policy(
         (vault_id,),
     ).fetchone()
     if not locked:
-        raise LookupError("vault_not_found")
+        raise VaultUnavailable("vault_not_found")
     if locked["lifecycle"] != "active":
-        raise LookupError("vault_quiesced")
+        raise VaultUnavailable("vault_quiesced")
     validate_policy_globs(policy, stored=get_policy(connection, vault_id))
     include_globs = normalize_globs(policy.include_globs)
     exclude_globs = normalize_globs(policy.exclude_globs)
@@ -285,8 +316,8 @@ def preview_glob_rules(
     exclude_globs: Sequence[str] = (),
 ) -> dict[str, list[str]]:
     policy = OperationPolicy(
-        include_globs=normalize_globs(include_globs),
-        exclude_globs=normalize_globs(exclude_globs),
+        include_globs=request_globs(include_globs),
+        exclude_globs=request_globs(exclude_globs),
     )
     included: list[str] = []
     excluded: list[str] = []

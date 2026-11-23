@@ -27,7 +27,7 @@ class CloudDeletionHttpTests(fixtures.CloudDeletionFixture):
         self.reauth(False)
         denied = self.client.post("/api/cloud-purge",json=self.payload,headers=self.headers)
         self.assertEqual(denied.status_code,403,denied.text)
-        self.assertEqual(denied.json(),{"error":"reauth_required"})
+        self.assertEqual(denied.json()["code"],"reauth_required")
         self.reauth(True)
         denied = self.client.post("/api/cloud-purge",json={**self.payload,"confirmation":"wrong"},headers=self.headers)
         self.assertEqual(denied.status_code,422,denied.text)

@@ -170,10 +170,10 @@ class RecoverEstimateHttpTests(JobAdmissionHttpFixture):
         stale = self.post("/api/recover/estimate", {
             "path": "photos/a.jpg", "archive_version_id": self.deep_b})
         self.assertEqual(stale.status_code, 409)
-        self.assertEqual(stale.json(), {"detail": "The current snapshot changed; retry recovery"})
+        self.assertEqual(stale.json()["detail"], "The current snapshot changed; retry recovery")
         missing = self.post("/api/recover/estimate", {"path": "photos/none.jpg"})
         self.assertEqual(missing.status_code, 404)
-        self.assertEqual(missing.json(), {"detail": "No recoverable Archive Version found"})
+        self.assertEqual(missing.json()["detail"], "No recoverable Archive Version found")
         outside = self.post("/api/recover/estimate", {"path": "../a.jpg"})
         self.assertEqual(outside.status_code, 422)
 
@@ -230,7 +230,7 @@ class RecoverEstimateHttpTests(JobAdmissionHttpFixture):
         invalid = self.post("/api/recover/estimate", {
             "path": "photos", "is_directory": True, "restore_tier": "Expedited"})
         self.assertEqual(invalid.status_code, 422)
-        self.assertEqual(invalid.json(), {"detail": "Choose Standard or Bulk"})
+        self.assertEqual(invalid.json()["detail"], "Choose Standard or Bulk")
 
     def test_selection_estimate_counts_overlapping_items_once(self) -> None:
         body = self.post("/api/recover/estimate", {"selection": [
@@ -325,8 +325,8 @@ class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
         self.assertEqual(self.jobs()["photos/sub/c.jpg"]["status"], "queued")
         again = self.post("/api/recover/approve", {"group_id": body["group_id"]})
         self.assertEqual(again.status_code, 409)
-        self.assertEqual(again.json(), {"detail": (
-            "No high-impact restore is waiting for approval (it may have expired)")})
+        self.assertEqual(again.json()["detail"],
+                         "No high-impact restore is waiting for approval (it may have expired)")
 
     def test_directory_recovery_is_one_request_priced_and_held_on_its_total(self) -> None:
         response = self.post("/api/recover", {
@@ -402,7 +402,7 @@ class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
             with self.subTest(body=body):
                 response = self.post("/api/recover", body)
                 self.assertEqual(response.status_code, status, response.text)
-                self.assertEqual(response.json(), {"detail": detail})
+                self.assertEqual(response.json()["detail"], detail)
         self.assertEqual(self.jobs(), {})
         self.assertEqual(self.sql("SELECT 1 FROM restore_requests"), [])
 
@@ -410,7 +410,7 @@ class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
         self.assertEqual(self.post("/api/recover", {"path": "photos/d.jpg"}).status_code, 202)
         again = self.post("/api/recover", {"path": "photos/d.jpg"})
         self.assertEqual(again.status_code, 409)
-        self.assertEqual(again.json(), {"detail": "No files are eligible for this operation"})
+        self.assertEqual(again.json()["detail"], "No files are eligible for this operation")
 
     def test_recovery_into_a_folder_that_may_not_be_written_is_refused(self) -> None:
         (self.source / "photos").mkdir()
@@ -420,7 +420,6 @@ class RecoverAdmissionHttpTests(JobAdmissionHttpFixture):
         body = response.json()
         self.assertEqual(body["message_key"], "job.destination_not_writable")
         self.assertEqual(body["message_params"]["path"], str(self.source / "photos"))
-        self.assertEqual(body["detail"], body["message"])
         self.assertEqual(self.jobs(), {})
 
 
@@ -438,8 +437,8 @@ class LocalWorkRefusalHttpTests(JobAdmissionHttpFixture):
             with self.subTest(url=url):
                 response = self.post(url, body)
                 self.assertEqual(response.status_code, 409, response.text)
-                self.assertEqual(response.json(), {
-                    "detail": "Local work is suspended pending reconnect scan"})
+                self.assertEqual(response.json()["detail"],
+                                 "Local work is suspended pending reconnect scan")
 
     def test_an_unavailable_source_volume_admits_no_local_work(self) -> None:
         self.addCleanup(source_layout.reset_sources_root_override)
@@ -448,16 +447,16 @@ class LocalWorkRefusalHttpTests(JobAdmissionHttpFixture):
             with self.subTest(url=url):
                 response = self.post(url, body)
                 self.assertEqual(response.status_code, 503, response.text)
-                self.assertEqual(response.json(), {
-                    "detail": "Local storage for this vault is unavailable (unavailable)"})
+                self.assertEqual(response.json()["detail"],
+                                 "Local storage for this vault is unavailable (unavailable)")
 
     def test_upload_and_local_release_refusals(self) -> None:
         for url in ("/api/upload", "/api/free-space"):
             with self.subTest(url=url):
                 response = self.post(url, {"path": "photos/d.jpg"})
                 self.assertEqual(response.status_code, 409, response.text)
-                self.assertEqual(response.json(), {
-                    "detail": "No files are eligible for this operation"})
+                self.assertEqual(response.json()["detail"],
+                                 "No files are eligible for this operation")
 
     def test_local_release_is_refused_while_protection_is_unconfirmed(self) -> None:
         with self.database.connect() as connection:
@@ -468,8 +467,7 @@ class LocalWorkRefusalHttpTests(JobAdmissionHttpFixture):
         self.assertEqual(response.json(), {
             "detail": ("Local release blocked: the protection of this Vault is not "
                        "confirmed (see its Problems)"),
-            "message": ("Local release blocked: the protection of this Vault is not "
-                        "confirmed (see its Problems)"),
+            "code": "conflict",
             "message_key": "api.local_release_unconfirmed",
             "message_params": {},
         })
@@ -477,5 +475,5 @@ class LocalWorkRefusalHttpTests(JobAdmissionHttpFixture):
     def test_replacing_a_cloud_only_copy_needs_its_conflict(self) -> None:
         response = self.post("/api/files/cloud-only-conflict/replace", {"path": "photos/d.jpg"})
         self.assertEqual(response.status_code, 409, response.text)
-        self.assertEqual(response.json(), {
-            "detail": "No conflict with a cloud-only file at this path"})
+        self.assertEqual(response.json()["detail"],
+                         "No conflict with a cloud-only file at this path")

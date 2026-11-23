@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from ..errors import DomainError
 from . import root_pins
 from .database_retry import owned_connection, retry_database_unit
 from .upload_snapshot import MODES, UploadSnapshot
@@ -69,11 +70,16 @@ REMEDIES = {
 }
 
 
-class UploadBlocked(RuntimeError):
+class UploadBlocked(DomainError, RuntimeError):
+    """Exact reconciliation cannot go on: ``reason`` names why, ``remedy`` what to do."""
+
+    code = "conflict"
+
     def __init__(self, reason: str):
         self.reason = reason
         self.remedy = REMEDIES.get(reason, REMEDIES["proof_unavailable"])
-        super().__init__(f"Upload reconciliation blocked ({reason}). {self.remedy}")
+        RuntimeError.__init__(self, f"Upload reconciliation blocked ({reason}). {self.remedy}")
+        self.describe(f"reconciliation.reason.{reason}", fallback="reconciliation.reason.proof_unavailable")
 
 
 class ProvenAbsent(UploadBlocked):

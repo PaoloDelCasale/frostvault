@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import Depends, HTTPException, Query, Request, Response
+from fastapi import Depends, Query, Request, Response
 
 from ..config import settings
+from ..errors import Conflict, Forbidden, Invalid, NotFound, ReauthRequired, Unauthenticated
 from ..i18n import DEFAULT_LOCALE, LOCALE_COOKIE_NAME, normalize_locale, resolve_locale, translate
 from ..database import db
 from ..proxy import parse_networks, resolve_client_ip
@@ -39,10 +40,7 @@ SCOPED_NOT_FOUND_RESPONSES = {
         "content": {
             "application/json": {
                 "schema": {
-                    "type": "object",
-                    "required": ["detail"],
-                    "properties": {"detail": {"type": "string"}},
-                    "additionalProperties": False,
+                    "$ref": "#/components/schemas/ApiErrorResponse"
                 }
             }
         },
@@ -149,11 +147,11 @@ def _set_csrf_cookie(response: Response, csrf_token: str) -> None:
 def current_user(request: Request) -> dict[str, Any]:
     token = _read_session_cookie(request)
     if not token:
-        raise HTTPException(401, "Authentication required")
+        raise Unauthenticated("api.authentication_required")
     with db() as connection:
         session = resolve_session(connection, token)
     if not session:
-        raise HTTPException(401, "Invalid session")
+        raise Unauthenticated("api.invalid_session")
     request.state.session = session
     return session["owner"]
 
@@ -163,20 +161,11 @@ def _actor(request: Request) -> str:
     return session_actor(getattr(request.state, "session", None))
 
 
-class ReauthRequired(HTTPException):
-    """Signals the frontend that a fresh Reauthentication is needed."""
+class NoVault(Forbidden):
+    """No operational Vault exists yet: the Session has nothing to look at."""
 
     def __init__(self) -> None:
-        super().__init__(status_code=403, detail="reauth_required")
-
-
-class LocalizedHTTPError(HTTPException):
-    """An error whose text is a catalog message, localized for the request."""
-
-    def __init__(self, status_code: int, message_key: str, **params: Any) -> None:
-        super().__init__(status_code=status_code, detail=translate(message_key, locale=DEFAULT_LOCALE, **params))
-        self.message_key = message_key
-        self.message_params = params
+        super().__init__("api.no_vault")
 
 
 def require_recent_reauth(
@@ -217,7 +206,7 @@ def current_vault(
                 (requested_id,),
             ).fetchone()
         if not vault and explicit:
-            raise HTTPException(404, "Protected Vault not found")
+            raise NotFound("api.protected_vault_not_found")
         if not vault:
             vault = connection.execute(
                 f"""
@@ -227,7 +216,7 @@ def current_vault(
                 """
             ).fetchone()
         if not vault:
-            raise HTTPException(403, "No vault exists yet")
+            raise NoVault()
         if not explicit and session.get("vault_id") != vault["id"]:
             updated = set_session_vault(
                 connection,
@@ -239,7 +228,7 @@ def current_vault(
                 # A concurrent logout, OIDC rotation, expiry, or Vault choice
                 # won after current_user resolved this request. Do not let this
                 # older process overwrite the newer persisted transition.
-                raise HTTPException(409, "Session changed; retry the request")
+                raise Conflict("api.session_changed")
             session.update(updated)
     return vault
 
@@ -247,8 +236,8 @@ def current_vault(
 def normalize_directory(value: str, *, api: bool = False) -> str:
     """Return a safe catalog directory (the root is an empty string).
 
-    The default preserves the direct helper's historical ``HTTPException``
-    seam; routed API calls opt into the shared logical-path contract.
+    The default names the folder in its refusal; routed API calls opt into
+    the shared logical-path contract.
     """
     if not value:
         return ""
@@ -257,4 +246,4 @@ def normalize_directory(value: str, *, api: bool = False) -> str:
     except InvalidLogicalPath as exc:
         if api:
             raise
-        raise HTTPException(422, "Invalid folder") from exc
+        raise Invalid("api.invalid_folder") from exc

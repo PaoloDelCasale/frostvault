@@ -75,12 +75,9 @@ class JobAdmissionServiceTests(FrostVaultTestCase):
 
     def test_every_refusal_is_an_admission_error(self) -> None:
         for kind in (job_admission.InvalidAdmission, job_admission.AdmissionTargetNotFound,
-                     job_admission.AdmissionRefused, job_admission.LocalStorageUnavailable,
-                     job_admission.LocalizedAdmissionRefused):
+                     job_admission.AdmissionRefused, job_admission.LocalStorageUnavailable):
             self.assertTrue(issubclass(kind, job_admission.AdmissionError))
-        localized = job_admission.LocalizedAdmissionRefused(
-            "api.local_release_blocked_path", path="photos")
-        self.assertIsInstance(localized, job_admission.AdmissionRefused)
+        localized = job_admission.AdmissionRefused("api.local_release_blocked_path", path="photos")
         self.assertEqual(localized.message_params, {"path": "photos"})
         self.assertIn("photos", str(localized))
 

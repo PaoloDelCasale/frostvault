@@ -124,7 +124,7 @@ class SelectionTests(MirrorCleanupFixture):
                         [1], ["a\nb"], [f"f{i}" for i in range(101)]):
             with self.subTest(folders=folders), self.assertRaises(mirror_cleanup.MirrorCleanupError) as error:
                 self.mirror(folders=folders)
-            self.assertEqual(error.exception.code, "folders")
+            self.assertEqual(error.exception.reason, "folders")
 
     def test_it_runs_once_a_day_and_never_schedules_twice(self) -> None:
         self.gone("backup/a.tar.zst", BACKUP)
@@ -177,7 +177,7 @@ class SelectionTests(MirrorCleanupFixture):
         self.assertIsNone(self.run_mirror())
         with self.assertRaises(mirror_cleanup.MirrorCleanupError) as refused:
             self.mirror()
-        self.assertEqual(refused.exception.code, "stopped")
+        self.assertEqual(refused.exception.reason, "stopped")
 
     def test_an_unavailable_volume_schedules_nothing(self) -> None:
         self.gone("backup/a.tar.zst", BACKUP)
@@ -390,7 +390,7 @@ class HttpTests(MirrorCleanupFixture):
             with self.subTest(change=change):
                 refused = self.send(change)
                 self.assertEqual(refused.status_code, 403, refused.text)
-                self.assertEqual(refused.json()["error"], "reauth_required")
+                self.assertEqual(refused.json()["code"], "reauth_required")
         self.reauth()
         on = self.send({"enabled": True, "grace_days": 21, "folders": ["Backup/"], "beyond_minimum": True})
         self.assertEqual(on.status_code, 200, on.text)

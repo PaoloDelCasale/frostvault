@@ -12,6 +12,7 @@ import uuid
 from collections import Counter
 from typing import Any
 
+from ..errors import Conflict
 from .cloud_deletion import lock_vault
 from .cost_estimates import estimate_storage_month, list_prices
 from .lifecycle_policies import load_vault_plan
@@ -26,13 +27,13 @@ MINIMUM_DAYS = {"STANDARD_IA": 30, "ONEZONE_IA": 30, "GLACIER_IR": 90,
                 "GLACIER": 90, "DEEP_ARCHIVE": 180}
 
 
-class MoveBlocked(ValueError):
+class MoveBlocked(Conflict, ValueError):
     """The move lacks current, exact, verified authority; preserve every copy."""
 
 
 def require_ready(vault: dict[str, Any]) -> None:
     if vault["lifecycle"] != "active":
-        raise MoveBlocked("Vault must be protected and reconnect must be complete")
+        raise MoveBlocked("api.vault_move.not_ready")
 
 
 def eligibility(row: dict[str, Any], target: str) -> str | None:
@@ -98,13 +99,13 @@ def refresh_cold_sources(vault: dict[str, Any], rows: list[dict[str, Any]]) -> N
             continue
         try:
             if not str(row.get("object_key") or "").startswith(_namespace(vault)):
-                raise MoveBlocked("Source key is outside this Vault")
+                raise MoveBlocked("api.vault_move.source_outside")
             if client is None:
                 client = s3.s3_client()
             head = client.head_object(Bucket=bucket, Key=row["object_key"], VersionId=row["provider_version_id"])
             if (str(head.get("VersionId")) != row["provider_version_id"] or head.get("DeleteMarker")
                     or head.get("ContentLength") != row["size"]):
-                raise MoveBlocked("Exact cold source identity changed")
+                raise MoveBlocked("api.vault_move.source_changed")
             row["storage_class"] = head.get("StorageClass") or "STANDARD"
             row["restore_state"] = restore_header_state(head.get("Restore"))[0]
         except Exception:
@@ -147,16 +148,16 @@ def schedule(connection: Any, *, vault_id: int, target: str, user_id: int,
     vault = lock_vault(connection, vault_id)
     require_ready(vault)
     if not acknowledged:
-        raise MoveBlocked("Acknowledge minimum-duration and early-deletion charges")
+        raise MoveBlocked("api.vault_move.acknowledge_costs")
     if target not in {step.storage_class for step in load_vault_plan(connection, vault_id).transitions}:
-        raise MoveBlocked("Choose a colder class on this Vault's saved Storage Plan")
+        raise MoveBlocked("api.vault_move.choose_colder")
     rows = candidates(connection, vault_id)
     if target == "DEEP_ARCHIVE":
         refresh_cold_sources(_with_bucket(connection, vault), rows)
     result = estimate(rows, target)
     eligible = [row for row in rows if eligibility(row, target) is None]
     if any(not str(row["object_key"]).startswith(_namespace(vault)) for row in eligible):
-        raise MoveBlocked("Source key is outside this Vault")
+        raise MoveBlocked("api.vault_move.source_outside")
     group_id = str(uuid.uuid4())
     ids: list[int] = []
     catalog = ArchiveCatalog(connection)
@@ -167,7 +168,7 @@ def schedule(connection: Any, *, vault_id: int, target: str, user_id: int,
             group_id=group_id, is_directory=False, target_storage_class=target, colder_only=True)
         ids.extend(admitted)
     if not ids:
-        raise MoveBlocked("No eligible files: already colder, unverified, unrestored or pending work")
+        raise MoveBlocked("api.vault_move.none_eligible")
     return {**result, "group_id": group_id, "job_ids": ids, "item_count": len(ids)}
 
 
@@ -175,6 +176,6 @@ def check_source(target: str, head: dict[str, Any], current: dict[str, Any]) -> 
     """The worker's recheck of the exact source HEAD before a move copies it."""
     observed = (head.get("StorageClass") or "STANDARD").upper()
     if target.upper() not in ALLOWED_TARGETS.get(observed, ()):
-        raise MoveBlocked(f"Vault move is colder-only: the Archive Version is already {observed}")
+        raise MoveBlocked("api.vault_move.colder_only", storage_class=observed)
     if observed in {"GLACIER", "DEEP_ARCHIVE"} and restore_header_state(head.get("Restore"))[0] != "available":
-        raise MoveBlocked("Vault move never restores: restore the Archive Version explicitly first")
+        raise MoveBlocked("api.vault_move.restore_first")

@@ -72,7 +72,7 @@ describe("apiRequest Reauthentication", () => {
 
   it("starts OIDC Reauthentication redirect and does not treat the request as a silent failure", async () => {
     fetchMock.mockResolvedValueOnce(
-      jsonResponse({ error: "reauth_required" }, 403),
+      jsonResponse({ code: "reauth_required" }, 403),
     );
 
     await expect(
@@ -91,7 +91,7 @@ describe("apiRequest Reauthentication", () => {
       requestPassword: async () => "correct horse battery staple",
     });
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ error: "reauth_required" }, 403))
+      .mockResolvedValueOnce(jsonResponse({ code: "reauth_required" }, 403))
       .mockResolvedValueOnce(jsonResponse({ message_key: "api.reauthenticated" }))
       .mockResolvedValueOnce(jsonResponse({ items: ["ok"] }));
 
@@ -133,7 +133,7 @@ describe("apiRequest Reauthentication", () => {
         return Promise.resolve(jsonResponse({ ok: true }));
       }
       if (count === 1) {
-        return Promise.resolve(jsonResponse({ error: "reauth_required" }, 403));
+        return Promise.resolve(jsonResponse({ code: "reauth_required" }, 403));
       }
       return Promise.resolve(jsonResponse({ url }));
     });
@@ -194,7 +194,7 @@ describe("apiRequest Reauthentication", () => {
         return delayedSecondResponse;
       }
       if (count === 1) {
-        return Promise.resolve(jsonResponse({ error: "reauth_required" }, 403));
+        return Promise.resolve(jsonResponse({ code: "reauth_required" }, 403));
       }
       return Promise.resolve(jsonResponse({ url }));
     });
@@ -212,7 +212,7 @@ describe("apiRequest Reauthentication", () => {
     expect(requestPassword).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls.filter(([url]) => url === "/api/reauth")).toHaveLength(1);
 
-    resolveSecondResponse!(jsonResponse({ error: "reauth_required" }, 403));
+    resolveSecondResponse!(jsonResponse({ code: "reauth_required" }, 403));
 
     await expect(second).resolves.toEqual({ url: "/api/general/second" });
     expect(requestPassword).toHaveBeenCalledOnce();
@@ -250,7 +250,7 @@ describe("apiRequest Reauthentication", () => {
         return delayedSecondResponse;
       }
       if (count === 1) {
-        return Promise.resolve(jsonResponse({ error: "reauth_required" }, 403));
+        return Promise.resolve(jsonResponse({ code: "reauth_required" }, 403));
       }
       return Promise.resolve(jsonResponse({ url }));
     });
@@ -282,7 +282,7 @@ describe("apiRequest Reauthentication", () => {
     expect(requestPassword).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls.filter(([url]) => url === "/api/reauth")).toHaveLength(1);
 
-    resolveSecondResponse!(jsonResponse({ error: "reauth_required" }, 403));
+    resolveSecondResponse!(jsonResponse({ code: "reauth_required" }, 403));
 
     await expect(secondFailure).resolves.toBe(firstError);
     expect(requestPassword).toHaveBeenCalledOnce();
@@ -321,7 +321,7 @@ describe("apiRequest Reauthentication", () => {
         );
       }
       if (count === 1) {
-        return Promise.resolve(jsonResponse({ error: "reauth_required" }, 403));
+        return Promise.resolve(jsonResponse({ code: "reauth_required" }, 403));
       }
       return Promise.resolve(jsonResponse({ url }));
     });
@@ -365,7 +365,7 @@ describe("apiRequest Reauthentication", () => {
       requestPassword: async () => "recent-password",
     });
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ error: "reauth_required" }, 403))
+      .mockResolvedValueOnce(jsonResponse({ code: "reauth_required" }, 403))
       .mockResolvedValueOnce(jsonResponse({ ok: true }))
       .mockResolvedValueOnce(new Response("bytes"));
 
@@ -391,7 +391,7 @@ describe("apiRequest Reauthentication", () => {
         key === "ui.reauth_failed" ? "Reauthentication failed." : key,
     });
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ error: "reauth_required" }, 403))
+      .mockResolvedValueOnce(jsonResponse({ code: "reauth_required" }, 403))
       .mockResolvedValueOnce(jsonResponse({ detail: "Invalid credentials" }, 401));
 
     await expect(
@@ -485,7 +485,12 @@ describe("apiRequest session and errors", () => {
   it("turns an error response carrying message_key into the matching localized message", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(
-        { message_key: "api.operation_failed", message: "ignored fallback" },
+        {
+          detail: "the server's translation",
+          code: "conflict",
+          message_key: "api.operation_failed",
+          message_params: {},
+        },
         409,
       ),
     );
@@ -496,6 +501,26 @@ describe("apiRequest session and errors", () => {
       message: "Operation failed.",
       messageKey: "api.operation_failed",
       status: 409,
+    });
+  });
+
+  it("shows the server's translation of a message the catalog does not hold", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          detail: "Vault not found",
+          code: "not_found",
+          message_key: "api.vault_not_found",
+          message_params: {},
+        },
+        404,
+      ),
+    );
+
+    await expect(apiRequest("/api/vaults/9/bucket")).rejects.toMatchObject({
+      message: "Vault not found",
+      messageKey: "api.vault_not_found",
+      status: 404,
     });
   });
 });

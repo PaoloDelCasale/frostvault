@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from ..errors import BadRequest
+
 SUPPORTED_STORAGE_CLASSES = (
     "STANDARD_IA", "ONEZONE_IA", "GLACIER_IR", "GLACIER", "DEEP_ARCHIVE",
 )
@@ -132,8 +134,12 @@ def validate_lifecycle_profile(profile: LifecycleProfile) -> ProfileValidation:
     return ProfileValidation(not errors, tuple(errors), tuple(dict.fromkeys(warnings)))
 
 
+class UnknownStoragePlan(BadRequest, ValueError):
+    """No guided Storage Plan has that name."""
+
+
 def guided_profile(name: str) -> LifecycleProfile:
     try:
         return GUIDED_PROFILES[name]
     except KeyError as exc:
-        raise ValueError(f"Unknown storage plan: {name}") from exc
+        raise UnknownStoragePlan("api.storage_plan.unknown", name=name) from exc

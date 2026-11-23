@@ -2678,16 +2678,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "required": [
-                    "detail"
-                  ],
-                  "properties": {
-                    "detail": {
-                      "type": "string"
-                    }
-                  },
-                  "additionalProperties": false
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             }
@@ -10135,21 +10126,38 @@
       "ApiErrorResponse": {
         "additionalProperties": false,
         "properties": {
+          "code": {
+            "enum": [
+              "bad_request",
+              "unauthenticated",
+              "forbidden",
+              "reauth_required",
+              "not_found",
+              "conflict",
+              "invalid",
+              "rate_limited",
+              "failed",
+              "upstream_failed",
+              "unavailable"
+            ],
+            "type": "string"
+          },
           "detail": {
             "type": "string"
           },
-          "message": {
+          "message_key": {
             "type": "string"
           },
-          "message_key": {
-            "const": "api.invalid_path",
-            "type": "string"
+          "message_params": {
+            "additionalProperties": {},
+            "type": "object"
           }
         },
         "required": [
           "detail",
+          "code",
           "message_key",
-          "message"
+          "message_params"
         ],
         "type": "object"
       },

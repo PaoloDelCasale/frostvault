@@ -17,6 +17,7 @@ from typing import Any
 
 from cryptography.fernet import Fernet
 
+from ..errors import Conflict
 from ..config import settings
 from ..schema_guard import require_current_schema
 from . import system_bucket
@@ -27,8 +28,12 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class RecoveryKitUnavailable(ValueError):
-    pass
+class RecoveryKitUnavailable(Conflict, ValueError):
+    """The Recovery Kit cannot be built yet: no backup in the System Bucket, or no key."""
+
+
+class CustodyRefused(Conflict, ValueError):
+    """The kit whose custody is acknowledged is not the current one."""
 
 
 KIT_FORMAT = "frostvault-recovery-kit-v2"
@@ -36,11 +41,7 @@ KIT_FORMAT = "frostvault-recovery-kit-v2"
 
 def _ready(bucket: system_bucket.SystemBucket | None) -> system_bucket.SystemBucket:
     if bucket is None or not bucket.ready or not bucket.name or not bucket.region:
-        raise RecoveryKitUnavailable(
-            "Recovery Kit is available once a metadata backup has succeeded in the "
-            "System Bucket (METADATA_BACKUP_BUCKET, or the one FrostVault creates with "
-            "AWS credentials). Until then keep the previous kit: it points to the "
-            "earlier backups, in the bucket it names")
+        raise RecoveryKitUnavailable("api.recovery_kit.no_backup")
     return bucket
 
 
@@ -53,7 +54,7 @@ def kit_fingerprint(config: Any = None, *,
         Fernet(raw)
         key = base64.urlsafe_b64decode(raw)
     except (ValueError, TypeError, UnicodeError):
-        raise RecoveryKitUnavailable("Recovery Kit requires a valid ARCHIVE_MASTER_KEY") from None
+        raise RecoveryKitUnavailable("api.recovery_kit.master_key") from None
     bucket = _ready(bucket)
     identity = json.dumps([bucket.name, bucket.region], separators=(",", ":")).encode()
     return hashlib.sha256(KIT_FORMAT.encode() + b"\0" + key + identity).hexdigest()[:24]
@@ -268,7 +269,7 @@ def acknowledge_custody(connection: Any, fingerprint: str, config: Any = None) -
     except RecoveryKitUnavailable:
         current = None
     if fingerprint != current:
-        raise ValueError("Recovery Kit fingerprint changed; download the current kit")
+        raise CustodyRefused("api.recovery_kit.fingerprint_changed")
     connection.execute("""
         INSERT INTO recovery_kit_custody(id, fingerprint, acknowledged_at) VALUES (1,%s,%s)
         ON CONFLICT(id) DO UPDATE SET fingerprint=excluded.fingerprint,

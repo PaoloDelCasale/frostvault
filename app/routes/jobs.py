@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -17,6 +15,7 @@ from ..config import settings
 from ..i18n import DEFAULT_LOCALE, format_datetime, translate
 from ..catalog import ArchiveCatalog
 from ..database import db
+from ..errors import Conflict, Invalid, NotFound, Unavailable, VaultNotFound
 from ..services.source_layout import vault_local_access
 from ..services.runtime_status import scan_waiting, vault_operation_key
 from ..services import audit_events as audit_event_store
@@ -29,7 +28,6 @@ from ..services.vault_paths import safe_relative_path
 from ..storage import cancel_jobs, now_iso, queue_scan
 from .deps import (
     LOGICAL_PATH_ERROR_RESPONSES,
-    LocalizedHTTPError,
     SCOPED_NOT_FOUND_RESPONSES,
     _actor,
     _api_message,
@@ -189,7 +187,7 @@ def job_detail(request: Request, job_id: int, vault: dict[str, Any] = Depends(cu
         record = job_record(connection, vault_id=vault["id"], job_id=job_id,
                             locale=_request_locale(request))
         if record is None:
-            raise HTTPException(404,"Job not found in this Vault")
+            raise NotFound("api.job_not_found")
     return record
 
 
@@ -202,7 +200,7 @@ def file_job_history(request: Request, path: str = Query(), before_id: int | Non
         history = file_jobs(connection, vault_id=vault["id"], path=logical_path,
                             locale=_request_locale(request), before_id=before_id, limit=limit)
         if history is None:
-            raise HTTPException(404,"Vault File not found")
+            raise NotFound("api.file_not_found")
     return history
 
 
@@ -298,7 +296,7 @@ async def catalog_events_stream(
         try:
             resume_after = max(resume_after, int(last_event_id))
         except (TypeError, ValueError):
-            raise HTTPException(422, "Last-Event-ID must be an integer revision") from None
+            raise Invalid("api.last_event_id_invalid") from None
 
     async def event_generator():
         async for chunk in iter_catalog_event_sse(
@@ -320,26 +318,6 @@ async def catalog_events_stream(
             "X-Accel-Buffering": "no",
         },
     )
-
-
-_ADMISSION_ERROR_STATUS = (
-    (job_admission.InvalidAdmission, 422),
-    (job_admission.AdmissionTargetNotFound, 404),
-    (job_admission.LocalStorageUnavailable, 503),
-)
-
-
-@contextmanager
-def _admission_errors() -> Iterator[None]:
-    """Answer a refused Job admission with its HTTP status and text."""
-    try:
-        yield
-    except job_admission.LocalizedAdmissionRefused as exc:
-        raise LocalizedHTTPError(409, exc.message_key, **exc.message_params) from exc
-    except job_admission.AdmissionError as exc:
-        status = next(
-            (code for kind, code in _ADMISSION_ERROR_STATUS if isinstance(exc, kind)), 409)
-        raise HTTPException(status, str(exc)) from exc
 
 
 @router.get(
@@ -383,16 +361,15 @@ def recover_estimate(
     action: RecoverEstimateRequest,
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    with _admission_errors():
-        return job_admission.estimate_recovery(
-            vault["id"],
-            path=action.path,
-            is_directory=action.is_directory,
-            selection=[(item.path, item.is_directory) for item in action.selection] if action.selection else None,
-            archive_version_id=action.archive_version_id,
-            restore_tier=action.restore_tier,
-            restore_days=action.restore_days,
-        )
+    return job_admission.estimate_recovery(
+        vault["id"],
+        path=action.path,
+        is_directory=action.is_directory,
+        selection=[(item.path, item.is_directory) for item in action.selection] if action.selection else None,
+        archive_version_id=action.archive_version_id,
+        restore_tier=action.restore_tier,
+        restore_days=action.restore_days,
+    )
 
 
 @router.post(
@@ -410,18 +387,14 @@ def upload(
     if action.is_directory:
         from ..services import bulk_upload_admission
         path = normalize_directory(action.path, api=True)
-        try:
-            with db() as connection:
-                admission = bulk_upload_admission.create(
-                    connection, vault_id=vault["id"], path=path, user_id=user["id"],
-                    request_id=str(action.request_id) if action.request_id else None)
-        except (ValueError, LookupError) as exc:
-            raise HTTPException(409, str(exc)) from exc
+        with db() as connection:
+            admission = bulk_upload_admission.create(
+                connection, vault_id=vault["id"], path=path, user_id=user["id"],
+                request_id=str(action.request_id) if action.request_id else None)
         return {"group_id": admission["group_id"], "job_ids": [], "item_count": admission["admitted_count"],
                 "total_bytes": admission["total_bytes"], "admission": admission,
                 **_api_message(request, "api.upload_admission_started")}
-    with _admission_errors():
-        queued = job_admission.queue_jobs(action.path, "upload", vault["id"], False)
+    queued = job_admission.queue_jobs(action.path, "upload", vault["id"], False)
     return {**queued, **_api_message(request, "api.upload_started")}
 
 
@@ -432,7 +405,7 @@ def upload_admission_status(group_id: uuid.UUID, _: dict[str, Any] = Depends(cur
     with db() as connection:
         result = bulk_upload_admission.get(connection, vault_id=vault["id"], group_id=str(group_id))
     if result is None:
-        raise HTTPException(404, "Upload admission not found")
+        raise NotFound("api.upload_admission.not_found")
     return result
 
 
@@ -444,18 +417,14 @@ def reconcile_upload(action: UploadReconciliationAction, user: dict[str, Any] = 
     never PUTs by itself: the Job may send only when S3 positively proves the
     earlier send never landed (ADR-0025), and never on a path with paused protection.
     """
-    from ..services.upload_provenance import UploadBlocked
     from ..services.upload_remediation import schedule_resume
     logical_path = safe_relative_path(action.path).as_posix()
     if action.is_directory:
-        raise HTTPException(422, "Reconciliation requires one stable Vault File")
+        raise Invalid("api.reconcile.single_file")
     if not vault_local_access(vault["source_root"]).local_operations_allowed:
-        raise HTTPException(503, "Expected Source Volume is unavailable")
-    try:
-        with db() as connection:
-            return schedule_resume(connection, vault=vault, path=logical_path, user_id=user["id"], timestamp=datetime.now(timezone.utc).isoformat(), remediation_id=action.remediation_id)
-    except UploadBlocked as exc:
-        raise HTTPException(409, str(exc)) from exc
+        raise Unavailable("api.reconcile.volume_unavailable")
+    with db() as connection:
+        return schedule_resume(connection, vault=vault, path=logical_path, user_id=user["id"], timestamp=datetime.now(timezone.utc).isoformat(), remediation_id=action.remediation_id)
 
 
 @router.post("/api/upload/retry-failed", status_code=202, response_model=response_model("RetryFailedUploadsResponse"))
@@ -469,7 +438,7 @@ def retry_failed_uploads(vault_id: int | None = Query(default=None, ge=1),
             (vault_id,) if vault_id is not None else (),
         ).fetchall()
     if vault_id is not None and not vaults:
-        raise HTTPException(404, "Vault not found")
+        raise VaultNotFound()
     count = 0
     for vault in vaults:
         try:
@@ -493,9 +462,8 @@ def replace_cloud_only_copy(
     vault: dict[str, Any] = Depends(current_vault),
 ):
     """Confirm that new content replaces the only cloud copy at its path."""
-    with _admission_errors():
-        queued = job_admission.confirm_cloud_only_replacement(
-            action.path, vault["id"], _actor(request))
+    queued = job_admission.confirm_cloud_only_replacement(
+        action.path, vault["id"], _actor(request))
     return {**queued, **_api_message(request, "api.upload_started")}
 
 
@@ -516,22 +484,19 @@ def cancel_job_group(
     actor: str,
 ):
     if job_action not in _JOB_STOPPED_MESSAGE_KEYS:
-        raise HTTPException(422, "Invalid operation")
+        raise Invalid("api.invalid_operation")
     message_key = _JOB_STOPPED_MESSAGE_KEYS[job_action]
     message = translate(message_key, locale=DEFAULT_LOCALE)
     with db() as connection:
         job_admission.lock_vault_decisions(connection, vault["id"])
         if job_action == "cloud-purge":
-            try:
-                cancelled = cloud_deletion_service.cancel_cloud_deletion(
-                    connection,
-                    vault_id=vault["id"],
-                    group_id=group_id,
-                    actor=actor,
-                    cancelled_at=now_iso(),
-                )
-            except ValueError as exc:
-                raise HTTPException(409, str(exc)) from exc
+            cancelled = cloud_deletion_service.cancel_cloud_deletion(
+                connection,
+                vault_id=vault["id"],
+                group_id=group_id,
+                actor=actor,
+                cancelled_at=now_iso(),
+            )
             cancel_jobs(
                 [
                     int(row["id"])
@@ -562,7 +527,7 @@ def cancel_job_group(
             from ..services import bulk_upload_admission
             stopped_admissions = bulk_upload_admission.cancel(connection, vault_id=vault["id"], group_id=group_id)
         if not job_ids and not stopped_admissions:
-            raise HTTPException(409, "The operation is no longer running")
+            raise Conflict("api.operation_not_running")
         if job_ids:
             _cancel_active_jobs(connection, vault, job_action, job_ids, actor)
     return {
@@ -686,17 +651,16 @@ def recover(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    with _admission_errors():
-        queued = job_admission.queue_jobs(
-            action.path,
-            "recover",
-            vault["id"],
-            action.is_directory,
-            archive_version_id=action.archive_version_id,
-            restore_tier=action.restore_tier,
-            restore_days=action.restore_days,
-            recovery_selection=[(item.path, item.is_directory) for item in action.selection] if action.selection else None,
-        )
+    queued = job_admission.queue_jobs(
+        action.path,
+        "recover",
+        vault["id"],
+        action.is_directory,
+        archive_version_id=action.archive_version_id,
+        restore_tier=action.restore_tier,
+        restore_days=action.restore_days,
+        recovery_selection=[(item.path, item.is_directory) for item in action.selection] if action.selection else None,
+    )
     return {**queued, **_api_message(request, "api.recovery_started")}
 
 
@@ -718,7 +682,7 @@ def approve_recover(
         )
     # Commit expiration even when the approval is refused.
     if not job_ids:
-        raise HTTPException(409, "No high-impact restore is waiting for approval (it may have expired)")
+        raise Conflict("api.recover_approval.none_waiting")
     return {
         "group_id": action.group_id,
         "job_ids": job_ids,
@@ -738,10 +702,9 @@ def free_space(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    with _admission_errors():
-        queued = job_admission.queue_jobs(
-            action.path, "free-space", vault["id"], action.is_directory
-        )
+    queued = job_admission.queue_jobs(
+        action.path, "free-space", vault["id"], action.is_directory
+    )
     return {**queued, **_api_message(request, "api.free_space_started")}
 
 
@@ -770,12 +733,9 @@ def preview_cloud_deletion(
     action: CloudDeletionPreviewRequest,
     vault: dict[str, Any] = Depends(current_vault),
 ):
-    try:
-        with db() as connection:
-            preview = cloud_deletion_service.preview_selection(
-                connection, vault_id=vault["id"], **_cloud_deletion_selection(action))
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
+    with db() as connection:
+        preview = cloud_deletion_service.preview_selection(
+            connection, vault_id=vault["id"], **_cloud_deletion_selection(action))
     return {
         **preview.as_dict(),
     }
@@ -789,24 +749,17 @@ def cloud_purge(
     vault: dict[str, Any] = Depends(current_vault),
     _reauth: dict[str, Any] = Depends(require_recent_reauth),
 ):
-    try:
-        with db() as connection:
-            scheduled = cloud_deletion_service.schedule_cloud_purge(
-                connection,
-                vault_id=vault["id"],
-                **_cloud_deletion_selection(action),
-                actor=_actor(request),
-                requested_at=now_iso(),
-                confirmation=action.confirmation,
-                reason=action.reason,
-                fingerprint=action.fingerprint,
-            )
-    except cloud_deletion_service.ConfirmationRequired as exc:
-        raise HTTPException(422, str(exc)) from exc
-    except cloud_deletion_service.SelectionChanged as exc:
-        raise LocalizedHTTPError(409, exc.message_key) from exc
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
+    with db() as connection:
+        scheduled = cloud_deletion_service.schedule_cloud_purge(
+            connection,
+            vault_id=vault["id"],
+            **_cloud_deletion_selection(action),
+            actor=_actor(request),
+            requested_at=now_iso(),
+            confirmation=action.confirmation,
+            reason=action.reason,
+            fingerprint=action.fingerprint,
+        )
     return {
         "group_id": scheduled.group_id,
         "job_ids": scheduled.job_ids,

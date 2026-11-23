@@ -72,7 +72,7 @@ class ReconnectRecoveryHttpTests(FrostVaultTestCase):
         with patch("app.services.recovery_kit.build_recovery_kit") as build:
             response = client.get("/api/recovery-kit/download")
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json(), {"error": "reauth_required"})
+        self.assertEqual(response.json()["code"], "reauth_required")
         build.assert_not_called()
 
     def test_no_store_download_is_non_catalog_and_audited_without_secret(self):

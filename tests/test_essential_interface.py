@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from fastapi import HTTPException
+from app.errors import NotFound
 from fastapi.testclient import TestClient
 from app import main
 from app.routes import deps
@@ -35,9 +35,8 @@ class EssentialInterfaceTests(unittest.TestCase):
     def test_explicit_invalid_or_stopped_scope_does_not_fall_back_to_another_vault(self):
         connection = Mock(); connection.execute.return_value.fetchone.return_value = None
         with patch.object(deps, "db", lambda: self.connection(connection)), patch.object(deps, "set_session_vault") as select:
-            with self.assertRaises(HTTPException) as raised:
+            with self.assertRaises(NotFound):
                 deps.current_vault(self.request(), {"id": 1}, vault_id=99)
-        self.assertEqual(raised.exception.status_code, 404)
         self.assertEqual(connection.execute.call_count, 1)
         select.assert_not_called()
 

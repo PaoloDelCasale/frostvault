@@ -29,12 +29,15 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Iterator, Literal
 
+from ..errors import DomainError
 from .excluded_folders import ExcludedFolders, excluded_folders
 from .fs_preflight import is_storable_name
 from .operation_policies import (
     AUTO_UPLOAD_EXCLUSIONS,
+    InvalidPolicy,
     OperationPolicy,
     auto_upload_path_is_included,
+    request_globs,
 )
 from .path_rules import name_matches, normalize_globs, path_matches
 from .source_layout import vault_local_access
@@ -51,16 +54,26 @@ _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 GlobField = Literal["include_globs", "exclude_globs"]
 
 
-class DiskReadError(Exception):
+class DiskReadError(DomainError):
     """The disk could not be read: ``unavailable``, ``missing`` or ``unreadable``."""
 
+    code = "conflict"
+
     def __init__(self, reason: str) -> None:
-        super().__init__(reason)
+        Exception.__init__(self, reason)
         self.reason = reason
+        self.describe(f"api.disk_read.{reason}", fallback="api.disk_read.unreadable",
+                      code="not_found" if reason == "missing" else None)
 
 
-class RuleNotFound(LookupError):
+class RuleNotFound(DomainError, LookupError):
     """The rule to remove is not in the Vault policy (any more)."""
+
+    code = "conflict"
+
+    def __init__(self, glob: str) -> None:
+        LookupError.__init__(self, glob)
+        self.describe("api.policy.rule_gone")
 
 
 # --- Rules -------------------------------------------------------------------
@@ -88,9 +101,9 @@ def edit_glob(policy: OperationPolicy, field: GlobField, action: str, glob: str)
     present raises :class:`RuleNotFound`, so a stale view never removes another
     rule by position.
     """
-    normalized = normalize_globs((glob,))
+    normalized = request_globs((glob,))
     if not normalized:
-        raise ValueError("glob must not be empty")
+        raise InvalidPolicy("api.policy.glob_empty")
     value = normalized[0]
     current = tuple(normalize_globs(getattr(policy, field)))
     if action == "add":
@@ -100,7 +113,7 @@ def edit_glob(policy: OperationPolicy, field: GlobField, action: str, glob: str)
             raise RuleNotFound(value)
         updated = tuple(item for item in current if item != value)
     else:  # Defensive; the API model allows add/remove only.
-        raise ValueError("action must be add or remove")
+        raise InvalidPolicy("api.policy.glob_action")
     return replace(policy, **{field: updated})
 
 

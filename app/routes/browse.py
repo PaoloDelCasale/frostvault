@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..api_models import JsonObjectResponse, response_model
@@ -12,6 +12,7 @@ from ..config import settings
 from ..i18n import translate
 from ..catalog import ArchiveCatalog
 from ..database import db
+from ..errors import NotFound
 from ..services.source_layout import vault_local_access
 from ..services import audit_events as audit_event_store
 from ..services import metadata_backups as metadata_backup_service
@@ -102,7 +103,7 @@ def file_detail(path: str, vault: dict[str, Any] = Depends(current_vault)):
         catalog = ArchiveCatalog(connection, protection_unconfirmed=unconfirmed)
         item = catalog.get_file_item(vault["id"], path)
         if item is None:
-            raise HTTPException(404, "Vault File not found")
+            raise NotFound("api.file_not_found")
         return item
 
 
@@ -287,7 +288,7 @@ def mark_notification_read(
             locale=_request_locale(request),
         )
     if item is None:
-        raise HTTPException(404, "Notification not found")
+        raise NotFound("api.notification_not_found")
     return item
 
 
@@ -331,10 +332,7 @@ def download_recovery_kit(
 ):
     with db() as connection:
         bucket = recovery_kit_service.kit_bucket(connection)
-    try:
-        payload = recovery_kit_service.build_recovery_kit(bucket=bucket)
-    except recovery_kit_service.RecoveryKitUnavailable as exc:
-        raise HTTPException(409, str(exc)) from None
+    payload = recovery_kit_service.build_recovery_kit(bucket=bucket)
     with db() as connection:
         audit_event_store.record_audit_event(connection, event="recovery_kit_downloaded",
                            actor=_actor(request), outcome="success")
@@ -351,10 +349,7 @@ def acknowledge_recovery_kit(
     user: dict[str, Any] = Depends(current_user),
 ):
     with db() as connection:
-        try:
-            recovery_kit_service.acknowledge_custody(connection, action.fingerprint)
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from None
+        recovery_kit_service.acknowledge_custody(connection, action.fingerprint)
         audit_event_store.record_audit_event(connection, event="recovery_kit_custody_acknowledged",
                            actor=_actor(request), outcome="success",
                            fingerprint=action.fingerprint)
@@ -378,17 +373,14 @@ def run_metadata_backup(
     # Resolve the System Bucket before holding a connection for the run (#734).
     object_store = metadata_backup_service.resolve_object_store()
     with db() as connection:
-        try:
-            result = metadata_backup_service.run_metadata_backup(
-                connection,
-                reason="manual",
-                backup_dir=settings.metadata_backup_dir,
-                object_store=object_store,
-                retention=settings.metadata_backup_retention,
-                s3_prefix=settings.metadata_backup_s3_prefix,
-            )
-        except metadata_backup_service.BackupError as exc:
-            raise HTTPException(500, str(exc)) from exc
+        result = metadata_backup_service.run_metadata_backup(
+            connection,
+            reason="manual",
+            backup_dir=settings.metadata_backup_dir,
+            object_store=object_store,
+            retention=settings.metadata_backup_retention,
+            s3_prefix=settings.metadata_backup_s3_prefix,
+        )
         # An explicit export of the metadata database is sensitive. Routine
         # scheduled backups do not create action-log entries.
         audit_event_store.record_audit_event(
@@ -418,14 +410,11 @@ def download_metadata_backup(
     admin: dict[str, Any] = Depends(current_user),
 ):
     with db() as connection:
-        try:
-            artifact = metadata_backup_service.open_backup_artifact(
-                connection,
-                run_id,
-                backup_dir=settings.metadata_backup_dir,
-            )
-        except metadata_backup_service.BackupError as exc:
-            raise HTTPException(404, str(exc)) from exc
+        artifact = metadata_backup_service.open_backup_artifact(
+            connection,
+            run_id,
+            backup_dir=settings.metadata_backup_dir,
+        )
         audit_event_store.record_audit_event(
             connection,
             event="metadata_backup_downloaded",

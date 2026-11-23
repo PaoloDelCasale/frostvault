@@ -20,14 +20,27 @@ from typing import Any, Callable, Protocol
 from cryptography.fernet import Fernet, InvalidToken
 
 from ..config import Settings, is_placeholder, settings
+from ..errors import DomainError
+from ..i18n import DEFAULT_LOCALE, translate
 from . import system_bucket
 
 
 S3_BACKUP_PREFIX = "system/backups/"
 
 
-class BackupError(RuntimeError):
+_FAILED = "api.metadata_backup.failed"
+
+
+class BackupError(DomainError, RuntimeError):
     """Raised when a metadata backup or restore verification fails."""
+
+    code = "failed"
+
+
+class BackupArtifactUnavailable(BackupError):
+    """The artifact of a recorded backup run cannot be handed out."""
+
+    code = "not_found"
 
 
 class BackupConfigurationError(BackupError):
@@ -166,11 +179,9 @@ def default_object_store(
         bucket = system_bucket.ensure(cfg)
         return Boto3ObjectStore(s3.s3_client(region=bucket.region), bucket.name)
     except system_bucket.SystemBucketUnavailable as exc:
-        raise ObjectStoreUnavailableError(str(exc)) from None
+        raise ObjectStoreUnavailableError("api.metadata_backup.system_bucket", reason=str(exc)) from None
     except Exception:  # noqa: BLE001 - normalize an external boundary
-        raise ObjectStoreUnavailableError(
-            "Configured metadata backup object store is unavailable"
-        ) from None
+        raise ObjectStoreUnavailableError("api.metadata_backup.object_store_unavailable") from None
 
 
 @dataclass(frozen=True)
@@ -209,13 +220,11 @@ def now_iso() -> str:
 def _fernet(master_key: str) -> Fernet:
     key = (master_key or "").strip()
     if not backup_master_key_configured(key):
-        raise MissingMasterKeyError("ARCHIVE_MASTER_KEY is not configured")
+        raise MissingMasterKeyError("api.metadata_backup.master_key_missing")
     try:
         return Fernet(key.encode("ascii"))
     except (ValueError, TypeError):
-        raise InvalidMasterKeyError(
-            "ARCHIVE_MASTER_KEY must be a url-safe base64-encoded 32-byte key"
-        ) from None
+        raise InvalidMasterKeyError("api.metadata_backup.master_key_invalid") from None
 
 
 # Explicit allow-list: new settings and arbitrary caller-supplied snapshot keys
@@ -279,13 +288,11 @@ def _dump_postgres_bytes(database_dsn: str | None = None) -> bytes:
             env=_postgres_env(database_dsn),
         )
     except FileNotFoundError:
-        raise BackupError(
-            "pg_dump is required for PostgreSQL metadata backups"
-        ) from None
+        raise BackupError("api.metadata_backup.pg_dump_missing") from None
     if completed.returncode != 0:
-        raise BackupError("pg_dump failed")
+        raise BackupError("api.metadata_backup.pg_dump_failed")
     if not completed.stdout:
-        raise BackupError("pg_dump produced an empty backup")
+        raise BackupError("api.metadata_backup.pg_dump_empty")
     return completed.stdout
 
 
@@ -314,7 +321,7 @@ def unpack_backup_payload(plaintext: bytes) -> dict[str, Any]:
         members = {member.name: archive.extractfile(member) for member in archive.getmembers()}
         missing = {"manifest.json", "config.json", "database.dump"} - set(members)
         if missing:
-            raise BackupError(f"Backup payload missing members: {sorted(missing)}")
+            raise BackupError("api.metadata_backup.payload_incomplete", members=sorted(missing))
         manifest = json.loads(members["manifest.json"].read().decode("utf-8"))
         config = json.loads(members["config.json"].read().decode("utf-8"))
         database = members["database.dump"].read()
@@ -390,7 +397,7 @@ def decrypt_backup_file(path: str | Path, master_key: str | None = None) -> dict
     try:
         plaintext = _fernet(key).decrypt(ciphertext)
     except InvalidToken:
-        raise BackupError("Unable to decrypt backup with the provided master key") from None
+        raise BackupError("api.metadata_backup.decrypt_failed") from None
     return unpack_backup_payload(plaintext)
 
 
@@ -405,7 +412,7 @@ def list_local_backup_files(backup_dir: str | Path) -> list[Path]:
 def rotate_local_retention(backup_dir: str | Path, keep: int) -> list[Path]:
     """Delete oldest local backup artifacts beyond ``keep``; return removed paths."""
     if keep < 0:
-        raise BackupError("Backup retention must be >= 0")
+        raise BackupError("api.metadata_backup.retention_negative")
     artifacts = list_local_backup_files(backup_dir)
     removed: list[Path] = []
     for path in artifacts[keep:]:
@@ -436,7 +443,7 @@ def rotate_remote_retention(
     recorded success) are never deleted. Returns the deleted artifact keys.
     """
     if keep < 0:
-        raise BackupError("Backup retention must be >= 0")
+        raise BackupError("api.metadata_backup.retention_negative")
     normalized = _normalize_prefix(prefix)
     if not normalized.startswith(S3_BACKUP_PREFIX):
         return []
@@ -484,9 +491,7 @@ def _normalize_prefix(prefix: str) -> str:
     if not cleaned.endswith("/"):
         cleaned += "/"
     if not cleaned.startswith("system/backups"):
-        raise BackupError(
-            "Metadata backups must use the dedicated system/backups/ prefix"
-        )
+        raise BackupError("api.metadata_backup.prefix_required")
     return cleaned
 
 
@@ -508,24 +513,18 @@ def store_backup_to_object_store(
         object_store.put_bytes(key, body)
         object_store.put_bytes(sidecar_key, sidecar)
     except Exception:  # noqa: BLE001 - external storage boundary
-        raise ObjectStoreUploadError(
-            "Configured metadata backup upload failed"
-        ) from None
+        raise ObjectStoreUploadError("api.metadata_backup.upload_failed") from None
 
     try:
         uploaded = object_store.get_bytes(key)
         uploaded_sidecar = object_store.get_bytes(sidecar_key)
     except Exception:  # noqa: BLE001 - external storage boundary
-        raise ObjectStoreVerificationError(
-            "Configured metadata backup verification failed"
-        ) from None
+        raise ObjectStoreVerificationError("api.metadata_backup.verification_failed") from None
     if (
         hashlib.sha256(uploaded).hexdigest() != digest
         or uploaded_sidecar != sidecar
     ):
-        raise ObjectStoreVerificationError(
-            "Configured metadata backup verification failed"
-        )
+        raise ObjectStoreVerificationError("api.metadata_backup.verification_failed")
     return {
         "key": key,
         "digest_sha256": digest,
@@ -548,7 +547,7 @@ def verify_restore_isolated(
     payload = decrypt_backup_file(artifact_path, master_key=master_key)
     backend = payload["manifest"].get("backend")
     if backend != "postgresql" or payload["manifest"].get("schema_format") != "postgresql-custom":
-        raise BackupError("Only PostgreSQL custom-format backups are supported")
+        raise BackupError("api.metadata_backup.format_unsupported")
 
     result = _verify_postgres_dump_isolated(payload["database"], work)
     result["backend"] = backend
@@ -571,7 +570,7 @@ def _require_current_dump_revision(dump_path: Path, env: dict[str, str]) -> str:
         env=env,
     )
     if listed.returncode != 0:
-        raise BackupError("PostgreSQL dump failed verification")
+        raise BackupError("api.metadata_backup.dump_unverified")
     revisions: list[str] = []
     copying = False
     for line in listed.stdout.splitlines():
@@ -584,9 +583,8 @@ def _require_current_dump_revision(dump_path: Path, env: dict[str, str]) -> str:
     if len(revisions) != 1 or revisions[0] not in SCHEMA_REVISIONS:
         found = ", ".join(revision[:64] for revision in revisions[:3]) or "no revision"
         raise BackupError(
-            f"Metadata backup refused: its schema revision is {found}, this "
-            f"release accepts {', '.join(SCHEMA_REVISIONS)} (upgraded to "
-            f"{SCHEMA_HEAD}). Backups of other schemas are never upgraded or adopted."
+            "api.metadata_backup.schema_refused", found=found,
+            accepted=", ".join(SCHEMA_REVISIONS), head=SCHEMA_HEAD,
         )
     return revisions[0]
 
@@ -607,7 +605,7 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
         env=env,
     )
     if list_result.returncode != 0:
-        raise BackupError("PostgreSQL dump failed verification")
+        raise BackupError("api.metadata_backup.dump_unverified")
     # Schema guard (ADR-0035, ADR-0041): a backup outside the revision chain is
     # refused before anything is restored, even into a scratch database.
     schema_revision = _require_current_dump_revision(dump_path, env)
@@ -639,7 +637,7 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
         )
         if restored.returncode not in {0, 1}:
             # pg_restore uses 1 for warnings; >1 is hard failure.
-            raise BackupError("PostgreSQL isolated restore failed")
+            raise BackupError("api.metadata_backup.restore_failed")
         counted = subprocess.run(
             [
                 "psql",
@@ -665,9 +663,7 @@ def _verify_postgres_dump_isolated(database_bytes: bytes, work: Path) -> dict[st
                 vault_count = int(parts[1])
                 restored_revision = parts[2] or None
         if owner_count is None or vault_count is None or restored_revision != schema_revision:
-            raise BackupError(
-                "PostgreSQL isolated restore did not prove schema tables"
-            )
+            raise BackupError("api.metadata_backup.restore_unproven")
         return {
             "ok": True,
             "owner_count": owner_count,
@@ -1026,7 +1022,7 @@ def run_metadata_backup(
         ):
             message = str(exc)
         else:
-            message = "Metadata backup operation failed"
+            message = translate(_FAILED, locale=DEFAULT_LOCALE)
         if connection is not None:
             try:
                 record_backup_run(
@@ -1044,7 +1040,7 @@ def run_metadata_backup(
                 pass
         if isinstance(exc, BackupError):
             raise
-        raise BackupError(message) from None
+        raise BackupError(_FAILED) from None
 
 
 def open_backup_artifact(
@@ -1056,9 +1052,9 @@ def open_backup_artifact(
         (run_id,),
     ).fetchone()
     if row is None:
-        raise BackupError("Backup run not found")
+        raise BackupArtifactUnavailable("api.metadata_backup.run_not_found")
     if row["status"] not in {"succeeded", "verified"}:
-        raise BackupError("Backup artifact is not available for download")
+        raise BackupArtifactUnavailable("api.metadata_backup.artifact_unavailable")
     candidates: list[Path] = []
     if row.get("local_path"):
         candidates.append(Path(row["local_path"]))
@@ -1073,11 +1069,11 @@ def open_backup_artifact(
             body = path.read_bytes()
             digest = hashlib.sha256(body).hexdigest()
             if row.get("digest_sha256") and digest != row["digest_sha256"]:
-                raise BackupError("Backup artifact digest mismatch")
+                raise BackupArtifactUnavailable("api.metadata_backup.digest_mismatch")
             return {
                 "filename": path.name,
                 "body": body,
                 "digest_sha256": digest,
                 "run": _row_run(row),
             }
-    raise BackupError("Backup artifact file is missing from the local backup volume")
+    raise BackupArtifactUnavailable("api.metadata_backup.artifact_missing")

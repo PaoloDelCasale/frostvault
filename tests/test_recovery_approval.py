@@ -6,8 +6,8 @@ from threading import Event
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from fastapi import HTTPException
 
+from app.errors import Conflict
 from app.routes import jobs
 from app.services import job_admission, notifications, recovery_approval
 from tests import test_restore_guardrails as guardrails
@@ -42,9 +42,8 @@ class RecoveryApprovalTests(guardrails.GroupRestoreFixture):
     def test_late_approval_refused_and_expiry_committed_without_waiting_for_worker(self):
         _, queued = self._queue_and_estimate(self._runtime())
         self._expire_deadline()
-        with self.assertRaises(HTTPException) as raised:
+        with self.assertRaises(Conflict):
             self._approve(queued["group_id"])
-        self.assertEqual(raised.exception.status_code, 409)
         self.assertEqual({j["status"] for j in self._jobs().values()}, {"cancelled"})
 
     def test_deadline_is_inclusive_and_offsets_compare_as_instants(self):
@@ -72,13 +71,13 @@ class RecoveryApprovalTests(guardrails.GroupRestoreFixture):
         def approve():
             try:
                 self._approve(queued["group_id"])
-            except HTTPException as error:
-                self.assertEqual(error.status_code, 409)
+            except Conflict:
+                pass
         def cancel():
             try:
                 jobs.cancel_job_group(queued["group_id"], "recover", {"id": 2}, 1)
-            except HTTPException as error:
-                self.assertEqual(error.status_code, 409)
+            except Conflict:
+                pass
         def expire():
             with self.database.connect() as connection:
                 recovery_approval.sweep_expired(connection, now=datetime.now(timezone.utc).isoformat())
@@ -94,8 +93,8 @@ class RecoveryApprovalTests(guardrails.GroupRestoreFixture):
         def approve():
             try:
                 self._approve(queued["group_id"])
-            except HTTPException as error:
-                self.assertEqual(error.status_code, 409)
+            except Conflict:
+                pass
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = [pool.submit(approve), pool.submit(jobs.cancel_job_group, queued["group_id"], "recover", {"id": 2}, 1)]
             for future in futures:
@@ -130,7 +129,7 @@ class RecoveryApprovalTests(guardrails.GroupRestoreFixture):
                 future = pool.submit(self._approve, queued["group_id"])
                 self.assertTrue(entered_lock.wait(timeout=10))
                 clock.now.assert_not_called()
-            with self.assertRaises(HTTPException):
+            with self.assertRaises(Conflict):
                 future.result(timeout=20)
         self.assertEqual({j["status"] for j in self._jobs().values()}, {"cancelled"})
 

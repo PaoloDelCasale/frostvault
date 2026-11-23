@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..database import db
+from ..errors import Conflict, NotFound
 from . import cloud_deletion, source_directories
 from .job_queue import OPEN_JOB_SQL, TERMINAL_JOB_STATUSES
 from .audit_events import record_audit_event
@@ -55,10 +56,18 @@ def _local_files(connection: Any, vault_id: int) -> int:
     return int(row["total"] or 0)
 
 
+class VaultNotFound(NotFound, ValueError):
+    """The Vault whose protection is asked about does not exist."""
+
+
+class StopRefused(Conflict, ValueError):
+    """Folder protection cannot be stopped, or its deletion cancelled, now."""
+
+
 def status(connection: Any, vault_id: int) -> dict[str, Any]:
     vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
     if not vault:
-        raise ValueError("Vault not found")
+        raise VaultNotFound("api.vault_not_found")
     group_id = _stop_group(connection, vault_id)
     result = {"vault_id": vault_id, "vault_name": vault["name"],
               "stopped": vault["lifecycle"] in {"stopping", "tombstone"},
@@ -91,9 +100,9 @@ def stop_protection(connection: Any, *, vault_id: int, actor: str,
     source_directories.lock_vault_root_allocation(connection)
     vault = cloud_deletion.lock_vault(connection, vault_id)
     if confirmation != vault["name"]:
-        raise cloud_deletion.ConfirmationRequired("Type the exact Vault name to confirm")
+        raise cloud_deletion.ConfirmationRequired("api.confirmation_required")
     if cloud_disposition not in {"keep", "delete"} or not reason.strip():
-        raise ValueError("Choose keep or delete and provide a reason")
+        raise StopRefused("api.stop_protection.choose_disposition")
     if vault["lifecycle"] in {"stopping", "tombstone"}:
         group_id = _stop_group(connection, vault_id)
         existing = "delete" if group_id else "keep"
@@ -111,14 +120,14 @@ def stop_protection(connection: Any, *, vault_id: int, actor: str,
                                group_id=group_id, completed_deletions_not_undone=True)
             reconcile_one(connection, vault_id)
             return status(connection, vault_id)
-        raise ValueError("Folder protection has already stopped")
+        raise StopRefused("api.stop_protection.already_stopped")
     if vault["lifecycle"] == "provisioning":
         # Its bucket is still being created (#735): there is nothing to stop.
-        raise ValueError("The Vault's bucket is still being created")
+        raise StopRefused("api.stop_protection.bucket_creating")
     if cloud_disposition == "delete" and vault["lifecycle"] != "active":
-        raise ValueError("Reconnect must complete before deleting cloud content")
+        raise StopRefused("api.stop_protection.reconnect_first")
     if has_pending(connection, vault_id) or _active_work(connection, vault_id):
-        raise ValueError("Wait for active Jobs or cancel pending work first")
+        raise StopRefused("api.stop_protection.active_jobs")
     at = cloud_deletion.now_iso()
     group_id = None
     if cloud_disposition == "delete":
@@ -171,7 +180,7 @@ def cancel_deletion(connection: Any, *, vault_id: int, actor: str) -> dict[str, 
     cloud_deletion.lock_vault(connection, vault_id)
     group_id = _stop_group(connection, vault_id)
     if not group_id:
-        raise ValueError("No pending cloud deletion")
+        raise StopRefused("api.stop_protection.no_pending_deletion")
     cloud_deletion.cancel_cloud_deletion(connection, vault_id=vault_id, group_id=group_id,
                                          actor=actor, cancelled_at=cloud_deletion.now_iso())
     reconcile_one(connection, vault_id)

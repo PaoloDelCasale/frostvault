@@ -55,6 +55,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from ..errors import DomainError, VaultNotFound
 from . import retention_lock
 from .audit_events import record_audit_event
 from .cloud_deletion import DELETION_DELAY_SECONDS, ConfirmationRequired, lock_vault
@@ -81,15 +82,20 @@ DEFERRED_RETRY_SECONDS = 24 * 60 * 60
 Database = Callable[[], AbstractContextManager[Any]]
 
 
-class VaultDeletionError(ValueError):
+class VaultDeletionError(DomainError, ValueError):
     """The request is not, or no longer, a safe Vault Deletion.
 
-    ``code`` names the Owner-facing message (``api.vault_deletion.<code>``).
+    ``reason`` names the Owner-facing message (``api.vault_deletion.<reason>``);
+    ``str()`` stays the internal text.
     """
 
-    def __init__(self, message: str, code: str = "refused") -> None:
-        super().__init__(message)
-        self.code = code
+    code = "conflict"
+
+    def __init__(self, message: str, reason: str = "refused") -> None:
+        ValueError.__init__(self, message)
+        self.reason = reason
+        self.describe(f"api.vault_deletion.{reason}", fallback="api.vault_deletion.refused",
+                      code="upstream_failed" if reason == "listing_failed" else None)
 
 
 class VaultDeletionListingError(VaultDeletionError):
@@ -331,7 +337,7 @@ def _vault_row(connection: Any, vault_id: int) -> dict[str, Any]:
                   t.retention_lock_days AS s3_retention_lock_days FROM vaults v
            JOIN vault_targets t ON t.id = v.target_id WHERE v.id=%s""", (vault_id,)).fetchone()
     if row is None:
-        raise LookupError("Vault not found")
+        raise VaultNotFound("api.vault_deletion.not_found")
     return row
 
 
@@ -444,7 +450,7 @@ def request_deletion(connection: Any, *, vault_id: int, actor: str, confirmation
     vault = lock_vault(connection, vault_id)
     require_tombstone(vault)
     if confirmation != vault["name"]:
-        raise ConfirmationRequired("Type the exact Vault name to confirm")
+        raise ConfirmationRequired("api.vault_deletion.confirmation")
     if not (reason or "").strip() or len(reason) > 500:
         raise VaultDeletionError("A deletion reason is required", "reason")
     if _request_row(connection, vault_id, lock=True):

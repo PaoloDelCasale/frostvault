@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from ..errors import VaultNotFound
 from .cost_estimates import PriceList, list_prices
 from .lifecycle_profiles import ALLOWED_TARGETS, LifecycleProfile
 from .vault_moves import MINIMUM_DAYS
@@ -289,7 +290,7 @@ def load_vault_summary(connection: Any, vault_id: int, *,
     vault = connection.execute(
         "SELECT storage_plan::text AS plan FROM vaults WHERE id=%s", (vault_id,)).fetchone()
     if vault is None:
-        raise LookupError("Vault not found")
+        raise VaultNotFound("api.minimum_storage.not_found")
     plan = profile_from_json(vault["plan"])
     rows = connection.execute(
         _VAULT_VERSIONS_SQL, (SMALL_OBJECT_BYTES, SMALL_OBJECT_BYTES, vault_id)).fetchall()

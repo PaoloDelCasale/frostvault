@@ -43,7 +43,10 @@ _GLOB = frozenset("*?[]{}")
 
 
 class MirrorCleanupError(cleanup_engine.CleanupError):
-    """The settings cannot be changed: ``code`` names the Owner-facing message."""
+    """The settings cannot be changed: ``reason`` names the Owner-facing message."""
+
+    prefix = "api.mirror_cleanup"
+    reasons = frozenset({"stopped", "folders"})
 
 
 def normalize_folders(value: Any) -> list[str]:

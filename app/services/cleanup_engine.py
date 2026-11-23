@@ -29,6 +29,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from ..errors import DomainError, VaultNotFound
 from ..i18n import DEFAULT_LOCALE, translate
 from . import cloud_deletion, minimum_storage
 from .audit_events import record_audit_event
@@ -48,12 +49,22 @@ Database = Callable[[], AbstractContextManager[Any]]
 Settings = dict[str, Any]
 
 
-class CleanupError(ValueError):
-    """The settings cannot be changed: ``code`` names the Owner-facing message."""
+class CleanupError(DomainError, ValueError):
+    """The settings cannot be changed: ``reason`` names the Owner-facing message.
 
-    def __init__(self, message: str, code: str = "invalid") -> None:
-        super().__init__(message)
-        self.code = code
+    Each cleanup's own class gives the ``prefix`` of its messages and the
+    ``reasons`` that have one; any other reason reads as ``invalid``.
+    """
+
+    code = "invalid"
+    prefix: str
+    reasons: frozenset[str]
+
+    def __init__(self, message: str, reason: str = "invalid") -> None:
+        ValueError.__init__(self, message)
+        self.reason = reason
+        self.describe(f"{self.prefix}.{reason if reason in self.reasons else 'invalid'}",
+                      code="conflict" if reason == "stopped" else None)
 
 
 def _iso(value: Any) -> str | None:
@@ -265,7 +276,7 @@ class Cleanup:
         # With its Vault Target: the candidates are listed under its prefix (#735).
         row = connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=%s", (vault_id,)).fetchone()
         if row is None:
-            raise LookupError("Vault not found")
+            raise VaultNotFound(f"api.{self.name}.not_found")
         moment = now or datetime.now(timezone.utc).replace(microsecond=0)
         own = "r.mirror_cleanup" if self.mirror else "NOT r.mirror_cleanup"
         pending = connection.execute(

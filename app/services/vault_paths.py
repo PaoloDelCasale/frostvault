@@ -10,6 +10,8 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from ..errors import Invalid
+
 RESTORE_TEMPORARY_RE = re.compile(
     r"\..+\.restore-[0-9a-f]{32}\.tmp(?:\.[A-Za-z0-9]{8}|\..+\.partial)?"
 )
@@ -21,18 +23,14 @@ CLEANUP_TEMPORARY_RE = re.compile(r"\..+\.cleanup-[0-9a-f]{32}\.tmp")
 VERIFY_TEMPORARY_RE = re.compile(r"\..+\.verify-[0-9a-f]{32}\.tmp(?:\.[A-Za-z0-9]{8})?")
 
 
-class InvalidLogicalPath(ValueError):
+class InvalidLogicalPath(Invalid, ValueError):
     """A caller supplied a path that cannot be a Vault-relative logical path.
 
-    This remains a ``ValueError`` subclass for direct-call compatibility, but
-    the API maps this dedicated domain exception rather than catching every
-    ``ValueError`` raised by application code.
+    This remains a ``ValueError`` subclass for direct-call compatibility.
     """
 
-    message_key = "api.invalid_path"
-
     def __init__(self) -> None:
-        super().__init__("Invalid path")
+        super().__init__("api.invalid_path")
 
 
 def safe_relative_path(value: str) -> PurePosixPath:

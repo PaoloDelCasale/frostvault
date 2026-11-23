@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from .api_models import documented_schemas
 from .branding import PRODUCT_NAME
 from .config import settings, validate_settings
+from .errors import STATUS, DomainError
 from .i18n import (
     translate,
 )
@@ -33,7 +34,6 @@ from .services.shutdown import shutdown_state
 from .sessions import (
     csrf_token_for,
 )
-from .services.vault_paths import InvalidLogicalPath
 from .storage import (
     background_loop,
     cleanup_abandoned_restore_files,
@@ -49,7 +49,7 @@ from .storage import (
     reconcile_interrupted_jobs,
 )
 from .routes import browse, jobs, ops, policy, register_routes, sign_in, storage_plan, vaults
-from .routes.deps import LocalizedHTTPError, ReauthRequired, _read_session_cookie, _request_locale
+from .routes.deps import _read_session_cookie, _request_locale
 
 
 @asynccontextmanager
@@ -188,34 +188,24 @@ async def security_middleware(request: Request, call_next):
     return response
 
 
-@app.exception_handler(ReauthRequired)
-async def _reauth_required_handler(_: Request, __: ReauthRequired) -> JSONResponse:
-    # Stable marker the frontend keys on to trigger a step-up.
-    return JSONResponse({"error": "reauth_required"}, status_code=403)
+@app.exception_handler(DomainError)
+async def _domain_error_handler(request: Request, error: DomainError) -> JSONResponse:
+    """Every refusal of the API: one body, and the status its ``code`` stands for.
 
-
-@app.exception_handler(LocalizedHTTPError)
-async def _localized_http_error_handler(request: Request, error: LocalizedHTTPError) -> JSONResponse:
-    message = translate(error.message_key, locale=_request_locale(request), **error.message_params)
-    return JSONResponse(
-        {"detail": message, "message": message, "message_key": error.message_key,
-         "message_params": error.message_params},
-        status_code=error.status_code,
-    )
-
-
-@app.exception_handler(InvalidLogicalPath)
-async def _invalid_logical_path_handler(
-    request: Request, error: InvalidLogicalPath
-) -> JSONResponse:
-    message = translate(error.message_key, locale=_request_locale(request))
+    ``code`` is the stable kind of refusal (the frontend keys on
+    ``reauth_required`` to trigger a step-up); ``detail`` is the message in the
+    request's language.
+    """
     return JSONResponse(
         {
-            "detail": message,
+            "detail": translate(
+                error.message_key, locale=_request_locale(request), **error.message_params),
+            "code": error.code,
             "message_key": error.message_key,
-            "message": message,
+            "message_params": error.message_params,
         },
-        status_code=422,
+        status_code=STATUS[error.code],
+        headers=error.headers,
     )
 
 

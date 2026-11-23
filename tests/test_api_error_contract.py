@@ -18,28 +18,22 @@ from tests.fixtures import FrostVaultTestCase, seed_job, seed_vault
 
 X = None  # no request body
 NO_GROUP = "00000000-0000-0000-0000-000000000000"
-REAUTH_REQUIRED = {"error": "reauth_required"}
 
 
-def plain(text: str) -> dict[str, Any]:
-    """An error that carries English text only."""
-    return {"detail": text}
+# The ``code`` of each status: the kind of refusal, which the status follows.
+CODES = {400: "bad_request", 401: "unauthenticated", 403: "forbidden", 404: "not_found",
+         409: "conflict", 422: "invalid", 429: "rate_limited", 500: "failed",
+         502: "upstream_failed", 503: "unavailable"}
 
 
-def localized(key: str, locale: str = "en", **params: Any) -> dict[str, Any]:
-    """An error whose text is a catalog message, in the locale of the request."""
-    text = translate(key, locale=locale, **params)
-    return {"detail": text, "message": text, "message_key": key, "message_params": params}
+def problem(key: str, locale: str = "en", **params: Any) -> dict[str, Any]:
+    """The catalog message of an error, in the locale of the request."""
+    return {"detail": translate(key, locale=locale, **params),
+            "message_key": key, "message_params": params}
 
 
-def creation(key: str) -> dict[str, Any]:
-    text = translate(key, locale="en")
-    return {"detail": text, "message": text, "message_key": key}
-
-
-def invalid_path(locale: str = "en") -> dict[str, Any]:
-    text = translate("api.invalid_path", locale=locale)
-    return {"detail": text, "message_key": "api.invalid_path", "message": text}
+# The one refusal whose code is not the plain one of its status.
+REAUTH_REQUIRED = {**problem("api.reauth_required"), "code": "reauth_required"}
 
 
 class ApiErrorCase(FrostVaultTestCase):
@@ -64,22 +58,26 @@ class ApiErrorCase(FrostVaultTestCase):
 
     def check(self, method: str, url: str, body: Any, status: int, payload: Any,
               **options: Any) -> Any:
-        """One request; its status and JSON body are the contract."""
+        """One request; its status and JSON body are the contract.
+
+        The body is the single error shape: ``payload`` plus the ``code`` of the status.
+        """
         response = self.client.request(method, url, json=body, **options)
         self.same(response, status, payload, f"{method} {url} {body or ''}".strip())
         return response
 
     def same(self, response: Any, status: int, payload: Any, label: str = "") -> None:
         with self.subTest(label):
-            self.assertEqual((response.status_code, response.json()), (status, payload))
+            expected = {"code": CODES[status], **payload}
+            self.assertEqual((response.status_code, response.json()), (status, expected))
 
 
 class SessionErrors(ApiErrorCase):
     def test_without_a_session(self) -> None:
         anonymous = self.http_client()
-        self.same(anonymous.get("/api/me"), 401, plain("Authentication required"))
+        self.same(anonymous.get("/api/me"), 401, problem("api.authentication_required"))
         anonymous.cookies.set(self.settings.session_cookie_name, "not-a-session")
-        self.same(anonymous.get("/api/me"), 401, plain("Invalid session"))
+        self.same(anonymous.get("/api/me"), 401, problem("api.invalid_session"))
 
     def test_reauthentication_required(self) -> None:
         self.stale_reauthentication()
@@ -97,32 +95,34 @@ class SessionErrors(ApiErrorCase):
             self.check(method, url, body, 403, REAUTH_REQUIRED)
 
     def test_vault_of_the_request(self) -> None:
-        self.check("GET", "/api/jobs?vault_id=99", X, 404, plain("Protected Vault not found"))
-        self.check("GET", "/api/jobs?vault_id=2", X, 404, plain("Protected Vault not found"))
-        self.check("POST", "/api/vaults/select", {"vault_id": 99}, 403, plain("Vault access denied"))
-        self.check("POST", "/api/vaults/select", {"vault_id": 2}, 403, plain("Vault access denied"))
+        missing = problem("api.protected_vault_not_found")
+        self.check("GET", "/api/jobs?vault_id=99", X, 404, missing)
+        self.check("GET", "/api/jobs?vault_id=2", X, 404, missing)
+        self.check("POST", "/api/vaults/select", {"vault_id": 99}, 404, missing)
+        self.check("POST", "/api/vaults/select", {"vault_id": 2}, 404, missing)
         with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=1")
-        self.check("GET", "/api/jobs", X, 403, plain("No vault exists yet"))
+        self.check("GET", "/api/jobs", X, 403, problem("api.no_vault"))
         me = self.client.get("/api/me")
         self.assertEqual((me.status_code, me.json()["vault"]), (200, None))
 
     def test_sign_in_and_locale(self) -> None:
-        self.check("PUT", "/api/locale", {"locale": "fr"}, 400, plain("Unsupported locale"))
-        self.check("GET", "/auth/oidc/login", X, 404, plain("OIDC login is not enabled"))
-        self.check("GET", "/auth/oidc/reauth", X, 404, plain("OIDC login is not enabled"))
+        self.check("PUT", "/api/locale", {"locale": "fr"}, 400, problem("api.unsupported_locale"))
+        self.check("GET", "/auth/oidc/login", X, 404, problem("api.sign_in.oidc_disabled"))
+        self.check("GET", "/auth/oidc/reauth", X, 404, problem("api.sign_in.oidc_disabled"))
         self.check("GET", "/auth/oidc/callback?state=s&code=c", X,
-                   400, plain("OIDC login failed: disabled"))
-        self.check("POST", "/api/reauth", {"password": "wrong"}, 401, plain("Incorrect password"))
+                   400, problem("api.sign_in.oidc_failed", reason="disabled"))
+        self.check("POST", "/api/reauth", {"password": "wrong"},
+                   401, problem("api.sign_in.incorrect_password"))
         response = self.http_client().post("/api/login", json={"password": "wrong"})
-        self.same(response, 401, plain("Incorrect emergency password"))
+        self.same(response, 401, problem("api.sign_in.incorrect_emergency_password"))
         outside = self.http_client(client=("203.0.113.9", 50000))
         response = outside.post("/api/login", json={"password": "wrong"})
-        self.same(response, 403, plain("The emergency password is not accepted from this network"))
+        self.same(response, 403, problem("api.sign_in.emergency_network"))
         self.client = outside
         self.sign_in(send_csrf_header=True)
         self.check("POST", "/api/reauth", {"password": "wrong"},
-                   403, plain("Password reauthentication is not allowed here"))
+                   403, problem("api.sign_in.reauth_not_allowed"))
 
     def test_too_many_attempts(self) -> None:
         anonymous = self.http_client()
@@ -133,7 +133,7 @@ class SessionErrors(ApiErrorCase):
                 if response.status_code == 429:
                     break
                 response = send()
-            self.same(response, 429, plain("Too many attempts; try again later"))
+            self.same(response, 429, problem("api.sign_in.too_many_attempts"))
             self.assertGreater(int(response.headers["Retry-After"]), 0)
 
 
@@ -142,75 +142,75 @@ class VaultManagementErrors(ApiErrorCase):
         stop = {"cloud_disposition": "keep", "confirmation": "Docs", "reason": "r"}
         deletion = {"confirmation": "Old", "reason": "r"}
         reconnect = {"volume_alias": "disk", "relative_path": "docs", "reason": "moved"}
+        vault_not_found = problem("api.vault_not_found")
         for method, url, body, status, payload in (
-            ("POST", "/api/vaults/99/pause", X, 404, plain("Vault not found")),
-            ("POST", "/api/vaults/99/resume", X, 404, plain("Vault not found")),
-            ("GET", "/api/vaults/99/bucket", X, 404, plain("Vault not found")),
-            ("GET", "/api/vaults/99/retention-lock", X, 404, plain("Vault not found")),
-            ("POST", "/api/vaults/99/bucket/retry", X, 404, plain("Vault not found")),
+            ("POST", "/api/vaults/99/pause", X, 404, vault_not_found),
+            ("POST", "/api/vaults/99/resume", X, 404, vault_not_found),
+            ("GET", "/api/vaults/99/bucket", X, 404, vault_not_found),
+            ("GET", "/api/vaults/99/retention-lock", X, 404, vault_not_found),
+            ("POST", "/api/vaults/99/bucket/retry", X, 404, vault_not_found),
             ("POST", "/api/vaults/99/creation/cancel", X,
-             404, localized("api.vault_creation_cancel.not_found")),
-            ("GET", "/api/vaults/99/stop-protection", X, 404, plain("Vault not found")),
-            ("POST", "/api/vaults/99/stop-protection", stop, 409, plain("Vault not found")),
+             404, problem("api.vault_creation_cancel.not_found")),
+            ("GET", "/api/vaults/99/stop-protection", X, 404, vault_not_found),
+            ("POST", "/api/vaults/99/stop-protection", stop, 404, vault_not_found),
             ("POST", "/api/vaults/99/stop-protection/cancel-deletion", X,
-             409, plain("Vault not found")),
+             404, vault_not_found),
             ("GET", "/api/vaults/99/vault-deletion", X,
-             404, localized("api.vault_deletion.not_found")),
+             404, problem("api.vault_deletion.not_found")),
             ("GET", "/api/vaults/99/vault-deletion/preview", X,
-             404, localized("api.vault_deletion.not_found")),
+             404, problem("api.vault_deletion.not_found")),
             ("POST", "/api/vaults/99/vault-deletion", deletion,
-             404, localized("api.vault_deletion.not_found")),
-            ("POST", "/api/vaults/99/vault-deletion/cancel", X,
-             409, localized("api.vault_deletion.refused")),
-            ("POST", "/api/vaults/99/vault-deletion/retry", X,
-             409, localized("api.vault_deletion.refused")),
+             404, problem("api.vault_deletion.not_found")),
+            ("POST", "/api/vaults/99/vault-deletion/cancel", X, 404, vault_not_found),
+            ("POST", "/api/vaults/99/vault-deletion/retry", X, 404, vault_not_found),
             ("GET", "/api/vaults/99/duplicate-cleanup", X,
-             404, localized("api.duplicate_cleanup.not_found")),
+             404, problem("api.duplicate_cleanup.not_found")),
             ("PUT", "/api/vaults/99/duplicate-cleanup", {"enabled": False},
-             422, localized("api.duplicate_cleanup.invalid")),
+             404, vault_not_found),
             ("GET", "/api/vaults/99/mirror-cleanup", X,
-             404, localized("api.mirror_cleanup.not_found")),
+             404, problem("api.mirror_cleanup.not_found")),
             ("PUT", "/api/vaults/99/mirror-cleanup", {"enabled": False},
-             422, localized("api.mirror_cleanup.invalid")),
+             404, vault_not_found),
             ("GET", "/api/vaults/99/minimum-storage", X,
-             404, localized("api.minimum_storage.not_found")),
-            ("GET", "/api/vaults/99/cloud-usage", X, 404, localized("api.cloud_usage.not_found")),
-            ("GET", "/api/vaults/99/billed-cost", X, 404, localized("api.billed_cost.not_found")),
-            ("POST", "/api/vaults/99/reconnect", reconnect, 404, plain("Vault not found")),
-            ("POST", "/api/upload/retry-failed?vault_id=99", X, 404, plain("Vault not found")),
+             404, problem("api.minimum_storage.not_found")),
+            ("GET", "/api/vaults/99/cloud-usage", X, 404, problem("api.cloud_usage.not_found")),
+            ("GET", "/api/vaults/99/billed-cost", X, 404, problem("api.billed_cost.not_found")),
+            ("POST", "/api/vaults/99/reconnect", reconnect,
+             404, problem("api.reconnect.not_found")),
+            ("POST", "/api/upload/retry-failed?vault_id=99", X, 404, vault_not_found),
             ("POST", "/api/general/cost-estimates/storage", {"vault_id": 99},
-             404, plain("Vault not found")),
+             404, vault_not_found),
         ):
             self.check(method, url, body, status, payload)
 
     def test_state_of_the_vault(self) -> None:
         stop = {"cloud_disposition": "keep", "confirmation": "Docs", "reason": "r"}
-        folders = localized("api.mirror_cleanup.folders")
+        folders = problem("api.mirror_cleanup.folders")
         for method, url, body, status, payload in (
             ("POST", "/api/vaults/2/pause", X,
-             409, plain("Only an operational Vault can be paused or resumed")),
+             409, problem("api.vault_pause.not_operational")),
             ("POST", "/api/vaults/1/creation/cancel", X,
-             409, localized("api.vault_creation_cancel.not_provisioning")),
+             409, problem("api.vault_creation_cancel.not_provisioning")),
             ("POST", "/api/vaults/1/stop-protection", {**stop, "confirmation": "wrong"},
-             422, plain("Type the exact Vault name to confirm")),
+             422, problem("api.confirmation_required")),
             ("POST", "/api/vaults/3/stop-protection", {**stop, "confirmation": "New"},
-             409, plain("The Vault's bucket is still being created")),
+             409, problem("api.stop_protection.bucket_creating")),
             ("POST", "/api/vaults/1/stop-protection/cancel-deletion", X,
-             409, plain("No pending cloud deletion")),
+             409, problem("api.stop_protection.no_pending_deletion")),
             ("GET", "/api/vaults/1/vault-deletion/preview", X,
-             409, localized("api.vault_deletion.not_tombstone")),
+             409, problem("api.vault_deletion.not_tombstone")),
             ("GET", "/api/vaults/2/vault-deletion/preview", X,
-             502, localized("api.vault_deletion.listing_failed")),
+             502, problem("api.vault_deletion.listing_failed")),
             ("POST", "/api/vaults/1/vault-deletion", {"confirmation": "Docs", "reason": "r"},
-             409, localized("api.vault_deletion.not_tombstone")),
+             409, problem("api.vault_deletion.not_tombstone")),
             ("POST", "/api/vaults/2/vault-deletion/cancel", X,
-             409, localized("api.vault_deletion.not_requested")),
+             409, problem("api.vault_deletion.not_requested")),
             ("POST", "/api/vaults/2/vault-deletion/retry", X,
-             409, localized("api.vault_deletion.not_failed")),
+             409, problem("api.vault_deletion.not_failed")),
             ("PUT", "/api/vaults/2/duplicate-cleanup", {"enabled": False},
-             409, localized("api.duplicate_cleanup.stopped")),
+             409, problem("api.duplicate_cleanup.stopped")),
             ("PUT", "/api/vaults/2/mirror-cleanup", {"enabled": False},
-             409, localized("api.mirror_cleanup.stopped")),
+             409, problem("api.mirror_cleanup.stopped")),
             ("PUT", "/api/vaults/1/mirror-cleanup", {"folders": ["../outside"]}, 422, folders),
             ("PUT", "/api/vaults/1/mirror-cleanup", {"folders": ["a*"]}, 422, folders),
         ):
@@ -224,27 +224,27 @@ class VaultManagementErrors(ApiErrorCase):
         with patch.object(vault_deletion, "preview", return_value=preview), \
                 patch("app.routes.vaults.s3_client"):
             self.check("POST", url, {"confirmation": "wrong", "reason": "r"},
-                       422, localized("api.vault_deletion.confirmation"))
+                       422, problem("api.vault_deletion.confirmation"))
             self.check("POST", url, {"confirmation": "Old", "reason": " "},
-                       409, localized("api.vault_deletion.reason"))
+                       409, problem("api.vault_deletion.reason"))
             self.check("POST", url, {"confirmation": "Old", "reason": "r", "delete_bucket": True},
-                       409, localized("api.vault_deletion.refused"))
+                       409, problem("api.vault_deletion.refused"))
             with self.database.connect() as connection:
                 seed_job(connection, vault_id=2, status="queued")
             self.check("POST", url, {"confirmation": "Old", "reason": "r"},
-                       409, localized("api.vault_deletion.active_jobs"))
+                       409, problem("api.vault_deletion.active_jobs"))
 
     def test_vault_creation(self) -> None:
         from app.services import vaults
         for error, status, payload in (
             (vaults.InvalidVaultName("Vault name is required"),
-             422, creation("api.vault_name_invalid")),
+             422, problem("api.vault_name_invalid")),
             (vaults.VaultProvisioningUnavailable("no region"),
-             503, creation("api.vault_provisioning_unavailable")),
-            (vaults.VaultAdoptionError("occupied"), 422, creation("api.vault_adoption.occupied")),
-            (vaults.VaultAdoptionError("made_up"), 422, creation("api.vault_adoption.failed")),
+             503, problem("api.vault_provisioning_unavailable")),
+            (vaults.VaultAdoptionError("occupied"), 422, problem("api.vault_adoption.occupied")),
+            (vaults.VaultAdoptionError("made_up"), 422, problem("api.vault_adoption.failed")),
             (vaults.VaultCreationError("Could not create the Vault"),
-             409, creation("ui.vault_create.failed")),
+             409, problem("ui.vault_create.failed")),
         ):
             with patch("app.routes.vaults.create_vault", side_effect=error):
                 self.check("POST", "/api/vaults", {"name": "Photos"}, status, payload)
@@ -252,62 +252,64 @@ class VaultManagementErrors(ApiErrorCase):
     def test_source_volume_folders(self) -> None:
         from app.services import source_directories
         self.check("GET", "/api/source-volumes/nope/browse", X,
-                   404, plain("Source Volume not found"))
-        for reason, status, text in (
-            ("volume_not_found", 404, "Source Volume not found"),
-            ("volume_unavailable", 409, "Source Volume is not available"),
-            ("invalid_volume", 422, "Source Volume is not usable for Vault roots"),
-            ("invalid_path", 422, "Source directory path is invalid"),
-            ("path_missing", 404, "Source directory does not exist"),
-            ("occupied", 409, "Occupied Vault roots cannot be browsed"),
-            ("made_up", 400, "Request could not be completed"),
+                   404, problem("api.source_directory.volume_not_found"))
+        for reason, status in (
+            ("volume_not_found", 404),
+            ("volume_unavailable", 409),
+            ("invalid_volume", 422),
+            ("invalid_path", 422),
+            ("path_missing", 404),
+            ("occupied", 409),
+            ("made_up", 400),
         ):
+            key = "failed" if reason == "made_up" else reason
             error = source_directories.SourceDirectoryError(reason, "internal text")
             with patch.object(source_directories, "browse_source_directories", side_effect=error):
                 self.check("GET", f"/api/source-volumes/disk/browse?path={reason}", X,
-                           status, plain(text))
+                           status, problem(f"api.source_directory.{key}"))
 
     def test_reconnect(self) -> None:
         from app.services import vault_relocation
         from app.services.runtime_status import scan_lock_for_vault
         body = {"volume_alias": "disk", "relative_path": "docs", "reason": "moved"}
-        for reason, status, text in (
-            ("not_found", 404, "Vault not found"),
-            ("reason_required", 422, "A reason between 3 and 500 characters is required"),
-            ("invalid_path", 422, "Reconnect destination is invalid"),
-            ("not_directory", 422, "Reconnect destination is not a directory"),
-            ("volume_unavailable", 409, "Destination Source Volume is unavailable"),
-            ("managed_not_own", 409, "Only this Vault's own managed folder can be reconnected"),
-            ("managed_missing", 409, "Managed folder missing"),
-            ("different_volume", 409, "Destination crosses a nested mount"),
-            ("symlink", 409, "Reconnect paths cannot contain symbolic links"),
-            ("inaccessible", 409, "Reconnect destination is inaccessible"),
-            ("overlap", 409, "Reconnect destination overlaps another Vault"),
-            ("active_jobs", 409, "Vault has active Jobs or a scan"),
-            ("identity_ambiguous", 409, "Source Volume identity is unavailable"),
-            ("identity_mismatch", 409, "Destination changed during reconnect"),
-            ("protection_stopped", 409, "Folder protection has stopped; reconnect is unavailable"),
-            ("made_up", 400, "Vault reconnect could not be completed"),
+        for reason, status in (
+            ("not_found", 404),
+            ("reason_required", 422),
+            ("invalid_path", 422),
+            ("not_directory", 422),
+            ("volume_unavailable", 409),
+            ("managed_not_own", 409),
+            ("managed_missing", 409),
+            ("different_volume", 409),
+            ("symlink", 409),
+            ("inaccessible", 409),
+            ("overlap", 409),
+            ("active_jobs", 409),
+            ("identity_ambiguous", 409),
+            ("identity_mismatch", 409),
+            ("protection_stopped", 409),
+            ("made_up", 400),
         ):
+            key = "failed" if reason == "made_up" else reason
             error = vault_relocation.VaultRelocationError(reason, "internal text")
             with patch.object(vault_relocation, "reconnect_vault_root", side_effect=error):
                 self.check("POST", f"/api/vaults/1/reconnect?case={reason}", body,
-                           status, plain(text))
+                           status, problem(f"api.reconnect.{key}"))
         params = {"path": "/sources/disk/docs", "identity": "99:100", "groups": "100",
                   "owner": "0:0", "mode": "0755"}
         for reason in ("volume_not_writable", "destination_not_writable"):
             error = vault_relocation.VaultRelocationError(reason, "internal text", params=params)
             with patch.object(vault_relocation, "reconnect_vault_root", side_effect=error):
                 self.check("POST", f"/api/vaults/1/reconnect?case={reason}", body,
-                           409, localized(f"api.reconnect_{reason}", **params))
+                           409, problem(f"api.reconnect_{reason}", **params))
         lock = scan_lock_for_vault(1)
         self.assertTrue(lock.acquire(blocking=False, operation="scan"))
         try:
             self.check("POST", "/api/vaults/1/reconnect", body,
-                       409, plain("Vault has active Jobs or a scan"))
+                       409, problem("api.reconnect.active_jobs"))
             self.check("POST", "/api/vaults/1/stop-protection",
                        {"cloud_disposition": "keep", "confirmation": "Docs", "reason": "r"},
-                       409, plain("Wait for the Vault scan to finish"))
+                       409, problem("api.stop_protection.scan_running"))
         finally:
             lock.release()
 
@@ -315,140 +317,144 @@ class VaultManagementErrors(ApiErrorCase):
 class BrowseErrors(ApiErrorCase):
     def test_files_jobs_and_notifications(self) -> None:
         self.check("GET", "/api/files/detail?path=missing.txt", X,
-                   404, plain("Vault File not found"))
-        self.check("GET", "/api/files/detail?path=../outside", X, 422, invalid_path())
+                   404, problem("api.file_not_found"))
+        self.check("GET", "/api/files/detail?path=../outside", X, 422, problem("api.invalid_path"))
         self.check("GET", "/api/files/jobs?path=missing.txt", X,
-                   404, plain("Vault File not found"))
-        self.check("GET", "/api/jobs/99999", X, 404, plain("Job not found in this Vault"))
+                   404, problem("api.file_not_found"))
+        self.check("GET", "/api/jobs/99999", X, 404, problem("api.job_not_found"))
         self.check("POST", "/api/notifications/read", {"notification_id": 99},
-                   404, plain("Notification not found"))
+                   404, problem("api.notification_not_found"))
         self.check("GET", "/api/catalog/events?subscribe=false", X,
-                   422, plain("Last-Event-ID must be an integer revision"),
+                   422, problem("api.last_event_id_invalid"),
                    headers={"Last-Event-ID": "not-a-number"})
 
     def test_recovery_kit_and_metadata_backups(self) -> None:
         from app.services import metadata_backups
         self.check("GET", "/api/recovery-kit/download", X,
-                   409, plain("Recovery Kit requires a valid ARCHIVE_MASTER_KEY"))
+                   409, problem("api.recovery_kit.master_key"))
         self.check("POST", "/api/recovery-kit/custody", {"fingerprint": "0" * 24},
-                   409, plain("Recovery Kit fingerprint changed; download the current kit"))
+                   409, problem("api.recovery_kit.fingerprint_changed"))
         self.check("GET", "/api/general/metadata-backups/download/99", X,
-                   404, plain("Backup run not found"))
-        with patch.object(metadata_backups, "run_metadata_backup",
-                          side_effect=metadata_backups.BackupError("pg_dump failed")):
+                   404, problem("api.metadata_backup.run_not_found"))
+        error = metadata_backups.BackupError("api.metadata_backup.pg_dump_failed")
+        with patch.object(metadata_backups, "run_metadata_backup", side_effect=error):
             self.check("POST", "/api/general/metadata-backups/run", {"reason": "before a change"},
-                       500, plain("pg_dump failed"))
+                       500, problem("api.metadata_backup.pg_dump_failed"))
 
 
 class StoragePlanErrors(ApiErrorCase):
     def test_storage_plan(self) -> None:
         url = "/api/vault/lifecycle"
         self.check("PUT", url, {"guided_profile": "made_up"},
-                   400, plain("Unknown storage plan: made_up"))
+                   400, problem("api.storage_plan.unknown", name="made_up"))
         self.check("PUT", url, {"profile": {"transitions": [
             {"days": 0, "storage_class": "MADE_UP"}]}},
-            400, plain("Unsupported storage class: MADE_UP"))
+            400, problem("api.storage_plan.invalid",
+                         errors="Unsupported storage class: MADE_UP"))
         self.check("PUT", url, {"profile": {"transitions": [
             {"days": 10, "storage_class": "DEEP_ARCHIVE"},
             {"days": 20, "storage_class": "GLACIER_IR"}]}},
-            400, plain("Unsupported transition from DEEP_ARCHIVE to GLACIER_IR"))
+            400, problem("api.storage_plan.invalid",
+                         errors="Unsupported transition from DEEP_ARCHIVE to GLACIER_IR"))
 
     def test_vault_move(self) -> None:
         move = {"vault_id": 1, "target_class": "DEEP_ARCHIVE"}
         self.check("POST", "/api/vault/move", {**move, "vault_id": 2},
-                   409, plain("Selected Vault changed; refresh the move preview"))
+                   409, problem("api.vault_move.vault_changed"))
         self.check("POST", "/api/vault/move", move,
-                   409, plain("Acknowledge minimum-duration and early-deletion charges"))
+                   409, problem("api.vault_move.acknowledge_costs"))
         self.check("POST", "/api/vault/move", {**move, "acknowledge_costs": True},
-                   409, plain("Choose a colder class on this Vault's saved Storage Plan"))
+                   409, problem("api.vault_move.choose_colder"))
         with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET lifecycle='reconnect_required' WHERE id=1")
         self.check("GET", "/api/vault/move", X,
-                   409, plain("Vault must be protected and reconnect must be complete"))
+                   409, problem("api.vault_move.not_ready"))
 
 
 class PolicyErrors(ApiErrorCase):
     def test_operation_policy(self) -> None:
         glob = {"field": "exclude_globs", "action": "remove", "glob": "*.tmp"}
-        gone = plain("The rule is no longer in the Vault policy")
+        gone = problem("api.policy.rule_gone")
         self.check("POST", "/api/vault/operation-policy/globs", glob, 409, gone)
         self.check("POST", "/api/vault/operation-policy/globs",
-                   {**glob, "action": "add", "glob": "  "}, 422, plain("glob must not be empty"))
+                   {**glob, "action": "add", "glob": "  "}, 422, problem("api.policy.glob_empty"))
         self.check("PUT", "/api/vault/operation-policy", {"exclude_globs": ["/absolute"]},
-                   422, plain("globs must be relative paths"))
+                   422, problem("api.policy.glob_absolute"))
         self.check("POST", "/api/vault/operation-policy/preview-globs",
                    {"paths": ["a.txt"], "include_globs": ["/absolute"], "exclude_globs": []},
-                   422, plain("globs must be relative paths"))
+                   422, problem("api.policy.glob_absolute"))
         exclude, include = "/api/vault/exclusions/exclude", "/api/vault/exclusions/include"
-        self.check("POST", exclude, {"path": "a*", "is_directory": True}, 422, plain(
-            "The name contains glob characters; edit the exclusion rules instead"))
-        self.check("POST", exclude, {"path": "a.txt", "is_directory": False}, 422, plain(
-            "A file at the Vault root cannot have its own rule; edit the exclusion rules instead"))
-        self.check("POST", include, {"path": "a*", "is_directory": True}, 409, plain(
-            "The item has no rule of its own; edit the exclusion rules instead"))
+        self.check("POST", exclude, {"path": "a*", "is_directory": True},
+                   422, problem("api.policy.glob_characters"))
+        self.check("POST", exclude, {"path": "a.txt", "is_directory": False},
+                   422, problem("api.policy.root_file_rule"))
+        self.check("POST", include, {"path": "a*", "is_directory": True},
+                   409, problem("api.policy.no_own_rule"))
         self.check("POST", include, {"path": "dir", "is_directory": True}, 409, gone)
 
     def test_vault_gone_while_saving_the_policy(self) -> None:
         from app.routes import policy
-        for reason, status, text in (
-            ("vault_quiesced", 409, "Vault is no longer protected"),
-            ("vault_not_found", 404, "Vault not found"),
+        from app.services import operation_policies
+        for reason, status, payload in (
+            ("vault_quiesced", 409, problem("api.vault_no_longer_protected")),
+            ("vault_not_found", 404, problem("api.vault_not_found")),
         ):
-            with patch.object(policy, "lock_vault_policy", side_effect=LookupError(reason)):
+            error = operation_policies.VaultUnavailable(reason)
+            with patch.object(policy, "lock_vault_policy", side_effect=error):
                 self.check("PUT", f"/api/vault/operation-policy?case={reason}", {},
-                           status, plain(text))
+                           status, payload)
 
     def test_disk_of_an_excluded_folder(self) -> None:
         from app.services import vault_exclusions
-        for reason, status, text in (
-            ("unavailable", 409, "The Vault folder is not available on disk"),
-            ("missing", 404, "Folder not found on disk"),
-            ("unreadable", 409, "Folder cannot be read"),
-            ("made_up", 409, "Folder cannot be read"),
+        for reason, status, payload in (
+            ("unavailable", 409, problem("api.disk_read.unavailable")),
+            ("missing", 404, problem("api.disk_read.missing")),
+            ("unreadable", 409, problem("api.disk_read.unreadable")),
+            ("made_up", 409, problem("api.disk_read.unreadable")),
         ):
             with patch.object(vault_exclusions, "directory_listing",
                               side_effect=vault_exclusions.DiskReadError(reason)):
                 self.check("GET", f"/api/vault/excluded-folders?directory={reason}", X,
-                           status, plain(text))
+                           status, payload)
 
 
 class JobErrors(ApiErrorCase):
     def test_admission(self) -> None:
-        nothing = plain("No files are eligible for this operation")
+        nothing = problem("api.admission.none_eligible")
         self.check("POST", "/api/upload", {"path": "a.txt"}, 409, nothing)
-        self.check("POST", "/api/upload", {"path": "../outside"}, 422, invalid_path())
+        self.check("POST", "/api/upload", {"path": "../outside"}, 422, problem("api.invalid_path"))
         self.check("POST", "/api/recover", {"path": "a.txt"}, 409, nothing)
         self.check("POST", "/api/recover/estimate", {"path": "a.txt"},
-                   404, plain("No recoverable Archive Version found"))
+                   404, problem("api.admission.no_recoverable_version"))
         self.check("POST", "/api/free-space", {"path": "a.txt"}, 409, nothing)
         self.check("POST", "/api/files/cloud-only-conflict/replace", {"path": "a.txt"},
-                   409, plain("No conflict with a cloud-only file at this path"))
+                   409, problem("api.admission.no_cloud_only_conflict"))
         self.check("GET", f"/api/upload/admissions/{NO_GROUP}", X,
-                   404, plain("Upload admission not found"))
+                   404, problem("api.upload_admission.not_found"))
         self.check("POST", "/api/upload/reconcile", {"path": "a.txt", "is_directory": True},
-                   422, plain("Reconciliation requires one stable Vault File"))
+                   422, problem("api.reconcile.single_file"))
         with patch("app.routes.jobs.vault_local_access") as access:
             access.return_value.local_operations_allowed = False
             self.check("POST", "/api/upload/reconcile", {"path": "a.txt"},
-                       503, plain("Expected Source Volume is unavailable"))
-        self.check("POST", "/api/recover/approve", {"group_id": NO_GROUP}, 409, plain(
-            "No high-impact restore is waiting for approval (it may have expired)"))
+                       503, problem("api.reconcile.volume_unavailable"))
+        self.check("POST", "/api/recover/approve", {"group_id": NO_GROUP},
+                   409, problem("api.recover_approval.none_waiting"))
 
     def test_admission_refusals(self) -> None:
         from app.services import job_admission
         for error, status, payload in (
-            (job_admission.InvalidAdmission("Choose Standard or Bulk"),
-             422, plain("Choose Standard or Bulk")),
-            (job_admission.AdmissionTargetNotFound("No recoverable Archive Version found"),
-             404, plain("No recoverable Archive Version found")),
-            (job_admission.AdmissionRefused("No files are eligible for this operation"),
-             409, plain("No files are eligible for this operation")),
-            (job_admission.LocalStorageUnavailable("Source Volume is unavailable"),
-             503, plain("Source Volume is unavailable")),
-            (job_admission.LocalizedAdmissionRefused("api.local_release_unconfirmed"),
-             409, localized("api.local_release_unconfirmed")),
-            (job_admission.LocalizedAdmissionRefused("api.local_release_blocked_path", path="a/b"),
-             409, localized("api.local_release_blocked_path", path="a/b")),
+            (job_admission.InvalidAdmission("api.admission.restore_tier"),
+             422, problem("api.admission.restore_tier")),
+            (job_admission.AdmissionTargetNotFound("api.admission.no_recoverable_version"),
+             404, problem("api.admission.no_recoverable_version")),
+            (job_admission.AdmissionRefused("api.admission.none_eligible"),
+             409, problem("api.admission.none_eligible")),
+            (job_admission.LocalStorageUnavailable("api.admission.local_storage_unavailable"),
+             503, problem("api.admission.local_storage_unavailable")),
+            (job_admission.AdmissionRefused("api.local_release_unconfirmed"),
+             409, problem("api.local_release_unconfirmed")),
+            (job_admission.AdmissionRefused("api.local_release_blocked_path", path="a/b"),
+             409, problem("api.local_release_blocked_path", path="a/b")),
         ):
             with patch.object(job_admission, "queue_jobs", side_effect=error):
                 self.check("POST", f"/api/free-space?case={type(error).__name__}",
@@ -456,47 +462,52 @@ class JobErrors(ApiErrorCase):
 
     def test_upload_reconciliation(self) -> None:
         from app.services import upload_provenance, upload_remediation
-        for reason in ("already_resolved", "vault_suspended", "identity_changed", "made_up"):
+        for reason, key in (("already_resolved", "already_resolved"),
+                            ("vault_suspended", "vault_suspended"),
+                            ("identity_changed", "identity_changed"),
+                            ("made_up", "proof_unavailable")):
             error = upload_provenance.UploadBlocked(reason)
             with patch.object(upload_remediation, "schedule_resume", side_effect=error), \
                     patch("app.routes.jobs.vault_local_access") as access:
                 access.return_value.local_operations_allowed = True
                 self.check("POST", f"/api/upload/reconcile?case={reason}", {"path": "a.txt"},
-                           409, plain(str(error)))
+                           409, problem(f"reconciliation.reason.{key}"))
 
     def test_folder_upload(self) -> None:
         folder = {"path": "folder", "is_directory": True, "request_id": NO_GROUP}
         self.assertEqual(self.client.post("/api/upload", json=folder).status_code, 202)
         self.check("POST", "/api/upload", {**folder, "path": "other"},
-                   409, plain("Upload request identifier already used for a different scope"))
+                   409, problem("api.upload_admission.request_reused"))
 
     def test_cancel(self) -> None:
         cancel = {"group_id": NO_GROUP, "action": "upload"}
         self.check("POST", "/api/jobs/cancel", {**cancel, "action": "made-up"},
-                   422, plain("Invalid operation"))
+                   422, problem("api.invalid_operation"))
         self.check("POST", "/api/jobs/cancel", cancel,
-                   409, plain("The operation is no longer running"))
+                   409, problem("api.operation_not_running"))
         self.check("POST", "/api/jobs/cancel", {**cancel, "action": "cloud-purge"},
-                   409, plain("Deletion has started or is no longer cancellable"))
+                   409, problem("api.cloud_deletion.not_cancellable"))
 
     def test_cloud_deletion(self) -> None:
-        only_cloud = plain("Only Cloud-only files can be deleted from the cloud")
+        only_cloud = problem("api.cloud_deletion.cloud_only_required")
         self.check("POST", "/api/cloud-deletion/preview", {"path": "a.txt"}, 409, only_cloud)
         self.check("POST", "/api/cloud-deletion/preview", {"path": "../outside"},
-                   409, plain("Select valid relative file paths"))
+                   409, problem("api.cloud_deletion.invalid_paths"))
         purge = {"path": "a.txt", "confirmation": "Docs", "reason": "r"}
         self.check("POST", "/api/cloud-purge", purge, 409, only_cloud)
         self.check("POST", "/api/cloud-purge", {**purge, "confirmation": "wrong"},
-                   422, plain("Type the exact Vault name to confirm"))
+                   422, problem("api.confirmation_required"))
         self.check("POST", "/api/cloud-purge", {
             "directories": ["folder"], "confirmation": "Docs", "reason": "r",
-            "fingerprint": "stale"}, 409, localized("api.cloud_purge_selection_changed"))
+            "fingerprint": "stale"}, 409, problem("api.cloud_purge_selection_changed"))
 
 
 class ItalianErrors(ApiErrorCase):
     def test_an_error_follows_the_locale_of_the_request(self) -> None:
         self.client.cookies.set("frostvault_locale", "it")
         self.check("GET", "/api/vaults/99/vault-deletion", X,
-                   404, localized("api.vault_deletion.not_found", locale="it"))
-        self.check("GET", "/api/files/detail?path=../outside", X, 422, invalid_path("it"))
-        self.check("GET", "/api/vaults/99/bucket", X, 404, plain("Vault not found"))
+                   404, problem("api.vault_deletion.not_found", locale="it"))
+        self.check("GET", "/api/files/detail?path=../outside", X,
+                   422, problem("api.invalid_path", locale="it"))
+        self.check("GET", "/api/vaults/99/bucket", X,
+                   404, problem("api.vault_not_found", locale="it"))
