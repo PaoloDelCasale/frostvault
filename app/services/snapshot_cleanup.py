@@ -57,7 +57,7 @@ from botocore.exceptions import ClientError
 from . import retention_lock, root_pins
 from . import upload_provenance as provenance
 from .database_retry import owned_connection
-from .s3_copy import _delete_s3_version
+from .s3 import delete_version, error_code
 from .upload_provenance import UploadBlocked
 
 
@@ -388,7 +388,7 @@ def _locked_until(w: Any, job: dict[str, Any], pinned: dict[str, Any], batch: di
         try:
             until = retention_lock.refused_until(
                 client, bucket=pinned["bucket"], key=object_key, version_id=version,
-                code=retention_lock.error_code(exc), now=now)
+                code=error_code(exc), now=now)
         except retention_lock.VersionGone:
             return None, False
         except retention_lock.RetentionUnreadable as unreadable:
@@ -467,7 +467,7 @@ def _delete_holding_fences(w: Any, connection: Any, job: dict[str, Any], pinned:
         raise UploadBlocked("ambiguous_receipt")
     if w.job_cancelled(job["id"]):
         raise w.OperationCancelled("Snapshot cleanup stopped")
-    _delete_s3_version(client, bucket=pinned["bucket"], object_key=object_key, version_id=version)
+    delete_version(client, bucket=pinned["bucket"], object_key=object_key, version_id=version)
     return True
 
 

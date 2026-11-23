@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from .s3_prefix_cleanup import cleanup_prefix_versions
-from ..storage import s3_client
+from .s3 import s3_client
 
 
 def main(argv: list[str] | None = None) -> int:

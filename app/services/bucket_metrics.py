@@ -54,7 +54,9 @@ from botocore.exceptions import (
 )
 from psycopg.types.json import Jsonb
 
+from . import s3
 from .cost_estimates import estimate_storage_month, list_prices
+from .s3 import ACCESS_DENIED_CODES, error_code
 from .storage_classes import normalize_storage_class
 from .vault_paths import KEY_LAYOUT_BUCKET_ROOT
 
@@ -75,10 +77,8 @@ HISTORY_DAYS = 30
 # Errors that mean the endpoint is unreachable, not that one Vault failed.
 CONNECTION_ERRORS = (EndpointConnectionError, ConnectTimeoutError, ReadTimeoutError)
 OUTCOMES = ("ok", "no_data", "access_denied", "failed")
-_ACCESS_DENIED = frozenset({
-    "AccessDenied", "AccessDeniedException", "UnauthorizedOperation",
-    "AuthorizationError", "NotAuthorized",
-})
+# CloudWatch names a refusal in more ways than S3 does.
+_ACCESS_DENIED = ACCESS_DENIED_CODES | {"UnauthorizedOperation", "AuthorizationError", "NotAuthorized"}
 _logger = logging.getLogger(__name__)
 
 Database = Callable[[], AbstractContextManager[Any]]
@@ -163,18 +163,11 @@ def _utc(moment: datetime) -> datetime:
 
 
 def _default_client(region: str) -> Any:
-    import os
-
     from botocore.config import Config
 
-    from ..config import is_placeholder
-    from .s3_clients import new_service_client
-
-    if (is_placeholder(os.getenv("AWS_ACCESS_KEY_ID", ""), "REPLACE_ME", "REPLACE-WITH-ACCESS-KEY")
-            or is_placeholder(os.getenv("AWS_SECRET_ACCESS_KEY", ""), "REPLACE_ME",
-                              "REPLACE-WITH-SECRET-KEY")):
+    if s3.credentials_are_placeholders():
         raise CloudWatchUnavailable("AWS credentials are not configured")
-    return new_service_client(
+    return s3.new_service_client(
         "cloudwatch", region=region,
         config=Config(connect_timeout=3, read_timeout=10,
                       retries={"mode": "standard", "total_max_attempts": 2}))
@@ -236,7 +229,7 @@ def read_bucket(client: Any, bucket: str, *, now: datetime,
 def classify_error(exc: BaseException) -> tuple[str, str]:
     """``(outcome, code)`` of a failed read: the AWS code, never the message."""
     if isinstance(exc, ClientError):
-        code = str((exc.response.get("Error") or {}).get("Code") or "ClientError")[:100]
+        code = (error_code(exc) or "ClientError")[:100]
         return ("access_denied" if code in _ACCESS_DENIED else "failed"), code
     return "failed", type(exc).__name__[:100]
 

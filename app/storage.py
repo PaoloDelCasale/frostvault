@@ -24,10 +24,9 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
-import boto3
 import psycopg
 from boto3.s3.transfer import TransferConfig
-from .services.s3_clients import s3_client as _cached_s3_client
+from .services import s3 as s3_service
 from .services.s3_upload import upload_file
 from .services.upload_snapshot import PartDigests, prepare_upload_snapshot, validated_s3_proof
 from watchfiles import Change
@@ -69,9 +68,9 @@ from .services import metrics as metrics_service
 # ``prepare_upload_snapshot``, ``validated_s3_proof`` and
 # ``_verification_version_head`` are not called here: the Upload execution
 # reads them from this module, which it receives as its worker adapter.
-from .services.s3_copy import (
-    _object_version_entries,
-    _verification_version_head,
+from .services.s3 import (
+    object_version_entries as _object_version_entries,
+    verification_version_head as _verification_version_head,
     restore_header_state,
     storage_class_requires_restore,
 )
@@ -522,21 +521,8 @@ class _ThrottledByteProgress:
 
 def s3_client(*, preflight: bool = False, non_idempotent: bool = False,
               region: str | None = None):
-    """The shared client for AWS_DEFAULT_REGION, or for ``region`` (System Bucket)."""
-    access_key = os.getenv("AWS_ACCESS_KEY_ID", "")
-    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "")
-    if is_placeholder(
-        access_key,
-        "REPLACE_ME",
-        "REPLACE-WITH-ACCESS-KEY",
-    ) or is_placeholder(
-        secret_key,
-        "REPLACE_ME",
-        "REPLACE-WITH-SECRET-KEY",
-    ):
-        raise RuntimeError("AWS credentials are not configured in the .env file")
-    return _cached_s3_client(region=region or settings.aws_region, preflight=preflight,
-                             non_idempotent=non_idempotent, factory=boto3.client)
+    """The shared client of the S3 module, under the name the worker adapter exposes."""
+    return s3_service.s3_client(preflight=preflight, non_idempotent=non_idempotent, region=region)
 
 
 def validate_cloud_vault(vault: dict[str, Any], *, notify: bool = True) -> None:

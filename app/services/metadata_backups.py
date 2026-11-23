@@ -161,10 +161,10 @@ def default_object_store(
     if not off_host_backup_configured(cfg):
         return None
     try:
-        from ..storage import s3_client
+        from . import s3
 
         bucket = system_bucket.ensure(cfg)
-        return Boto3ObjectStore(s3_client(region=bucket.region), bucket.name)
+        return Boto3ObjectStore(s3.s3_client(region=bucket.region), bucket.name)
     except system_bucket.SystemBucketUnavailable as exc:
         raise ObjectStoreUnavailableError(str(exc)) from None
     except Exception:  # noqa: BLE001 - normalize an external boundary
@@ -463,10 +463,10 @@ def _safe_error_code(exc: BaseException) -> str:
     """The provider's error code only, never its message (#742)."""
     from botocore.exceptions import ClientError
 
-    from .bucket_provisioning import error_code
+    from .s3 import safe_error_code
 
     if isinstance(exc, ClientError):
-        return error_code(exc)
+        return safe_error_code(exc)
     return type(exc).__name__
 
 

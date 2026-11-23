@@ -21,7 +21,8 @@ from urllib.parse import urlsplit, urlunsplit
 from . import root_pins
 from .database_retry import owned_connection, retry_database_unit
 from .upload_snapshot import MODES, UploadSnapshot
-from .s3_copy import ProviderResponseError, _object_version_entries
+from . import s3
+from .s3 import ProviderResponseError, object_version_entries
 from .vault_paths import expected_cloud_key, object_prefix
 
 TOKEN_KEY = "frostvault-upload"
@@ -135,14 +136,10 @@ def presumed_empty_inventory() -> dict[str, list[str]]:
 
 
 def inventory(client: Any, bucket: str, key: str) -> dict[str, list[str]]:
-    versions, markers = _guarded_listing(lambda: _object_version_entries(client, bucket=bucket, object_key=key), bucket)
+    versions, markers = _guarded_listing(lambda: object_version_entries(client, bucket=bucket, object_key=key), bucket)
     return {"versions": sorted(versions), "markers": sorted(markers)}
 
 
-_CREDENTIAL_CODES = frozenset({
-    "InvalidAccessKeyId", "SignatureDoesNotMatch", "ExpiredToken", "InvalidToken",
-    "TokenRefreshRequired", "InvalidClientTokenId", "UnrecognizedClientException",
-})
 # Which per-file reason names the S3 action the provider refused. The operation is
 # the botocore operation name carried by the ClientError, never the message text.
 _OPERATION_REASONS = {
@@ -211,11 +208,11 @@ def _is_provider_failure(error: BaseException) -> bool:
 
 def _bucket_still_ready(bucket: str) -> bool:
     """Fresh, bounded readiness probe of the bucket (the gate's own check)."""
-    from .. import storage
+    from ..config import settings
     from . import s3_preflight
     try:
         return bool(s3_preflight.check_bucket_readiness(
-            bucket, region=storage.settings.aws_region, client=storage.s3_client(preflight=True)).ok)
+            bucket, region=settings.aws_region, client=s3.s3_client(preflight=True)).ok)
     except Exception:
         return False
 
@@ -230,8 +227,8 @@ def _refusals(error: BaseException) -> list[Any]:
     from .cloud_preflight_gate import COLD_STORAGE_CODES
     from botocore.exceptions import ClientError
     return [item for item in exception_chain(error) if isinstance(item, ClientError)
-            and item.response.get("Error", {}).get("Code") not in COLD_STORAGE_CODES
-            and (item.response.get("Error", {}).get("Code") in {"AccessDenied", "AccessDeniedException"}
+            and s3.error_code(item) not in COLD_STORAGE_CODES
+            and (s3.error_code(item) in s3.ACCESS_DENIED_CODES
                  or item.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 403)]
 
 
@@ -246,7 +243,7 @@ def permission_denied_reason(error: BaseException, bucket: str, *, default: str 
     refusals = _refusals(error)
     if not refusals:
         return None
-    if any(item.response.get("Error", {}).get("Code") in _CREDENTIAL_CODES for item in refusals):
+    if any(s3.error_code(item) in s3.CREDENTIAL_CODES for item in refusals):
         return None
     reason = next((_OPERATION_REASONS[item.operation_name] for item in refusals
                    if item.operation_name in _OPERATION_REASONS), default)
@@ -1085,7 +1082,7 @@ def _abort_owned_multiparts(client: Any, pinned: dict[str, Any], found: list[str
             guarded(lambda: client.abort_multipart_upload(Bucket=pinned["bucket"], Key=pinned["key"], UploadId=upload_id),
                     pinned["bucket"], default="abort_permission_denied")
         except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") != "NoSuchUpload":
+            if s3.error_code(exc) != "NoSuchUpload":
                 raise
         if on_aborted is not None:
             on_aborted(upload_id)
@@ -1132,11 +1129,11 @@ def _own_write_arrived(client: Any, attempt: UploadAttempt, saved: dict[str, Any
         raise UploadBlocked('ambiguous_receipt')
     pinned = attempt.target
     check_active()
-    from .upload_snapshot import validated_s3_proof, UploadProofMismatch, unsupported_checksum_api
+    from .upload_snapshot import validated_s3_proof, UploadProofMismatch
     try:
         head = client.head_object(Bucket=pinned['bucket'], Key=pinned['key'], VersionId=version, ChecksumMode='ENABLED')
     except Exception as exc:
-        if unsupported_checksum_api(exc):
+        if s3.checksum_mode_unsupported(exc):
             return False  # Capability absence is not independent attribution.
         raise
     if str(head.get('VersionId') or '') != version or head.get('DeleteMarker'):

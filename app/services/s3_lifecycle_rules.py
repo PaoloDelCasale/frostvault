@@ -17,6 +17,7 @@ from botocore.exceptions import ClientError
 
 from .bucket_provisioning import TRANSITION_MINIMUM_OBJECT_SIZE
 from .lifecycle_profiles import LifecycleProfile
+from .s3 import error_code
 
 RULE_ID_PREFIX = "frostvault-plan-"
 LEGACY_RULE_ID_PREFIX = "psa-policy-"
@@ -135,7 +136,7 @@ def _load_existing_rules(client: Any, bucket: str) -> list[dict[str, Any]]:
     try:
         response = client.get_bucket_lifecycle_configuration(Bucket=bucket)
     except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "NoSuchLifecycleConfiguration":
+        if error_code(exc) == "NoSuchLifecycleConfiguration":
             return []
         raise
     return list(response.get("Rules", []))

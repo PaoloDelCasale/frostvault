@@ -232,14 +232,14 @@ class UploadCleanupTests(fixtures.UploadWorkerCase):
     def test_a_new_job_resumes_after_the_original_job_was_collected(self) -> None:
         from app.services import snapshot_cleanup
         fail = []
-        original_delete = snapshot_cleanup._delete_s3_version
+        original_delete = snapshot_cleanup.delete_version
 
         def flaky_delete(client, **kwargs):
             if not fail:
                 fail.append(True)
                 raise ConnectionError("connection reset during DeleteObject")
             return original_delete(client, **kwargs)
-        self.enterContext(fixtures.patch.object(snapshot_cleanup, "_delete_s3_version",
+        self.enterContext(fixtures.patch.object(snapshot_cleanup, "delete_version",
                                                 side_effect=flaky_delete))
         job_id, old = self.replace_with_b()
         self.assertNotEqual(self.job(job_id)["status"], "completed")
@@ -308,7 +308,7 @@ class UploadCleanupTests(fixtures.UploadWorkerCase):
     def test_schema_removes_a_version_only_with_its_completed_proof(self) -> None:
         from app.services import snapshot_cleanup
         self.enterContext(fixtures.patch.object(
-            snapshot_cleanup, "_delete_s3_version", side_effect=ConnectionError("reset")))
+            snapshot_cleanup, "delete_version", side_effect=ConnectionError("reset")))
         _, old = self.replace_with_b()
         current = self.file_row()["current_version_id"]
         batch = self.rows("SELECT * FROM cleanup_batches")[0]

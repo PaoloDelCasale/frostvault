@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from app.services.upload_provenance import ProvenAbsent, UploadBlocked, TOKEN_KEY, inventory, provider_identity, reconcile, receipt
 from app.services.upload_snapshot import prepare_upload_snapshot
 from app.services.s3_upload import _UploadClient
-from app.services.s3_copy import _object_version_entries
+from app.services.s3 import object_version_entries
 from tests.upload_provenance_provider import VersionedProvider, provider_attempt
 
 
@@ -296,7 +296,7 @@ class ProvenanceProviderTests(unittest.TestCase):
         for page, reason in cases:
             with self.subTest(page=page), patch.object(self.provider, "list_object_versions", return_value=page):
                 with self.assertRaisesRegex(RuntimeError, reason):
-                    _object_version_entries(self.provider, bucket="bucket", object_key="key")
+                    object_version_entries(self.provider, bucket="bucket", object_key="key")
 
     def test_actual_botocore_mutator_failures_do_not_retry_hidden_put_or_completion(self):
         read = boto3.client("s3", region_name="us-east-1", aws_access_key_id="test", aws_secret_access_key="test", config=Config(retries={"mode":"standard","total_max_attempts":4}))

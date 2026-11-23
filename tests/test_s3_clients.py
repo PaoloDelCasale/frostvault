@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from app.storage import s3_client
-from app.services.s3_clients import shutdown_s3_clients
+from app.services.s3 import shutdown_s3_clients
 
 
 class S3ClientReuseTests(unittest.TestCase):
@@ -77,7 +77,7 @@ class S3ClientReuseTests(unittest.TestCase):
                     os.environ["AWS_ENDPOINT_URL"] = endpoint
 
     def test_configuration_churn_is_bounded_without_closing_a_client_still_in_use(self):
-        with patch("app.storage.boto3.client") as factory:
+        with patch("app.services.s3.client_factory") as factory:
             from unittest.mock import Mock
             factory.side_effect = lambda *a, **kw: Mock()
             first = s3_client()
@@ -102,7 +102,7 @@ class S3ClientReuseTests(unittest.TestCase):
                 return client
             finally:
                 in_factory.release()
-        with patch("app.storage.boto3.client", side_effect=create):
+        with patch("app.services.s3.client_factory", side_effect=create):
             with ThreadPoolExecutor(max_workers=8) as pool:
                 clients = list(pool.map(lambda _: s3_client(), range(32)))
             self.assertEqual(len(created), 1)
@@ -148,7 +148,7 @@ class S3ClientReuseTests(unittest.TestCase):
                 if not release.wait(5):
                     raise AssertionError("factory was never released")
             return Mock()
-        with patch("app.storage.boto3.client", side_effect=create):
+        with patch("app.services.s3.client_factory", side_effect=create):
             with ThreadPoolExecutor(max_workers=1) as pool:
                 held = pool.submit(s3_client, preflight=True)
                 self.assertTrue(creating.wait(2))

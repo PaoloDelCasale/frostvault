@@ -13,6 +13,7 @@ from typing import Any, Callable
 from botocore.exceptions import ClientError
 from ..i18n import translate
 from . import notifications
+from .s3 import ACCESS_DENIED_CODES, CREDENTIAL_CODES, error_code
 from .s3_preflight import BUCKET_NOT_FOUND_KEY
 from .database_retry import exception_chain, owned_connection, retry_database_unit
 
@@ -119,16 +120,16 @@ def dispatch_ready(state: dict[str, Any], now: datetime) -> bool:
 COLD_STORAGE_CODES = frozenset({'InvalidObjectState'})
 
 
+# A structured refusal of the identity: its permissions or its credentials.
+_READINESS_CODES = ACCESS_DENIED_CODES | CREDENTIAL_CODES
+
+
 def is_readiness_error(error: BaseException) -> bool:
     """Only structured provider auth failures, including SDK/service wrappers."""
     return any(isinstance(item, ClientError)
-               and item.response.get('Error', {}).get('Code') not in COLD_STORAGE_CODES
+               and error_code(item) not in COLD_STORAGE_CODES
                and (
-        item.response.get('Error', {}).get('Code') in {
-            'InvalidAccessKeyId', 'SignatureDoesNotMatch', 'AccessDenied',
-            'AccessDeniedException', 'ExpiredToken', 'InvalidToken', 'TokenRefreshRequired',
-            'InvalidClientTokenId', 'UnrecognizedClientException',
-        } or item.response.get('ResponseMetadata', {}).get('HTTPStatusCode') in {401, 403}
+        error_code(item) in _READINESS_CODES or item.response.get('ResponseMetadata', {}).get('HTTPStatusCode') in {401, 403}
     ) for item in exception_chain(error))
 
 

@@ -7,6 +7,7 @@ from botocore.exceptions import (
 )
 from botocore.parsers import ResponseParserError
 from .database_retry import exception_chain, is_retryable_transaction_error
+from .s3 import TRANSIENT_CODES, error_code
 
 
 UPLOAD_RETRY_BASE_SECONDS = 2
@@ -62,11 +63,6 @@ _TRANSIENT_UPLOAD_FAILURE_MARKERS = (
 # and server-side faults. Matching is structural (HTTP status / error code), never
 # on message text, so a permission or content problem cannot be mistaken for one.
 _TRANSIENT_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
-_TRANSIENT_ERROR_CODES = frozenset({
-    "SlowDown", "Throttling", "ThrottlingException", "ThrottledException", "TooManyRequestsException",
-    "RequestLimitExceeded", "RequestThrottled", "BandwidthLimitExceeded", "RequestTimeout",
-    "RequestTimeoutException", "InternalError", "ServiceUnavailable",
-})
 
 
 def is_provider_transient(error: BaseException) -> bool:
@@ -80,8 +76,7 @@ def is_provider_transient(error: BaseException) -> bool:
     for item in exception_chain(error):
         if isinstance(item, ClientError):
             status = item.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-            code = item.response.get("Error", {}).get("Code")
-            if status in _TRANSIENT_HTTP_STATUSES or code in _TRANSIENT_ERROR_CODES:
+            if status in _TRANSIENT_HTTP_STATUSES or error_code(item) in TRANSIENT_CODES:
                 return True
         elif isinstance(item, (BotoConnectionError, HTTPClientError, IncompleteReadError, ResponseParserError,
                                ConnectionError, TimeoutError)):
