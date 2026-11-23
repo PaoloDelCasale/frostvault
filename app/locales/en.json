@@ -32,7 +32,6 @@
   "activity.cancel_pending_done_other": "{count} uploads cancelled",
   "move.title": "Move the entire Vault now",
   "move.help": "Only verified current copies move to a colder class on the saved Storage Plan. Equal or colder files and files with pending work are skipped. Glacier sources require an explicit recovery of their exact version; this action never requests a recovery or warms content.",
-  "move.vault_changed": "The selected Vault changed. Refresh these settings before moving content.",
   "move.target": "Move eligible files to",
   "move.estimate_monthly": "{monthly}/month",
   "move.estimate_scope_one": "storage for {count} file ({size})",

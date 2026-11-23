@@ -42,14 +42,14 @@ class EssentialInterfaceTests(unittest.TestCase):
 
     def test_all_vault_scoped_contracts_accept_explicit_identity(self):
         paths = main.app.openapi()["paths"]
-        for path in ["/api/files", "/api/files/detail", "/api/files/versions", "/api/recover", "/api/free-space", "/api/cloud-purge", "/api/jobs/cancel", "/api/vaults/{vault_id}/operation-policy", "/api/vaults/{vault_id}/lifecycle", "/api/vaults/{vault_id}/move"]:
+        for path in ["/api/vaults/{vault_id}/files", "/api/vaults/{vault_id}/files/detail", "/api/vaults/{vault_id}/stats", "/api/files/versions", "/api/recover", "/api/free-space", "/api/cloud-purge", "/api/jobs/cancel", "/api/vaults/{vault_id}/operation-policy", "/api/vaults/{vault_id}/lifecycle", "/api/vaults/{vault_id}/move"]:
             for method, operation in paths[path].items():
                 if method in {"get", "post", "put"}:
                     self.assertIn("vault_id", [p["name"] for p in operation.get("parameters", [])], (path, method))
 
     def test_new_global_endpoints_require_owner_and_retired_admin_apis_are_gone(self):
         client = TestClient(main.app)
-        for path in ["/api/files/search", "/api/files/detail?path=photo.jpg", "/api/general", "/api/problems"]:
+        for path in ["/api/files/search", "/api/vaults/1/files/detail?path=photo.jpg", "/api/general", "/api/problems"]:
             self.assertEqual(client.get(path).status_code, 401, path)
         for path in main.app.openapi()["paths"]:
             self.assertFalse(path.startswith("/api/admin/"), path)

@@ -22,7 +22,8 @@ function setup(ui: React.ReactElement, stats = STATS, paused = false) {
   configureApiClient({ fetch: vi.fn<ApiFetch>(async (input) => {
     const url = String(input);
     if (url.startsWith("/api/i18n/catalog")) return jsonResponse({ locale: "en", locales: ["en", "it"], messages });
-    if (url.startsWith("/api/stats")) return jsonResponse(stats[new URL(url, "http://x").searchParams.get("vault_id") ?? ""]);
+    const statsOf = /^\/api\/vaults\/(\d+)\/stats$/.exec(url);
+    if (statsOf) return jsonResponse(stats[statsOf[1]]);
     if (url.startsWith("/api/general/vaults")) return jsonResponse({ items: Object.keys(stats).map((id) => ({
       id: Number(id), uuid: `v${id}`, name: `Vault ${id}`, paused: paused && id === "1", lifecycle: "active", source_root: `/sources/v${id}`, s3_prefix: `v${id}` })) });
     return jsonResponse({}, 404);

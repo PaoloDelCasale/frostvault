@@ -27,9 +27,9 @@ from .deps import (
     _actor,
     _request_locale,
     current_user,
-    current_vault,
     normalize_directory,
     require_recent_reauth,
+    vault_in_path,
 )
 
 
@@ -54,7 +54,7 @@ def _protection_observation(connection: Any, vault: dict[str, Any], access: Any)
 
 
 @router.get(
-    "/api/files",
+    "/api/vaults/{vault_id}/files",
     response_model=response_model("FilesResponse"),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
@@ -64,9 +64,9 @@ def list_files(
     directory: str = "",
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=10, le=500),
-    vault: dict[str, Any] = Depends(current_vault),
+    vault: dict[str, Any] = Depends(vault_in_path),
 ):
-    """List Vault Files for the authenticated Owner's selected Vault."""
+    """List the Vault Files of the Vault in the path."""
     directory = normalize_directory(directory, api=True)
     access = vault_local_access(vault.get("source_root") or "")
     with db() as connection:
@@ -94,8 +94,8 @@ def list_files(
     }
 
 
-@router.get("/api/files/detail", response_model=response_model("ArchiveListItem"), responses=LOGICAL_PATH_ERROR_RESPONSES)
-def file_detail(path: str, vault: dict[str, Any] = Depends(current_vault)):
+@router.get("/api/vaults/{vault_id}/files/detail", response_model=response_model("ArchiveListItem"), responses=LOGICAL_PATH_ERROR_RESPONSES)
+def file_detail(path: str, vault: dict[str, Any] = Depends(vault_in_path)):
     path = safe_relative_path(path).as_posix()
     with db() as connection:
         access = vault_local_access(vault.get("source_root") or "")
@@ -173,8 +173,8 @@ def _problem_resolving(item: dict[str, Any]) -> str | None:
     return "scan" if scanning else None
 
 
-@router.get("/api/stats", response_model=response_model("StatsResponse"))
-def stats(vault: dict[str, Any] = Depends(current_vault), request: Request = None):  # type: ignore[assignment]
+@router.get("/api/vaults/{vault_id}/stats", response_model=response_model("StatsResponse"))
+def stats(vault: dict[str, Any] = Depends(vault_in_path), request: Request = None):  # type: ignore[assignment]
     source_root = vault.get("source_root") or ""
     # Reconcile Source Volume identity before anything can preflight or walk the
     # configured Vault tree. Catalog summaries remain available when local work

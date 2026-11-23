@@ -9,7 +9,7 @@ describe("immutable Vault request scope", () => {
     configureApiClient({ fetch: vi.fn(async (url) => { calls.push(String(url)); return json({}); }) });
     const first = vaultApi(1), second = vaultApi(2);
     await Promise.all([first.details("same.jpg"), second.details("same.jpg"), second.action("free-space", { path: "same.jpg" })]);
-    expect(calls).toEqual(["/api/files/detail?path=same.jpg&vault_id=1", "/api/files/detail?path=same.jpg&vault_id=2", "/api/free-space?vault_id=2"]);
+    expect(calls).toEqual(["/api/vaults/1/files/detail?path=same.jpg", "/api/vaults/2/files/detail?path=same.jpg", "/api/free-space?vault_id=2"]);
     expect(() => vaultApi(0)).toThrow();
   });
   it("retries a destructive request after reauth with the original identity and CSRF, never Session selection", async () => {

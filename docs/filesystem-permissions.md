@@ -369,7 +369,7 @@ readiness check, the Vaults whose last cloud listing failed are scanned.
 See [ADR-0027](adr/0027-watcher-start-is-paired-with-a-scan.md).
 
 There is no dedicated diagnostics banner or background tree inspection.
-`/api/stats` returns catalog aggregates and a minimal `source_volume` safety
+`/api/vaults/{vault_id}/stats` returns catalog aggregates and a minimal `source_volume` safety
 state; it never resolves or walks an identity-unsafe root. The Source Volume
 inventory API remains available for mount identity and access information.
 

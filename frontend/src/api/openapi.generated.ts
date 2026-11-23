@@ -656,7 +656,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/files": {
+    "/api/vaults/{vault_id}/files": {
         parameters: {
             query?: never;
             header?: never;
@@ -665,9 +665,9 @@ export interface paths {
         };
         /**
          * List Files
-         * @description List Vault Files for the authenticated Owner's selected Vault.
+         * @description List the Vault Files of the Vault in the path.
          */
-        get: operations["list_files_api_files_get"];
+        get: operations["list_files_api_vaults__vault_id__files_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -676,7 +676,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/files/detail": {
+    "/api/vaults/{vault_id}/files/detail": {
         parameters: {
             query?: never;
             header?: never;
@@ -684,7 +684,7 @@ export interface paths {
             cookie?: never;
         };
         /** File Detail */
-        get: operations["file_detail_api_files_detail_get"];
+        get: operations["file_detail_api_vaults__vault_id__files_detail_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -764,7 +764,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/stats": {
+    "/api/vaults/{vault_id}/stats": {
         parameters: {
             query?: never;
             header?: never;
@@ -772,7 +772,7 @@ export interface paths {
             cookie?: never;
         };
         /** Stats */
-        get: operations["stats_api_stats_get"];
+        get: operations["stats_api_vaults__vault_id__stats_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4898,7 +4898,7 @@ export interface operations {
             };
         };
     };
-    list_files_api_files_get: {
+    list_files_api_vaults__vault_id__files_get: {
         parameters: {
             query?: {
                 q?: string;
@@ -4906,10 +4906,11 @@ export interface operations {
                 directory?: string;
                 page?: number;
                 page_size?: number;
-                vault_id?: number | null;
             };
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4934,14 +4935,15 @@ export interface operations {
             };
         };
     };
-    file_detail_api_files_detail_get: {
+    file_detail_api_vaults__vault_id__files_detail_get: {
         parameters: {
             query: {
                 path: string;
-                vault_id?: number | null;
             };
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -5071,13 +5073,13 @@ export interface operations {
             };
         };
     };
-    stats_api_stats_get: {
+    stats_api_vaults__vault_id__stats_get: {
         parameters: {
-            query?: {
-                vault_id?: number | null;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                vault_id: number;
+            };
             cookie?: never;
         };
         requestBody?: never;

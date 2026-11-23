@@ -23,10 +23,10 @@ describe("catalog event request budget", () => {
     configureApiClient({ fetch: vi.fn(async (input) => {
       const url = String(input); calls.push(url);
       if (url.startsWith("/api/me")) return jsonResponse({ id: 1, display_name: "Owner", csrf_token: "csrf", auth_method: "local", locale: "en", locales: ["en", "it"], vault: { id: 1, name: "Photos" } });
+      if (url.startsWith("/api/vaults/1/files")) return jsonResponse({ items: [], total: 0 });
       if (url.startsWith("/api/vaults")) return jsonResponse({ items: [{ id: 1, name: "Photos", uuid: "photos" }] });
       if (url.startsWith("/api/i18n/catalog")) return jsonResponse({ locale: "en", locales: ["en", "it"], messages: loadCatalog() });
       if (url.startsWith("/api/general")) return jsonResponse({ vaults: [], open_problem_count: 0, month: "2026-11", monthly_estimate: 0, previous_month_delta: null, currency: "EUR" });
-      if (url.startsWith("/api/files")) return jsonResponse({ items: [], total: 0 });
       if (url.startsWith("/api/notifications")) return jsonResponse({ items: [], unread_count: 0 });
       return jsonResponse({ groups: [] });
     }) });
@@ -44,7 +44,7 @@ describe("catalog event request budget", () => {
     for (let revision = 1; revision <= 600; revision++) {
       await act(async () => { emit(revision); await vi.advanceTimersByTimeAsync(100); });
     }
-    const endpoints = ["/api/general", "/api/notifications", "/api/files?"];
+    const endpoints = ["/api/general", "/api/notifications", "/api/vaults/1/files?"];
     for (const endpoint of endpoints) {
       const count = calls.filter((url) => url.startsWith(endpoint)).length;
       expect.soft(count, `${endpoint} requests in 60s (polling included)`).toBeLessThanOrEqual(30);

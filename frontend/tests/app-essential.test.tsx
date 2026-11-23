@@ -30,20 +30,20 @@ describe("Owner app routing and shell (#512)", () => {
       if (/^\/api\/vaults\/\d+\/cloud-usage/.test(url)) return jsonResponse(defaultCloudUsage);
       if (/^\/api\/vaults\/\d+\/billed-cost/.test(url)) return jsonResponse(defaultVaultBilledCost);
       if (url.startsWith("/api/billing-export")) return jsonResponse(defaultBillingExport);
+      if (/^\/api\/vaults\/\d+\/stats$/.test(url)) {
+        const second = url.startsWith("/api/vaults/2/");
+        if (adopting && !second) return jsonResponse({ states: { unconfirmed: 10, excluded: 1 }, protection_state: "unconfirmed", storage: { local_bytes: 2048, cloud_bytes: 1024 }, active_jobs: 0, last_known_states: { protected: 6, pending: 4, excluded: 1 }, runtime: {}, source_volume: {}, delete_enabled: true });
+        return jsonResponse({ states: second ? { protected: 5, ...(stopped ? { stopped } : {}) } : { protected: 3, pending: 2 }, protection_state: second ? (stopped ? "stopped" : "protected") : "pending", protection_suspended: false, storage: { local_bytes: 2048, cloud_bytes: 1024 }, active_jobs: 0, last_known_states: {}, runtime: {}, source_volume: {}, delete_enabled: true });
+      }
+      if (/^\/api\/(vaults\/\d+\/)?files/.test(url)) return jsonResponse({ items: [{ type: "file", name: "first.jpg", path: "first.jpg", state: "protected" }], total: 1 });
       if (url.startsWith("/api/vaults")) return jsonResponse({ items: vaults });
       if (url.startsWith("/api/i18n/catalog")) return jsonResponse({ locale: "en", locales: ["en","it"], messages: loadCatalog() });
       if (url.startsWith("/api/upload-activity")) {
         const idle = { files: 0, bytes: 0, transferred_bytes: 0 };
         return jsonResponse({ observed_at: "2026-11-06T10:00:00Z", global: { stability_wait: idle, queued: idle, uploading: { files: 13, bytes: 1000, transferred_bytes: 250 }, verifying: idle, awaiting_admission_files: 0, next_stable_at: null }, vaults: [] });
       }
-      if (url.startsWith("/api/stats")) {
-        const second = url.endsWith("vault_id=2");
-        if (adopting && !second) return jsonResponse({ states: { unconfirmed: 10, excluded: 1 }, protection_state: "unconfirmed", storage: { local_bytes: 2048, cloud_bytes: 1024 }, active_jobs: 0, last_known_states: { protected: 6, pending: 4, excluded: 1 }, runtime: {}, source_volume: {}, delete_enabled: true });
-        return jsonResponse({ states: second ? { protected: 5, ...(stopped ? { stopped } : {}) } : { protected: 3, pending: 2 }, protection_state: second ? (stopped ? "stopped" : "protected") : "pending", protection_suspended: false, storage: { local_bytes: 2048, cloud_bytes: 1024 }, active_jobs: 0, last_known_states: {}, runtime: {}, source_volume: {}, delete_enabled: true });
-      }
       if (url.startsWith("/api/problems") || url.startsWith("/api/general/vaults") || url.startsWith("/api/general/source-volumes")) return jsonResponse({ items: [] });
       if (url.startsWith("/api/general")) return jsonResponse({ vaults: [{ id: 1, uuid: "first", name: "First", lifecycle: "active", monthly_estimate: 0.5, open_problem_count: 1 }, { id: 2, uuid: "second", name: "Second", lifecycle: "active", monthly_estimate: 0.25, open_problem_count: 0 }], open_problem_count: 1, month: "2026-11", monthly_estimate: 0.75, previous_month_delta: null, currency: "EUR", email_configured: false, last_verified_backup: null, cloud_preflight: blocked ? { status: "blocked", remediation: "Grant s3:GetBucketPublicAccessBlock", next_probe_at: null } : undefined });
-      if (url.startsWith("/api/files")) return jsonResponse({ items: [{ type: "file", name: "first.jpg", path: "first.jpg", state: "protected" }], total: 1 });
       if (url.startsWith("/api/notifications")) return jsonResponse({ items: [], unread_count: 0 });
       return jsonResponse({});
     }) });

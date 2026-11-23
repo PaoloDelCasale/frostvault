@@ -19,7 +19,7 @@ describe("Persistent Vault pause controls (#537)", () => {
     const inventory = () => jsonResponse({ items: [{ id: 2, uuid: "photos", name: "Photos", paused, lifecycle: "active", source_root: "/sources/photos", s3_prefix: "photos" }] });
     const fetcher = createVaultAccessFetch({
       "GET /api/general/vaults": inventory,
-      "GET /api/stats": () => jsonResponse({ states: { protected: 1 }, protection_state: "protected", storage: {} }),
+      "GET /api/vaults/2/stats": () => jsonResponse({ states: { protected: 1 }, protection_state: "protected", storage: {} }),
       "POST /api/vaults/2/pause": (init) => {
         posts.push({ url: "/api/vaults/2/pause", init });
         if (failed) return jsonResponse({ detail: "Pause failed" }, 409);

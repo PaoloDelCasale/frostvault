@@ -41,7 +41,7 @@ function setup(items: unknown[], total = items.length, search = "") {
       if (purgeStatus === 409) { purgeStatus = 202; return jsonResponse({ detail: "changed", message: "changed", message_key: "api.cloud_purge_selection_changed" }, 409); }
       return jsonResponse({ group_id: "g", job_ids: [1], status: "pending_delay" }, 202);
     }
-    if (url.startsWith("/api/stats")) return jsonResponse({ states: {}, storage: {}, active_jobs: 0, runtime: {}, source_volume: {} });
+    if (/^\/api\/vaults\/\d+\/stats$/.test(url)) return jsonResponse({ states: {}, storage: {}, active_jobs: 0, runtime: {}, source_volume: {} });
     if (url.startsWith("/api/jobs")) return jsonResponse({ groups: [] });
     return jsonResponse({ items, total, aggregate_status: "ready" });
   }) });

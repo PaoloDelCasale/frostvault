@@ -173,7 +173,7 @@ describe("request cadence (#800)", () => {
       "/api/vaults": { items: [{ id: 1, name: "Photos", uuid: "photos" }] },
       "/api/general": { vaults: [], open_problem_count: 0, month: "2026-11", monthly_estimate: 0, previous_month_delta: null, currency: "EUR" },
       "/api/general/vaults": { items: [] },
-      "/api/files": { items: [], total: 0 },
+      "/api/vaults/1/files": { items: [], total: 0 },
       "/api/notifications": { items: [], unread_count: 0 },
       "/api/jobs": { groups: [] },
     });
@@ -182,17 +182,17 @@ describe("request cadence (#800)", () => {
     await screen.findByTestId("file-list-empty");
     await settle();
     expect(sorted(calls)).toEqual([
-      "GET /api/files?q=&state=&directory=&page=1&page_size=100&vault_id=1",
       "GET /api/general",
       "GET /api/general/vaults",
       "GET /api/jobs?action=recover&action=free-space&active_only=true&vault_id=1",
       "GET /api/me",
       "GET /api/notifications?limit=50&status=unread",
-      "GET /api/stats?vault_id=1",
       "GET /api/upload-activity",
       "GET /api/vaults",
       "GET /api/vaults/1/excluded-folders?directory=",
+      "GET /api/vaults/1/files?q=&state=&directory=&page=1&page_size=100",
       "GET /api/vaults/1/operation-policy",
+      "GET /api/vaults/1/stats",
     ]);
     // A blanket refresh (Overview, when a bucket becomes ready) reads the
     // lists again, never the sign-in bootstrap.

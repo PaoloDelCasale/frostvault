@@ -89,7 +89,7 @@ test("the responsive site has no offline shell, registered Worker or persisted l
   });
 
   // A new document must use the API, never a saved listing from a prior load.
-  await page.route("**/api/files?**", (route) => route.abort("internetdisconnected"));
+  await page.route("**/api/vaults/*/files?**", (route) => route.abort("internetdisconnected"));
   await page.reload();
   await expect(page.getByTestId("file-browser")).toBeVisible();
   await expect(page.getByTestId("file-list-error")).toBeVisible();

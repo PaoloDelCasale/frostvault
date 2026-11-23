@@ -27,7 +27,7 @@ function setup(retryState: "failed" | "ready" = "failed", bucket: Record<string,
     const url = String(input); const method = init?.method ?? "GET";
     calls.push({ url, method });
     if (url.startsWith("/api/i18n/catalog")) return jsonResponse({ locale: "en", locales: ["en", "it"], messages });
-    if (url.startsWith("/api/stats")) return jsonResponse({ states: { protected: 1 }, protection_state: "protected", storage: {} });
+    if (/^\/api\/vaults\/\d+\/stats$/.test(url)) return jsonResponse({ states: { protected: 1 }, protection_state: "protected", storage: {} });
     if (url === "/api/vaults/7/bucket/retry" && method === "POST") return jsonResponse(
       retryState === "ready" ? { ...failedBucket, state: "ready", stage: null, attempts: 0, error: null } : failedBucket);
     if (url === "/api/vaults/7/creation/cancel" && method === "POST") {
