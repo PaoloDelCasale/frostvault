@@ -4,19 +4,14 @@ No AWS: ``FakeBucketS3`` answers like S3 for the bucket configuration calls.
 """
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import json
 import re
-import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 from botocore.exceptions import EndpointConnectionError
 
-from app.config import Settings
 from app.services import bucket_provisioning, lifecycle_policies, source_layout, vault_buckets
 from app.services import vault_deletion
 from app.services import vaults as vaults_service
@@ -24,8 +19,7 @@ from app.services.lifecycle_profiles import LifecycleProfile, LifecycleTransitio
 from app.services.s3_lifecycle_rules import vault_bucket_lifecycle_rules
 from app.services.vault_paths import object_prefix
 from tests.fake_bucket_s3 import FakeBucketS3, fake_vault_buckets
-from tests.owner_fixtures import insert_owner
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests import catalog_probe
 
 UUID = "2f1c7e36-0000-4000-8000-000000000001"
@@ -268,32 +262,23 @@ class ClientTests(unittest.TestCase):
         self.assertNotIn("secret", str(caught.exception))
 
 
-class VaultBucketProvisioningTests(unittest.TestCase):
+class VaultBucketProvisioningTests(FrostVaultTestCase):
     """Creation, failure, retry and restart against a migrated catalog."""
 
+    owner = {"display_name": "Alice"}
+    settings_overrides = {"aws_region": "eu-south-1"}
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.sources_root = Path(self._tmp.name) / "sources"
+        super().setUp()
+        self.sources_root = self.tmp_path / "sources"
         self.sources_root.mkdir()
         self.addCleanup(source_layout.reset_sources_root_override)
         source_layout.override_sources_root(self.sources_root)
         source_layout.ensure_managed_directory()
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection, display_name="Alice")
-        self.settings = replace(Settings(), database_dsn=database_dsn(str(self.database_path)),
-                                aws_region="eu-south-1")
-        for target in ("app.database.settings", "app.services.vaults.settings"):
-            patcher = patch(target, self.settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
         self.s3 = fake_vault_buckets(self)
 
     def query(self, statement: str, params: tuple = ()) -> list[dict]:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute(statement, params).fetchall()
 
     def open_problems(self) -> list[dict]:
@@ -397,12 +382,12 @@ class VaultBucketProvisioningTests(unittest.TestCase):
     def test_a_provisioning_vault_is_not_operational(self) -> None:
         self.s3.fail["create_bucket"] = "AccessDenied"
         vault = vaults_service.create_vault("Docs")
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             inventory = vaults_service.list_vault_inventory(connection)
         self.assertEqual(inventory[0]["bucket_provisioning"]["state"], "failed")
         self.assertTrue(inventory[0]["dedicated_bucket"])
         from app.services import protection_stop
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             with self.assertRaises(ValueError):
                 protection_stop.stop_protection(
                     connection, vault_id=vault["id"], cloud_disposition="keep", actor="owner",
@@ -454,7 +439,7 @@ class VaultBucketProvisioningTests(unittest.TestCase):
         calls = len(self.s3.calls)
         self.assertEqual(vault_buckets.resume_all(), [])
         self.assertEqual(len(self.s3.calls), calls)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE vault_bucket_provisioning "
                                "SET last_attempt_at = last_attempt_at - interval '16 minutes'")
         self.assertEqual([state["state"] for state in vault_buckets.resume_all()], ["ready"])
@@ -493,7 +478,7 @@ class VaultBucketProvisioningTests(unittest.TestCase):
             self.assertEqual(vault_buckets.resume_all(), [])
             self.assertEqual(vault_buckets.provision(vault["id"])["state"], "settling")
             self.assertEqual(len(self.s3.calls), calls)
-            with PostgresConnection(str(self.database_path)) as connection:
+            with self.database.connect() as connection:
                 connection.execute("UPDATE vault_bucket_provisioning "
                                    "SET verified_at = verified_at - interval '15 minutes'")
             states = vault_buckets.resume_all()
@@ -525,7 +510,7 @@ class VaultBucketProvisioningTests(unittest.TestCase):
         local.assert_not_called()
         cloud.assert_not_called()
         self.assertEqual(storage.queue_vault_auto_uploads({"id": vault["id"]}), 0)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             with self.assertRaisesRegex(LookupError, "vault_quiesced"):
                 lock_vault(connection, vault["id"])
             jobs = connection.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"]
@@ -600,10 +585,10 @@ class VaultBucketProvisioningTests(unittest.TestCase):
     def test_a_storage_plan_change_rewrites_only_the_lifecycle_when_it_differs(self) -> None:
         vault = vaults_service.create_vault("Docs")
         bucket = vault["s3_bucket"]
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(lifecycle_policies.sync_lifecycle_rules_for_bucket(connection, self.s3, bucket=bucket), 0)
         self.assertEqual(self.s3.mutating_calls().count("put_bucket_lifecycle_configuration"), 1)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET storage_plan=%s WHERE id=%s",
                                (profile_to_json(DEEP), vault["id"]))
             self.assertEqual(lifecycle_policies.sync_lifecycle_rules_for_bucket(connection, self.s3, bucket=bucket), 1)
@@ -618,7 +603,7 @@ class VaultBucketProvisioningTests(unittest.TestCase):
 
 
 
-class VaultBucketEndToEndTests(unittest.TestCase):
+class VaultBucketEndToEndTests(FrostVaultTestCase):
     """T1: upload, cloud scan and audit of a Vault Bucket Vault, keys at the root.
 
     A real catalog row (the CI database) with a ``bucket_root`` target and the
@@ -629,46 +614,33 @@ class VaultBucketEndToEndTests(unittest.TestCase):
 
     def setUp(self) -> None:
         import uuid as uuid_module
-        from types import SimpleNamespace
 
         from app import storage
         from app.catalog import ArchiveCatalog
         from app.services.vault_relocation import enroll_vault_root_identity
         from tests.upload_provenance_provider import VersionedProvider
 
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        root = Path(self._tmp.name)
-        self.source = root / "source"
+        super().setUp()
+        self.source = self.tmp_path / "source"
         (self.source / "photos").mkdir(parents=True)
         self.file = self.source / "photos" / "report.txt"
         self.payload = b"vault bucket content"
         self.file.write_bytes(self.payload)
-        self.db_path = root / "catalog"
-        migrated = run_alembic(self.db_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
         self.provider = VersionedProvider()
-        with PostgresConnection(str(self.db_path)) as connection:
-            insert_owner(connection)
-            target = connection.execute(
-                "INSERT INTO vault_targets(provider, bucket, region, key_layout) "
-                "VALUES ('s3', %s, 'eu-south-1', 'bucket_root') RETURNING id", (self.BUCKET,)).fetchone()
-            connection.execute(
-                "INSERT INTO vaults(id, target_id, name, source_root) VALUES (2, %s, 'Docs', %s)",
-                (target["id"], str(self.source)))
+        with self.database.connect() as connection:
+            seed_vault(connection, id=2, name="Docs", source_root=str(self.source),
+                       bucket=self.BUCKET, target={"key_layout": "bucket_root"})
             enroll_vault_root_identity(connection, 2, str(self.source))
             ArchiveCatalog(connection).observe_local_copy(
                 vault_id=2, path="photos/report.txt", file_type="regular", size=len(self.payload),
                 mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
-        self.enterContext(patch("app.database.settings",
-                                SimpleNamespace(database_dsn=database_dsn(str(self.db_path)))))
         self.enterContext(patch("app.storage.validate_cloud_vault"))
         self.enterContext(patch("app.storage.s3_client", return_value=self.provider))
         self.enterContext(patch("app.storage.upload_file", side_effect=self.provider.upload))
         self.uuid_module = uuid_module
 
     def vault(self) -> dict:
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute(f"{vaults_service.VAULT_ROW_SQL} WHERE v.id=2").fetchone()
 
     def test_upload_scan_and_audit_use_the_bucket_root(self) -> None:
@@ -681,7 +653,7 @@ class VaultBucketEndToEndTests(unittest.TestCase):
         vault = self.vault()
         self.assertEqual((vault["s3_bucket"], vault["s3_prefix"]), (self.BUCKET, ""))
         self.assertEqual(queue_jobs("photos/report.txt", "upload", 2)["item_count"], 1)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             job_id = connection.execute("SELECT MAX(id) AS id FROM jobs").fetchone()["id"]
             claimed = ArchiveCatalog(connection).claim_job(
                 job_id=job_id, claim_token=str(self.uuid_module.uuid4()),
@@ -689,7 +661,7 @@ class VaultBucketEndToEndTests(unittest.TestCase):
                 now=storage.now_iso(), restore_due_before=storage.now_iso())
             job = claimed_job_row(connection, job_id, claimed)
         storage.process_job(job)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             done = connection.execute("SELECT status, message FROM jobs WHERE id=%s", (job_id,)).fetchone()
             self.assertEqual(done["status"], "completed", done["message"])
             current = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "photos/report.txt")["current_version"]
@@ -698,7 +670,7 @@ class VaultBucketEndToEndTests(unittest.TestCase):
         self.assertEqual([key for key, _ in self.provider.objects], ["photos/report.txt"])
 
         self.assertEqual(storage.scan_cloud(vault, storage.now_iso()), 1)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             report = audit_vault_catalog(connection, vault, self.provider)
         self.assertEqual(
             {key: report[key] for key in ("catalog_versions", "cloud_versions", "missing_in_cloud",
@@ -710,7 +682,7 @@ class VaultBucketEndToEndTests(unittest.TestCase):
         # Vault Bucket Vault: the same landed attempt, only the prefixed key.
         import psycopg
 
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             with self.assertRaisesRegex(psycopg.errors.RestrictViolation, "exact landed identity"):
                 connection.execute(
                     """INSERT INTO archive_versions

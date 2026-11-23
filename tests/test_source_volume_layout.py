@@ -14,12 +14,9 @@ Seams under test (confirmed):
 from __future__ import annotations
 
 from tests.fake_bucket_s3 import fake_vault_buckets
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.postgres import PostgresConnection, database_dsn
 
 import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,34 +24,19 @@ from app.config import Settings
 
 from app.services import source_layout
 from app.services import vaults as vaults_service
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
-class ManagedEmptyVaultRootTests(unittest.TestCase):
+class ManagedEmptyVaultRootTests(FrostVaultTestCase):
     """Seam 1: managed directory and empty-Vault UUID roots."""
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        super().setUp()
 
-        self.sources_root = Path(self._tmp.name) / "sources"
+        self.sources_root = self.tmp_path / "sources"
         self.sources_root.mkdir()
 
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection)
-
-        self.settings = replace(
-            Settings(),
-            database_dsn=database_dsn(str(self.database_path)),
-        )
         self.s3 = fake_vault_buckets(self)
-        for target in ("app.database.settings", "app.services.vaults.settings"):
-            patcher = patch(target, self.settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
 
         self.addCleanup(source_layout.reset_sources_root_override)
         source_layout.override_sources_root(self.sources_root)
@@ -382,35 +364,26 @@ class RuntimeMountLossTests(unittest.TestCase):
                 self.assertFalse(source_layout.requires_full_local_scan("photos"))
 
 
-class SourceVolumeInventoryTests(unittest.TestCase):
+class SourceVolumeInventoryTests(FrostVaultTestCase):
     """Admin inventory: alias, path, access, health, counts."""
 
+    owner = None
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
+        super().setUp()
         self.addCleanup(source_layout.reset_sources_root_override)
-        self.sources = Path(self._tmp.name) / "sources"
+        self.sources = self.tmp_path / "sources"
         self.sources.mkdir()
         (self.sources / "managed").mkdir()
         self.photos = self.sources / "photos"
         self.photos.mkdir()
         source_layout.override_sources_root(self.sources)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.settings = replace(
-            Settings(),
-            database_dsn=database_dsn(str(self.database_path)),
-        )
-        patcher = patch("app.database.settings", self.settings)
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     def test_inventory_includes_vault_counts(self) -> None:
         vault_root = self.photos / "family"
         vault_root.mkdir()
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_vault(connection, name="Family", source_root=str(vault_root), bucket="b")
+        with self.database.connect() as connection:
+            seed_vault(connection, name="Family", source_root=str(vault_root), bucket="b")
 
         def is_mount(path: Path | str) -> bool:
             return Path(path) in {self.sources, self.photos}
@@ -528,14 +501,13 @@ class MountVerificationTests(unittest.TestCase):
                 self.assertTrue(source_layout.requires_full_local_scan("photos"))
 
 
-class LocalOpsGateTests(unittest.TestCase):
+class LocalOpsGateTests(FrostVaultTestCase):
     """Local ops refuse when Source Volume is unhealthy."""
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
+        super().setUp()
         self.addCleanup(source_layout.reset_sources_root_override)
-        self.sources = Path(self._tmp.name) / "sources"
+        self.sources = self.tmp_path / "sources"
         self.sources.mkdir()
         (self.sources / "managed").mkdir()
         self.photos = self.sources / "photos"
@@ -543,26 +515,9 @@ class LocalOpsGateTests(unittest.TestCase):
         self.vault_root = self.photos / "family"
         self.vault_root.mkdir()
         source_layout.override_sources_root(self.sources)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection)
-            self.vault_id = insert_vault(connection, name="Family", source_root=str(self.vault_root),
+        with self.database.connect() as connection:
+            self.vault_id = seed_vault(connection, name="Family", source_root=str(self.vault_root),
                                          bucket="b")["id"]
-        self.settings = replace(
-            Settings(),
-            database_dsn=database_dsn(str(self.database_path)),
-            cookie_secure=False,
-        )
-        for target in (
-            "app.database.settings",
-            "app.main.settings",
-            "app.sessions.settings",
-        ):
-            patcher = patch(target, self.settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
 
     def test_queue_jobs_rejects_upload_when_mount_lost(self) -> None:
         from fastapi import HTTPException
@@ -580,7 +535,7 @@ class LocalOpsGateTests(unittest.TestCase):
 
         source_layout.note_mount_lost("photos")
         (self.vault_root / "a.txt").write_text("a", encoding="utf-8")
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             ArchiveCatalog(connection).observe_local_copy(
                 vault_id=self.vault_id,
                 path="gone.txt",
@@ -600,7 +555,7 @@ class LocalOpsGateTests(unittest.TestCase):
                     "scan-1",
                 )
 
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             missing = connection.execute(
                 "SELECT COUNT(*) AS total FROM files WHERE local_presence='missing'"
             ).fetchone()["total"]
@@ -613,44 +568,20 @@ class LocalOpsGateTests(unittest.TestCase):
 
 
 
-class AdminSourceVolumeInventoryHttpTests(unittest.TestCase):
+class AdminSourceVolumeInventoryHttpTests(FrostVaultTestCase):
     """Admin inventory HTTP seam."""
 
+    owner = {"password": "admin-password-1"}
+
     def setUp(self) -> None:
-        from fastapi.testclient import TestClient
-
-        from app.main import app
-        from app.security import hash_password
-        from app.sessions import create_session
-
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
+        super().setUp()
         self.addCleanup(source_layout.reset_sources_root_override)
-        self.sources = Path(self._tmp.name) / "sources"
+        self.sources = self.tmp_path / "sources"
         self.sources.mkdir()
         (self.sources / "managed").mkdir()
         self.photos = self.sources / "photos"
         self.photos.mkdir()
         source_layout.override_sources_root(self.sources)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection, password="admin-password-1")
-        self.settings = replace(
-            Settings(),
-            database_dsn=database_dsn(str(self.database_path)),
-            cookie_secure=False,
-        )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-            "app.services.health.settings",
-        ):
-            patcher = patch(target, self.settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
         mount_patcher = patch.object(source_layout, "path_is_mount", return_value=True)
         mount_patcher.start()
         self.addCleanup(mount_patcher.stop)
@@ -660,10 +591,8 @@ class AdminSourceVolumeInventoryHttpTests(unittest.TestCase):
         writable_patcher.start()
         self.addCleanup(writable_patcher.stop)
         source_layout.prepare_sources_layout()
-        self.client = TestClient(app, client=("127.0.0.1", 50000))
-        with PostgresConnection(str(self.database_path)) as connection:
-            token = create_session(connection, auth_method="oidc")
-        self.client.cookies.set(self.settings.session_cookie_name, token)
+        self.client = self.http_client()
+        self.sign_in()
 
     def test_admin_can_list_source_volumes(self) -> None:
         response = self.client.get("/api/general/source-volumes")

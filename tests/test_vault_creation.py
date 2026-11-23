@@ -1,55 +1,33 @@
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import inspect
-import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
-
-from app.config import Settings
 
 from app.services import source_layout
 from app.services import vaults as vaults_service
 from tests.fake_bucket_s3 import fake_vault_buckets
-from tests.owner_fixtures import insert_owner
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, override_settings
 
 
-class VaultCreationServiceTestCase(unittest.TestCase):
+class VaultCreationServiceTestCase(FrostVaultTestCase):
     """Direct-import tests for app.services.vaults.create_vault."""
 
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+    owner = {"display_name": "Alice"}
 
-        self.sources_root = Path(self._tmp.name) / "sources"
+    def setUp(self) -> None:
+        super().setUp()
+        self.sources_root = self.tmp_path / "sources"
         self.sources_root.mkdir()
         self.addCleanup(source_layout.reset_sources_root_override)
         source_layout.override_sources_root(self.sources_root)
         self.managed_root = source_layout.ensure_managed_directory()
-
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection, display_name="Alice")
-
-        self.settings = replace(
-            Settings(),
-            database_dsn=database_dsn(str(self.database_path)),
-        )
-        for target in ("app.database.settings", "app.services.vaults.settings"):
-            patcher = patch(target, self.settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
         self.s3 = fake_vault_buckets(self)
 
     def _vaults(self) -> list[dict]:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute("SELECT * FROM vaults").fetchall()
 
     def test_creates_vault_and_directory_atomically(self) -> None:
@@ -116,7 +94,7 @@ class VaultCreationServiceTestCase(unittest.TestCase):
     def test_every_vault_gets_its_own_vault_target_and_bucket(self) -> None:
         vaults_service.create_vault("Docs")
         vaults_service.create_vault("Photos")
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             targets = connection.execute(
                 "SELECT bucket, region, key_layout FROM vault_targets ORDER BY id").fetchall()
             columns = {row["column_name"] for row in connection.execute(
@@ -133,8 +111,7 @@ class VaultCreationServiceTestCase(unittest.TestCase):
         self.assertEqual(self._vaults(), [])
 
     def test_creation_is_unavailable_without_a_region_or_credentials(self) -> None:
-        unconfigured = replace(self.settings, aws_region="")
-        with patch("app.services.vaults.settings", unconfigured):
+        with override_settings(aws_region=""):
             with self.assertRaises(vaults_service.VaultProvisioningUnavailable):
                 vaults_service.create_vault("Docs")
         with patch("app.services.vault_buckets._default_client",

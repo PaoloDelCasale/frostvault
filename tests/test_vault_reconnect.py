@@ -4,21 +4,17 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import tempfile
 import threading
 import unittest
-from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
-from app.config import Settings
 from app.services import source_layout, source_identity, vault_relocation
 from app.services.recovery_kit import kit_status, record_metadata_restore
-from tests.postgres import PostgresConnection, database_dsn
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests import catalog_probe
 
 
@@ -76,21 +72,10 @@ def landed_current(connection, path, data, *, version):
     return file_id
 
 
-OTHER_VAULT = """INSERT INTO vaults(id, target_id, name, source_root)
-    VALUES (8, (SELECT id FROM vault_targets WHERE bucket='bucket'), 'Other', %s)"""
-
-
-class VaultReconnectTests(unittest.TestCase):
+class VaultReconnectTests(FrostVaultTestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.db_path = Path(self.tmp.name) / "catalog"
-        result = run_alembic(self.db_path)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.settings = replace(Settings(), database_dsn=database_dsn(str(self.db_path)))
-        patcher = patch("app.database.settings", self.settings)
-        patcher.start(); self.addCleanup(patcher.stop)
-        self.sources = Path(self.tmp.name) / "sources"
+        super().setUp()
+        self.sources = self.tmp_path / "sources"
         self.volume = self.sources / "photos"
         self.old = self.volume / "old"
         self.old.mkdir(parents=True)
@@ -104,24 +89,20 @@ class VaultReconnectTests(unittest.TestCase):
         mount.start(); self.addCleanup(mount.stop)
         identity = patch.object(source_identity, "fingerprint_for_mount", return_value="mount-a")
         self.identity = identity.start(); self.addCleanup(identity.stop)
-        with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
-            connection.execute("INSERT INTO vault_targets(provider, bucket, region, key_layout) "
-                               "VALUES ('s3', 'bucket', 'eu-south-1', 'vault_prefix')")
-            connection.execute("""INSERT INTO vaults(id, uuid, target_id, name, source_root)
-                VALUES (7, '11111111-1111-1111-1111-111111111111',
-                        (SELECT id FROM vault_targets WHERE bucket='bucket'), 'Photos', %s)""", (str(self.old),))
+        with self.database.connect() as connection:
+            seed_vault(connection, id=7, uuid="11111111-1111-1111-1111-111111111111",
+                       name="Photos", source_root=str(self.old))
             vault_relocation.enroll_vault_root_identity(connection, 7, str(self.old))
         source_layout.reconcile_source_volume_identities()
 
     def row(self):
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute("SELECT * FROM vaults WHERE id=7").fetchone()
 
     def reconnect(self, **overrides):
         args = dict(vault_id=7, volume_alias="photos", relative_path="new", actor="owner", reason="restored server")
         args.update(overrides)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             return vault_relocation.reconnect_vault_root(connection, **args)
 
     def scan(self, vault=None, s3=None):
@@ -141,7 +122,7 @@ class VaultReconnectTests(unittest.TestCase):
         self.assertEqual(result["reconnect_volume_fingerprint"], "mount-a")
         for field in ("id", "uuid", "target_id"):
             self.assertEqual(result[field], before[field])
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             event = connection.execute("SELECT * FROM audit_events WHERE event='vault_folder_reconnected'").fetchone()
             self.assertEqual(event["detail"]["reason"], "restored server")
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM notifications").fetchone()["n"], 0)
@@ -151,7 +132,7 @@ class VaultReconnectTests(unittest.TestCase):
         other.mkdir()
         (other / "restored").mkdir()
         with patch.object(source_layout, "path_is_mount", side_effect=lambda p: Path(p) in {self.sources, self.volume, other}):
-            with PostgresConnection(str(self.db_path)) as connection:
+            with self.database.connect() as connection:
                 connection.execute("UPDATE vaults SET root_identity=NULL, root_identity_version=NULL WHERE id=7")
             result = self.reconnect(volume_alias="newdisk", relative_path="restored")
         self.assertEqual(result["source_root"], str(other / "restored"))
@@ -159,8 +140,8 @@ class VaultReconnectTests(unittest.TestCase):
     def test_replacement_acceptance_does_not_unblock_sibling_vault(self):
         sibling = self.volume / "sibling"
         sibling.mkdir()
-        with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute(OTHER_VAULT, (str(sibling),))
+        with self.database.connect() as connection:
+            seed_vault(connection, id=8, name="Other", source_root=str(sibling))
         self.identity.return_value = "mount-b"
         source_layout.reconcile_source_volume_identities()
         self.assertFalse(source_layout.vault_local_access(str(self.old)).local_operations_allowed)
@@ -169,7 +150,7 @@ class VaultReconnectTests(unittest.TestCase):
         self.assertFalse(source_layout.vault_local_access(str(sibling)).local_operations_allowed)
         self.identity.return_value = "mount-c"
         self.assertFalse(source_layout.vault_local_access(str(self.new)).local_operations_allowed)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT expected_fingerprint FROM source_volumes WHERE alias='photos'").fetchone()["expected_fingerprint"], "mount-a")
 
     def test_containment_overlap_identity_and_busy_rejection_matrix(self):
@@ -195,8 +176,8 @@ class VaultReconnectTests(unittest.TestCase):
             with self.assertRaises(vault_relocation.VaultRelocationError): self.reconnect()
         nested = self.new / "nested"
         nested.mkdir()
-        with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute(OTHER_VAULT, (str(nested),))
+        with self.database.connect() as connection:
+            seed_vault(connection, id=8, name="Other", source_root=str(nested))
         with self.assertRaises(vault_relocation.VaultRelocationError) as error: self.reconnect()
         self.assertEqual(error.exception.reason, "overlap")
 
@@ -219,12 +200,12 @@ class VaultReconnectTests(unittest.TestCase):
         self.assertEqual(self.row()["source_root"], str(self.old))
 
     def test_active_job_and_stopped_protection_block_reconnect(self):
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="a", file_type="regular", size=1, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
             connection.execute("INSERT INTO jobs(vault_id,file_id,action,status) VALUES (7,%s,'upload','queued')", (file_id,))
         with self.assertRaises(vault_relocation.VaultRelocationError) as error: self.reconnect()
         self.assertEqual(error.exception.reason, "active_jobs")
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET status='completed'")
             connection.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=7")
         with self.assertRaises(vault_relocation.VaultRelocationError) as error: self.reconnect()
@@ -310,7 +291,7 @@ class VaultReconnectTests(unittest.TestCase):
             return 1, None
         with patch("app.storage._scan_tree", side_effect=mutate_then_swap): result = self.scan()
         self.assertEqual(result["root_identity_mismatch"], 1)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM files WHERE vault_id=7").fetchone()["n"], 0)
         self.assertEqual(self.row()["lifecycle"], "reconnect_required")
 
@@ -323,14 +304,14 @@ class VaultReconnectTests(unittest.TestCase):
             return {"hashed": 1, "confirmed": 0, "queued": 1}
         with patch("app.storage._apply_auto_renames", side_effect=mutate_then_swap): result = self.scan()
         self.assertEqual(result["root_identity_mismatch"], 1)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM files WHERE vault_id=7").fetchone()["n"], 0)
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM jobs WHERE vault_id=7").fetchone()["n"], 0)
         self.assertEqual(self.row()["lifecycle"], "reconnect_required")
 
     def test_manual_restore_invalidates_local_authority_and_stale_jobs(self):
         from app.storage import scan_vault
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="a", file_type="regular", size=1, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
             connection.execute("INSERT INTO jobs(vault_id,file_id,action,status) VALUES (7,%s,'recover','queued')", (file_id,))
             record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
@@ -347,7 +328,7 @@ class VaultReconnectTests(unittest.TestCase):
         self.reconnect()  # No stale Job can strand reconnect indefinitely.
 
     def test_manual_restore_withdraws_deletion_consent_without_starving_later_uploads(self):
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="a", file_type="regular", size=1, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
             group = connection.execute("INSERT INTO job_groups(vault_id) VALUES (7) RETURNING id").fetchone()["id"]
             connection.execute("INSERT INTO cloud_purge_requests(group_id, reason) VALUES (%s, 'no longer needed')", (group,))
@@ -364,7 +345,7 @@ class VaultReconnectTests(unittest.TestCase):
         self.assertEqual((vault["lifecycle"], vault["paused"]), ("reconnect_required", True))
 
     def test_manual_restore_keeps_a_stopping_vault_stopped(self):
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=7")
             record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM metadata_restore_vaults").fetchone()["n"], 0)
@@ -377,7 +358,7 @@ class VaultReconnectTests(unittest.TestCase):
         (self.new / "same.jpg").write_bytes(content["same.jpg"])
         (self.new / "conflict.jpg").write_bytes(b"oops")
         old_digest = hashlib.sha256(b"old!").digest()
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             for path in content:
                 local = self.new / path
@@ -398,7 +379,7 @@ class VaultReconnectTests(unittest.TestCase):
         self.assertEqual(s3.deleted, [])
         self.assertEqual(len(s3.reads), 3)
         self.assertTrue(all(read["VersionId"] == "new-" + read["Key"].rsplit("/", 1)[1] for read in s3.reads))
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
             self.assertEqual(rows["same.jpg"]["state"], "protected")
             self.assertEqual(rows["missing.jpg"]["state"], "cloud_only")
@@ -417,12 +398,12 @@ class VaultReconnectTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM metadata_restore_vaults").fetchone()["n"], 0)
         self.assertEqual(self.row()["lifecycle"], "active")
         self.scan(s3=s3)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 3)
 
     def test_restore_reconciliation_reads_no_cold_version_then_adopts_unknown_paths(self):
         content = {"known.jpg": b"new!", "unknown.jpg": b"else"}
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             file_id = catalog.observe_local_copy(vault_id=7, path="known.jpg", file_type="regular", size=4,
                                                  mtime_ns=1, observed_at="2026-11-01T10:00:00+00:00")
@@ -446,7 +427,7 @@ class VaultReconnectTests(unittest.TestCase):
         s3.get_paginator = cold
         self.scan(s3=s3)
         self.assertEqual(sorted(read["Key"].rsplit("/", 1)[1] for read in s3.reads), ["known.jpg", "unknown.jpg"])
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(sorted(r["path"] for r in connection.execute("SELECT path FROM files WHERE vault_id=7")),
                              ["known.jpg", "unknown.jpg"])
             self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 2)
@@ -468,14 +449,14 @@ class VaultReconnectTests(unittest.TestCase):
         (self.new / "after").mkdir()
         (self.new / "after" / "same.bin").write_bytes(b"same")
         (self.new / "after" / "other.bin").write_bytes(b"oops")
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
         s3 = ListingS3(content)
         result = self.scan(self.reconnect(), s3)
         self.assertEqual(result["local"], 2, result)
         self.assertEqual(s3.deleted, [])
         self.assertEqual(sorted(read["VersionId"] for read in s3.reads), sorted("new-" + p for p in content))
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
             self.assertEqual(rows["after/same.bin"]["state"], "protected")
             self.assertEqual(rows["after/gone.bin"]["state"], "cloud_only")
@@ -500,7 +481,7 @@ class VaultReconnectTests(unittest.TestCase):
         content = {"after/cold.bin": b"cold"}
         (self.new / "after").mkdir()
         (self.new / "after" / "cold.bin").write_bytes(b"cold")
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
         s3 = ListingS3(content)
         warm = self.cold(s3)
@@ -508,13 +489,13 @@ class VaultReconnectTests(unittest.TestCase):
         self.assertEqual(result["reconnect_suspended"], 1)
         self.assertEqual(s3.reads, [])
         self.assertEqual(self.row()["lifecycle"], "reconnect_required")
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             # No "never written" row the local scan or an upload could act on.
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM files").fetchone()["n"], 0)
         s3.get_paginator = warm  # The Owner restored the object in S3.
         self.scan(s3=s3)
         self.assertEqual(self.row()["lifecycle"], "active")
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
             self.assertEqual(rows["after/cold.bin"]["state"], "protected")
             self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 1)
@@ -523,13 +504,13 @@ class VaultReconnectTests(unittest.TestCase):
         # #639: modified and uploaded again after the backup; Current Snapshot
         # deleted the old version, so only the new one is listed.
         (self.new / "doc.txt").write_bytes(b"new!")
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             landed_current(connection, "doc.txt", b"old!", version="old-doc.txt")
             record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
         s3 = ListingS3({"doc.txt": b"new!"})
         self.scan(self.reconnect(), s3)
         self.assertEqual(self.row()["lifecycle"], "active")
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute(MISSING_PROBLEMS).fetchone()["n"], 0)
             versions = connection.execute(
                 "SELECT provider_version_id, availability FROM archive_versions").fetchall()
@@ -539,23 +520,23 @@ class VaultReconnectTests(unittest.TestCase):
             rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
             self.assertEqual(rows["doc.txt"]["state"], "protected")
         self.scan(s3=s3)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute(MISSING_PROBLEMS).fetchone()["n"], 0)
 
     def test_a_missing_current_still_opens_its_problem_after_a_restore(self):
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             landed_current(connection, "doc.txt", b"old!", version="old-doc.txt")
             record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
         result = self.scan(self.reconnect(), ListingS3({}))
         self.assertEqual(result["reconnect_suspended"], 1)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute(MISSING_PROBLEMS).fetchone()["n"], 1)
             self.assertEqual(connection.execute(
                 "SELECT availability FROM archive_versions").fetchone()["availability"], "missing")
 
 
     def test_a_failed_read_of_an_adopted_key_is_read_again_on_retry(self):
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
         s3 = ListingS3({"after/new.bin": b"data"})
         read = s3.get_object
@@ -563,7 +544,7 @@ class VaultReconnectTests(unittest.TestCase):
             raise OSError("connection reset")
         s3.get_object = broken
         self.assertEqual(self.scan(self.reconnect(), s3)["reconnect_suspended"], 1)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             # The key is catalogued (never "never written") while unverified.
             pending = connection.execute("""SELECT f.current_version_id, av.integrity FROM files f
                 JOIN archive_versions av ON av.id=f.replacing_version_id""").fetchone()
@@ -571,7 +552,7 @@ class VaultReconnectTests(unittest.TestCase):
         s3.get_object = read
         self.scan(s3=s3)
         self.assertEqual(self.row()["lifecycle"], "active")
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM archive_versions").fetchone()["n"], 1)
             rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
             self.assertEqual(rows["after/new.bin"]["state"], "cloud_only")
@@ -582,19 +563,12 @@ MANAGED_UUID = "11111111-1111-1111-1111-111111111111"
 OTHER_UUID = "22222222-2222-2222-2222-222222222222"
 
 
-class ManagedVaultReconnectTests(unittest.TestCase):
+class ManagedVaultReconnectTests(FrostVaultTestCase):
     """#641: a restored managed Vault reconnects to its own managed folder only."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.db_path = Path(self.tmp.name) / "catalog"
-        result = run_alembic(self.db_path)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.settings = replace(Settings(), database_dsn=database_dsn(str(self.db_path)))
-        patcher = patch("app.database.settings", self.settings)
-        patcher.start(); self.addCleanup(patcher.stop)
-        self.sources = Path(self.tmp.name) / "sources"
+        super().setUp()
+        self.sources = self.tmp_path / "sources"
         self.managed = self.sources / "managed"
         self.own = self.managed / MANAGED_UUID
         self.other = self.managed / OTHER_UUID
@@ -609,26 +583,21 @@ class ManagedVaultReconnectTests(unittest.TestCase):
         self.identity = identity.start(); self.addCleanup(identity.stop)
         boundary = patch.object(source_identity, "validate_root_mount_boundary")
         self.boundary = boundary.start(); self.addCleanup(boundary.stop)
-        with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
-            connection.execute("INSERT INTO vault_targets(provider, bucket, region, key_layout) "
-                               "VALUES ('s3', 'bucket', 'eu-south-1', 'vault_prefix')")
+        with self.database.connect() as connection:
             for vault_id, vault_uuid, name, root in ((7, MANAGED_UUID, "Photos", self.own),
                                                      (8, OTHER_UUID, "Other", self.other)):
-                connection.execute("""INSERT INTO vaults(id, uuid, target_id, name, source_root)
-                    VALUES (%s, %s, (SELECT id FROM vault_targets WHERE bucket='bucket'), %s, %s)""",
-                    (vault_id, vault_uuid, name, str(root)))
+                seed_vault(connection, id=vault_id, uuid=vault_uuid, name=name, source_root=str(root))
                 vault_relocation.enroll_vault_root_identity(connection, vault_id, str(root))
 
     def row(self, vault_id=7):
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute("SELECT * FROM vaults WHERE id=%s", (vault_id,)).fetchone()
 
     def reconnect(self, **overrides):
         args = dict(vault_id=7, volume_alias="managed", relative_path=MANAGED_UUID,
                     actor="owner", reason="restored backup")
         args.update(overrides)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             return vault_relocation.reconnect_vault_root(connection, **args)
 
     def refused(self, reason, **overrides):
@@ -641,7 +610,7 @@ class ManagedVaultReconnectTests(unittest.TestCase):
 
     def restore(self, content):
         digest = hashlib.sha256(b"old!").digest()
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             for path in content:
                 file_id = catalog.observe_local_copy(vault_id=7, path=path, file_type="regular", size=4,
@@ -673,7 +642,7 @@ class ManagedVaultReconnectTests(unittest.TestCase):
         self.assertIsNone(reconnected["reconnect_volume_fingerprint"])
         self.assertEqual(reconnected["root_identity"], vault_relocation.root_identity(self.own))
         self.boundary.assert_called_with(self.sources, self.own)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             event = connection.execute(
                 "SELECT detail FROM audit_events WHERE event='vault_folder_reconnected'").fetchone()
         self.assertEqual(event["detail"]["source_root"], str(self.own))
@@ -683,7 +652,7 @@ class ManagedVaultReconnectTests(unittest.TestCase):
         self.assertEqual(result["local"], 1, result)
         self.assertEqual(s3.deleted, [])
         self.assertEqual(self.row()["lifecycle"], "active")
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) AS n FROM metadata_restore_vaults WHERE vault_id=7").fetchone()["n"], 0)
@@ -702,7 +671,7 @@ class ManagedVaultReconnectTests(unittest.TestCase):
     def test_custom_volume_vault_cannot_move_into_managed(self):
         custom = self.sources / "photos" / "dir"
         custom.mkdir(parents=True)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET source_root=%s WHERE id=7", (str(custom),))
         with self.assertRaises(vault_relocation.VaultRelocationError) as error:
             self.reconnect()

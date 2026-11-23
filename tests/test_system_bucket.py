@@ -6,10 +6,8 @@ runs the real store against a disposable PostgreSQL database.
 """
 from __future__ import annotations
 
-import tempfile
 import unittest
 from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
 
 import psycopg
@@ -18,6 +16,7 @@ from app.config import Settings
 from app.services import system_bucket
 from app.services.system_bucket import Reservation
 from tests.fake_bucket_s3 import FakeBucketS3
+from tests.fixtures import FrostVaultTestCase, override_settings
 
 
 class MemoryStore:
@@ -333,8 +332,7 @@ class MaintenanceTests(unittest.TestCase):
                  interval=86400):
         from app import storage
 
-        runtime = replace(Settings(), metadata_backup_interval_seconds=interval)
-        with patch.object(storage, "_runtime_settings", return_value=runtime), \
+        with override_settings(metadata_backup_interval_seconds=interval), \
                 patch.object(storage.metadata_backup_service, "off_host_backup_configured",
                           return_value=off_host), \
                 patch.object(system_bucket, "configured_bucket", return_value=configured), \
@@ -363,20 +361,15 @@ class MaintenanceTests(unittest.TestCase):
         healthy.assert_not_called()
 
 
-class DatabaseStoreTests(unittest.TestCase):
+class DatabaseStoreTests(FrostVaultTestCase):
     """The ``system_bucket`` row of migration 0008 (PostgreSQL)."""
 
-    def setUp(self):
-        from tests.postgres import PostgresConnection
-        from tests.test_database import run_alembic
+    owner = None
 
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.path = Path(directory.name) / "system-bucket.db"
-        migrated = run_alembic(self.path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.store = system_bucket.DatabaseStore(lambda: PostgresConnection(str(self.path)))
-        self.connect = lambda: PostgresConnection(str(self.path))
+    def setUp(self):
+        super().setUp()
+        self.store = system_bucket.DatabaseStore(self.database.connect)
+        self.connect = self.database.connect
 
     def test_reserve_rename_and_ready(self):
         self.assertIsNone(self.store.load())

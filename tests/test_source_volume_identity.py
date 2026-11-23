@@ -1,21 +1,14 @@
 """Markerless Source Volume replacement detection (issue #151)."""
 from __future__ import annotations
 
-from tests.owner_fixtures import insert_vault
-from tests.postgres import PostgresConnection, database_dsn
-
 import asyncio
 import json
-import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from app.config import Settings
-
 from app.services import source_identity, source_layout
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
 def mountinfo_line(
@@ -101,26 +94,18 @@ class IdentityDiagnosticI18nTests(unittest.TestCase):
                 self.assertTrue(messages[f"general.sources_diagnostic_{health}"].strip())
 
 
-class PersistedSourceIdentityTests(unittest.TestCase):
+class PersistedSourceIdentityTests(FrostVaultTestCase):
+    owner = None
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.sources = Path(self._tmp.name) / "sources"
+        super().setUp()
+        self.sources = self.tmp_path / "sources"
         self.sources.mkdir()
         (self.sources / "managed").mkdir()
         self.photos = self.sources / "photos"
         self.photos.mkdir()
         self.vault_root = self.photos / "family"
         self.vault_root.mkdir()
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.settings = replace(
-            Settings(), database_dsn=database_dsn(str(self.database_path))
-        )
-        settings_patcher = patch("app.database.settings", self.settings)
-        settings_patcher.start()
-        self.addCleanup(settings_patcher.stop)
         self.addCleanup(source_layout.reset_sources_root_override)
         source_layout.override_sources_root(self.sources)
         self.mounts = {self.sources, self.photos}
@@ -152,7 +137,7 @@ class PersistedSourceIdentityTests(unittest.TestCase):
         )
         access = source_layout.vault_local_access(self.vault_root)
         self.assertTrue(access.local_operations_allowed)
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             row = connection.execute("SELECT * FROM source_volumes").fetchone()
         serialized = json.dumps(row, sort_keys=True, default=str)
         self.assertNotIn("/host/photos", serialized)
@@ -163,8 +148,8 @@ class PersistedSourceIdentityTests(unittest.TestCase):
         from app.storage import scan_tree
 
         self.enroll()
-        with PostgresConnection(str(self.database_path)) as connection:
-            vault_id = insert_vault(connection, name="Family", source_root=str(self.vault_root),
+        with self.database.connect() as connection:
+            vault_id = seed_vault(connection, name="Family", source_root=str(self.vault_root),
                                     bucket="b")["id"]
         self.mountinfo = mountinfo_line(
             self.photos, root="/host/other", source="/dev/sdb1"
@@ -178,7 +163,7 @@ class PersistedSourceIdentityTests(unittest.TestCase):
         )
         source_layout.reconcile_source_volume_identities()
         source_layout.reconcile_source_volume_identities()
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             events = connection.execute(
                 "SELECT detail::text AS detail FROM audit_events "
                 "WHERE event='source_volume_identity_transition'"
@@ -290,7 +275,7 @@ class PersistedSourceIdentityTests(unittest.TestCase):
         self.assertFalse(access.local_operations_allowed)
 
     def test_safe_volume_canonicalization_rejects_symlink_escape(self) -> None:
-        outside = Path(self._tmp.name) / "outside"
+        outside = self.tmp_path / "outside"
         outside.mkdir()
         link = self.photos / "escape"
         link.symlink_to(outside, target_is_directory=True)
