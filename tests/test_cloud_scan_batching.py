@@ -9,15 +9,11 @@ Seams under test:
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import os
 import psycopg
-import tempfile
 import threading
 import unittest
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -34,9 +30,8 @@ from app.catalog import ArchiveCatalog
 
 from app.storage import CLOUD_SCAN_WRITE_BATCH_SIZE, scan_cloud
 from tests.catalog_support import fingerprint, sha256_hex
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.test_database import run_alembic
 from tests import catalog_probe
+from tests.fixtures import Database, create_owner, fresh_database, override_settings, seed_vault
 
 
 VAULT_UUID = "00000000-0000-4000-8000-000000000002"
@@ -45,13 +40,13 @@ LEASE_TOKEN = "00000000-0000-4000-8000-0000000000aa"
 VAULT = {"id": 2, "uuid": VAULT_UUID, "s3_bucket": "bucket", "s3_key_layout": "vault_prefix"}
 
 
-def _seed_vault(connection: PostgresConnection, *, source_root: str = "/source") -> None:
-    insert_owner(connection)
-    insert_vault(connection, id=2, uuid=VAULT_UUID, source_root=source_root)
+def _seed_vault(connection: psycopg.Connection, *, source_root: str = "/source") -> None:
+    create_owner(connection)
+    seed_vault(connection, id=2, uuid=VAULT_UUID, source_root=source_root)
 
 
 def _known_version(
-    connection: PostgresConnection, path: str, provider_version_id: str, *, verify: bool = False
+    connection: psycopg.Connection, path: str, provider_version_id: str, *, verify: bool = False
 ) -> str:
     """A version the catalog already knows by its exact key and VersionId."""
     catalog = ArchiveCatalog(connection)
@@ -75,7 +70,7 @@ def _known_version(
     return version_id
 
 
-def _availability(connection: PostgresConnection, version_id: str) -> str:
+def _availability(connection: psycopg.Connection, version_id: str) -> str:
     return connection.execute(
         "SELECT availability FROM archive_versions WHERE id=%s", (version_id,)
     ).fetchone()["availability"]
@@ -99,7 +94,7 @@ def _version_item(
 
 
 def _run_scan(
-    database_path: Path,
+    database: Database,
     *,
     pages: list[dict],
     paginate=None,
@@ -113,11 +108,8 @@ def _run_scan(
             paginate=paginate or default_paginate
         ),
     )
-    test_settings = SimpleNamespace(
-        database_dsn=database_dsn(str(database_path)),
-    )
     with (
-        patch("app.database.settings", test_settings),
+        override_settings(database_dsn=database.dsn),
         patch("app.storage.validate_cloud_vault"),
         patch("app.storage.s3_client", return_value=client),
     ):
@@ -126,11 +118,8 @@ def _run_scan(
 
 class CloudScanLockAndBatchTests(unittest.TestCase):
     def test_cloud_listing_io_does_not_hold_postgresql_writer_lock(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path = Path(directory) / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(database_path)) as connection:
+        with fresh_database() as database:
+            with database.connect() as connection:
                 _seed_vault(connection)
                 _known_version(connection, "a.txt", "v1")
                 _known_version(connection, "b.txt", "v2")
@@ -147,7 +136,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             def concurrent_writer() -> None:
                 second_started.wait(timeout=5)
                 try:
-                    conn = psycopg.connect(database_dsn(database_path), options="-c lock_timeout=1000")
+                    conn = psycopg.connect(database.dsn, options="-c lock_timeout=1000")
                     try:
                         conn.execute(
                             "UPDATE owner SET display_name='concurrent' WHERE id=1"
@@ -172,25 +161,22 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 }
             ]
             count = _run_scan(
-                database_path,
+                database,
                 pages=pages,
                 paginate=paginate,
             )
             worker.join(timeout=5)
             self.assertEqual(count, 2)
             self.assertEqual(concurrent_error, [])
-            with PostgresConnection(str(database_path)) as connection:
+            with database.connect() as connection:
                 name = connection.execute(
                     "SELECT display_name FROM owner WHERE id=1"
                 ).fetchone()["display_name"]
             self.assertEqual(name, "concurrent")
 
     def test_incomplete_listing_does_not_mark_unseen_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path = Path(directory) / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(database_path)) as connection:
+        with fresh_database() as database:
+            with database.connect() as connection:
                 _seed_vault(connection)
                 kept = _known_version(connection, "kept.txt", "kept-v1", verify=True)
 
@@ -202,26 +188,23 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 raise RuntimeError("listing truncated")
 
             with self.assertRaisesRegex(RuntimeError, "listing truncated"):
-                _run_scan(database_path, pages=[], paginate=paginate)
+                _run_scan(database, pages=[], paginate=paginate)
 
-            with PostgresConnection(str(database_path)) as connection:
+            with database.connect() as connection:
                 self.assertEqual(_availability(connection, kept), "available")
                 current = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "kept.txt")
             self.assertEqual(current["current_version"]["id"], kept)
 
     def test_complete_listing_marks_unseen_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path = Path(directory) / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(database_path)) as connection:
+        with fresh_database() as database:
+            with database.connect() as connection:
                 _seed_vault(connection)
                 gone = _known_version(connection, "gone.txt", "gone-v1")
                 still = _known_version(connection, "still.txt", "still-v1")
 
             report: dict = {}
             count = _run_scan(
-                database_path,
+                database,
                 pages=[
                     {
                         "Versions": [_version_item("still.txt", "still-v1")],
@@ -231,16 +214,13 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 report=report,
             )
             self.assertEqual(count, 1)
-            with PostgresConnection(str(database_path)) as connection:
+            with database.connect() as connection:
                 self.assertEqual(_availability(connection, gone), "missing")
                 self.assertEqual(_availability(connection, still), "available")
 
     def test_unknown_versions_are_counted_never_recorded_or_attributed(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path = Path(directory) / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(database_path)) as connection:
+        with fresh_database() as database:
+            with database.connect() as connection:
                 _seed_vault(connection)
                 known = _known_version(connection, "a.txt", "a-v1", verify=True)
                 before = connection.execute(
@@ -249,7 +229,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
 
             report: dict = {}
             count = _run_scan(
-                database_path,
+                database,
                 pages=[
                     {
                         "Versions": [
@@ -272,7 +252,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                     "delete_markers": 1, "unrecognized_keys": 0,
                 },
             )
-            with PostgresConnection(str(database_path)) as connection:
+            with database.connect() as connection:
                 versions = connection.execute(
                     "SELECT provider_version_id FROM archive_versions ORDER BY 1"
                 ).fetchall()
@@ -286,11 +266,8 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             self.assertIsNone(current["replacing_version"])
 
     def test_unrecognized_key_does_not_mark_unseen_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path = Path(directory) / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(database_path)) as connection:
+        with fresh_database() as database:
+            with database.connect() as connection:
                 _seed_vault(connection)
                 kept = _known_version(connection, "kept.txt", "kept-v1")
 
@@ -298,20 +275,17 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             item["Key"] = "elsewhere/x.txt"
             report: dict = {}
             _run_scan(
-                database_path,
+                database,
                 pages=[{"Versions": [item], "DeleteMarkers": []}],
                 report=report,
             )
             self.assertEqual(report["unrecognized_keys"], 1)
-            with PostgresConnection(str(database_path)) as connection:
+            with database.connect() as connection:
                 self.assertEqual(_availability(connection, kept), "available")
 
     def test_superseded_scan_generation_does_not_mark_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path = Path(directory) / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(database_path)) as connection:
+        with fresh_database() as database:
+            with database.connect() as connection:
                 _seed_vault(connection)
                 kept = _known_version(connection, "kept.txt", "kept-v1")
 
@@ -327,18 +301,15 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 lambda: storage_module.runtime_status.pop(2, None)
             )
             _run_scan(
-                database_path,
+                database,
                 pages=[{"Versions": [], "DeleteMarkers": []}],
             )
-            with PostgresConnection(str(database_path)) as connection:
+            with database.connect() as connection:
                 self.assertEqual(_availability(connection, kept), "available")
 
     def test_version_batches_commit_after_listing_without_tag_reads(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path = Path(directory) / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(database_path)) as connection:
+        with fresh_database() as database:
+            with database.connect() as connection:
                 _seed_vault(connection)
                 for index in range(CLOUD_SCAN_WRITE_BATCH_SIZE + 1):
                     _known_version(connection, f"f{index}.txt", f"v{index}")
@@ -384,11 +355,8 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                     "DeleteMarkers": [],
                 }
             ]
-            test_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
             with (
-                patch("app.database.settings", test_settings),
+                override_settings(database_dsn=database.dsn),
                 patch("app.storage.validate_cloud_vault"),
                 patch(
                     "app.storage.s3_client",
@@ -407,11 +375,8 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             self.assertEqual(db_contexts.count("enter"), 3)
 
     def test_lease_renewal_succeeds_during_listing_io(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database_path = Path(directory) / "catalog.db"
-            migrated = run_alembic(database_path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            with PostgresConnection(str(database_path)) as connection:
+        with fresh_database() as database:
+            with database.connect() as connection:
                 _seed_vault(connection)
                 _known_version(connection, "held.txt", "held-v1")
                 file_id = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "held.txt")["id"]
@@ -441,7 +406,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
 
             def renew_lease() -> None:
                 started.wait(timeout=5)
-                conn = psycopg.connect(database_dsn(database_path), options="-c lock_timeout=1000")
+                conn = psycopg.connect(database.dsn, options="-c lock_timeout=1000")
                 try:
                     conn.execute(
                         """
@@ -460,7 +425,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             worker = threading.Thread(target=renew_lease)
             worker.start()
             _run_scan(
-                database_path,
+                database,
                 pages=[
                     {
                         "Versions": [_version_item("a.txt", "v1")],
@@ -471,7 +436,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             )
             worker.join(timeout=5)
             self.assertEqual(renewed, ["ok"])
-            with PostgresConnection(str(database_path)) as connection:
+            with database.connect() as connection:
                 expiry = connection.execute(
                     "SELECT expires_at FROM job_leases WHERE token=%s", (LEASE_TOKEN,)
                 ).fetchone()["expires_at"]

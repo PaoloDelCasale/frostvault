@@ -8,19 +8,16 @@ import stat
 import tempfile
 import unittest
 import uuid
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from app.config import Settings
 from app.services import (
     bulk_upload_admission, fs_preflight, root_pins, snapshot_cleanup, source_identity,
     source_layout, upload_remediation, vault_relocation,
 )
 from app.services.upload_provenance import UploadBlocked
-from tests.postgres import PostgresConnection, database_dsn
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 ANON_47 = os.makedev(0, 47)
 ANON_46 = os.makedev(0, 46)
@@ -342,19 +339,12 @@ class RootPinTests(unittest.TestCase):
             snapshot_cleanup._require_pin(batch, {**live, "source_root": "/y"}, self.vault)
 
 
-class LegacyUpgradeTests(unittest.TestCase):
+class LegacyUpgradeTests(FrostVaultTestCase):
     """The startup upgrade against a real catalog and a real folder."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.db_path = Path(self.tmp.name) / "catalog"
-        result = run_alembic(self.db_path)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        settings = replace(Settings(), database_dsn=database_dsn(str(self.db_path)))
-        patcher = patch("app.database.settings", settings)
-        patcher.start(); self.addCleanup(patcher.stop)
-        self.sources = Path(self.tmp.name) / "sources"
+        super().setUp()
+        self.sources = self.tmp_path / "sources"
         self.volume = self.sources / "photos"
         self.root = self.volume / "root"
         self.root.mkdir(parents=True)
@@ -376,29 +366,24 @@ class LegacyUpgradeTests(unittest.TestCase):
         self.addCleanup(vault_relocation._legacy_recovery_attempted.clear)
         self.addCleanup(setattr, vault_relocation, "_legacy_upgrade_pending", False)
         self.ino = self.root.stat().st_ino
-        with PostgresConnection(str(self.db_path)) as connection:
-            connection.execute("INSERT INTO owner(id, display_name, password_hash) VALUES (1, 'Owner', 'hash')")
-            connection.execute("INSERT INTO vault_targets(provider, bucket, region, key_layout) "
-                               "VALUES ('s3', 'bucket', 'eu-south-1', 'vault_prefix')")
-            connection.execute("""INSERT INTO vaults(id, uuid, target_id, name, source_root)
-                VALUES (7, '11111111-1111-1111-1111-111111111111',
-                        (SELECT id FROM vault_targets WHERE bucket='bucket'), 'Photos', %s)""",
-                               (str(self.root),))
+        with self.database.connect() as connection:
+            seed_vault(connection, id=7, uuid="11111111-1111-1111-1111-111111111111",
+                       name="Photos", source_root=str(self.root))
         source_layout.reconcile_source_volume_identities()
 
     def store_v1(self, dev: int, ino: int | None = None) -> str:
         identity = json_v1(dev, self.ino if ino is None else ino)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET root_identity_version='linux-stat-dir-v1', "
                                "root_identity=%s WHERE id=7", (identity,))
         return identity
 
     def row(self):
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute("SELECT * FROM vaults WHERE id=7").fetchone()
 
     def audit_events(self):
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute(
                 "SELECT * FROM audit_events WHERE event='vault_root_identity_recovered'").fetchall()
 
@@ -412,7 +397,7 @@ class LegacyUpgradeTests(unittest.TestCase):
             return scan_vault(dict(self.row()))
 
     def open_blocked_problems(self):
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute(
                 "SELECT COUNT(*) AS n FROM notifications WHERE event='protection_blocked' "
                 "AND problem_status='open'").fetchone()["n"]
@@ -453,7 +438,7 @@ class LegacyUpgradeTests(unittest.TestCase):
         self.assertNotIn("root_identity_mismatch", result)
         self.assertEqual(result.get("local"), 1)
         self.assertEqual(self.open_blocked_problems(), 0)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             files = connection.execute("SELECT path, local_presence FROM files WHERE vault_id=7").fetchall()
         self.assertEqual([(f["path"], f["local_presence"]) for f in files], [("a.txt", "present")])
         # The next reboot renumbers the device again: v3 does not notice.
@@ -499,7 +484,7 @@ class LegacyUpgradeTests(unittest.TestCase):
 
     def test_released_root_is_left_alone(self):
         old = self.store_v1(ANON_47)
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET lifecycle='tombstone', root_released_at=now() WHERE id=7")
         self.assertEqual(sum(vault_relocation.upgrade_legacy_root_identities().values()), 0)
         self.assertEqual(self.row()["root_identity"], old)
@@ -507,7 +492,7 @@ class LegacyUpgradeTests(unittest.TestCase):
     def test_pending_bulk_upload_stays_valid_and_reconnect_forgets_the_retired_identity(self):
         self.store_v1(ANON_47)
         group = str(uuid.uuid4())
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             before = connection.execute("SELECT * FROM vaults WHERE id=7").fetchone()
             connection.execute(
                 """INSERT INTO bulk_upload_admissions(group_id, vault_id, requested_at, updated_at,
@@ -515,14 +500,14 @@ class LegacyUpgradeTests(unittest.TestCase):
                    VALUES (%s, 7, now(), now(), '', 'read_back', %s, 1, 'pending')""",
                 (group, bulk_upload_admission._identity(before)))
         vault_relocation.upgrade_legacy_root_identities()
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             request = connection.execute("SELECT vault_identity_json FROM bulk_upload_admissions "
                                          "WHERE group_id=%s", (group,)).fetchone()
             after = connection.execute("SELECT * FROM vaults WHERE id=7").fetchone()
         self.assertEqual(request["vault_identity_json"], bulk_upload_admission._identity(after))
         other = self.volume / "other"
         other.mkdir()
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("DELETE FROM bulk_upload_admissions")
             vault_relocation.reconnect_vault_root(
                 connection, vault_id=7, volume_alias="photos", relative_path="other",
@@ -534,18 +519,18 @@ class LegacyUpgradeTests(unittest.TestCase):
     # --- v2 identities and FUSE Source Volumes (#787, ADR-0055) -----------
 
     def store(self, version: str, identity: str, retired: list[str] | None = None) -> str:
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET root_identity_version=%s, root_identity=%s, "
                                "retired_root_identities=%s WHERE id=7",
                                (version, identity, retired or []))
         return identity
 
     def events(self, event: str):
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute("SELECT * FROM audit_events WHERE event=%s", (event,)).fetchall()
 
     def source_error(self):
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             row = connection.execute("SELECT last_error FROM vault_component_health "
                                      "WHERE vault_id=7 AND component='source'").fetchone()
         return row["last_error"] if row else None

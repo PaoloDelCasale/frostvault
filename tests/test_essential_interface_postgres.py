@@ -1,16 +1,11 @@
 """CI-only PostgreSQL global-search/sole-copy regressions (#430)."""
-import unittest
 from tests import test_protection_states as fixtures
-from app.catalog import ArchiveCatalog
-from tests.catalog_support import fingerprint, seed_vault
-from tests.owner_fixtures import insert_owner
+from tests.catalog_support import fingerprint
 from tests import catalog_probe
+from tests.fixtures import create_owner, seed_vault, sign_in
 
 
-class EssentialSearchPostgresTests(unittest.TestCase):
-    setUp = fixtures.ProtectionStatePostgresTests.setUp
-    seed = fixtures.ProtectionStatePostgresTests.seed
-
+class EssentialSearchPostgresTests(fixtures.ProtectionStateFixture):
     def _cloud_only(self, vault_id, path, provider_version_id, storage_class, digest):
         """A verified Current whose Local Copy is gone, in ``vault_id``."""
         stamp = '2026-11-03T10:00:00Z'
@@ -27,19 +22,17 @@ class EssentialSearchPostgresTests(unittest.TestCase):
         return version
 
     def test_recursive_estimate_includes_released_missing_copies_only_in_its_vault(self):
-        from unittest.mock import patch
         from app.main import recover_estimate, RecoverEstimateRequest
         stamp = '2026-11-03T10:00:00Z'
         file_id, version = self.seed('cold', archive=True, verified=True)
         self.catalog.mark_local_copy_missing(file_id, observed_at=stamp)
         self.connection.execute("UPDATE archive_versions SET storage_class='DEEP_ARCHIVE' WHERE id=%s", (version,))
-        seed_vault(self.connection, vault_id=10, name='Second', source_root='/second')
+        seed_vault(self.connection, id=10, name='Second', source_root='/second')
         self._cloud_only(10, 'photos/cold.jpg', 'other', 'STANDARD', 'a' * 64)
         self.connection.commit()
         request = RecoverEstimateRequest(path='photos', is_directory=True, restore_tier='Bulk')
-        with patch('app.database.settings', self.cfg), patch('app.main.settings', self.cfg):
-            cold = recover_estimate(request, {'id':9})
-            hot = recover_estimate(request, {'id':10})
+        cold = recover_estimate(request, {'id':9})
+        hot = recover_estimate(request, {'id':10})
         self.assertTrue(cold['requires_restore'])
         self.assertEqual(cold['estimate']['tier'], 'Bulk')
         self.assertIsInstance(cold['estimate']['estimated_hours'], (int, float))
@@ -47,34 +40,31 @@ class EssentialSearchPostgresTests(unittest.TestCase):
 
     def test_http_config_scope_survives_another_clients_session_selection(self):
         from fastapi.testclient import TestClient
-        from unittest.mock import patch
         from app.main import app
-        from app.sessions import create_session
         from app.services.operation_policies import get_policy
-        seed_vault(self.connection, vault_id=10, name='Second', source_root='/second')
-        insert_owner(self.connection)
-        token = create_session(self.connection, auth_method='local')
+        seed_vault(self.connection, id=10, name='Second', source_root='/second')
+        create_owner(self.connection)
+        self.connection.commit()
+        client = TestClient(app)
+        sign_in(client, self.database, auth_method='local')
         self.connection.execute('UPDATE sessions SET vault_id=9')
         self.connection.commit()
-        with patch('app.main.settings', self.cfg), patch('app.database.settings', self.cfg), patch('app.sessions.settings', self.cfg):
-            client = TestClient(app)
-            client.cookies.set(self.cfg.session_cookie_name, token)
-            csrf = client.get('/api/me').json()['csrf_token']
-            # This tab displays 10 while another tab's session is selected on 9.
-            result = client.put('/api/vault/operation-policy?vault_id=10', headers={'X-CSRF-Token':csrf}, json={'local_release_after_days':180})
-            self.assertEqual(result.status_code,200,result.text)
-            self.assertEqual(get_policy(self.connection,10).local_release_after_days,180)
-            self.assertIsNone(get_policy(self.connection,9).local_release_after_days)
-            self.assertEqual(client.get('/api/me').json()['vault']['id'],9)
-            denied = client.put('/api/vault/operation-policy?vault_id=10',json={'local_release_after_days':None})
-            self.assertEqual(denied.status_code,403)
-            missing = client.get('/api/vault/operation-policy?vault_id=999')
-            self.assertEqual(missing.status_code,404)
-            self.assertEqual(client.get('/api/me').json()['vault']['id'],9)
+        csrf = client.get('/api/me').json()['csrf_token']
+        # This tab displays 10 while another tab's session is selected on 9.
+        result = client.put('/api/vault/operation-policy?vault_id=10', headers={'X-CSRF-Token':csrf}, json={'local_release_after_days':180})
+        self.assertEqual(result.status_code,200,result.text)
+        self.assertEqual(get_policy(self.connection,10).local_release_after_days,180)
+        self.assertIsNone(get_policy(self.connection,9).local_release_after_days)
+        self.assertEqual(client.get('/api/me').json()['vault']['id'],9)
+        denied = client.put('/api/vault/operation-policy?vault_id=10',json={'local_release_after_days':None})
+        self.assertEqual(denied.status_code,403)
+        missing = client.get('/api/vault/operation-policy?vault_id=999')
+        self.assertEqual(missing.status_code,404)
+        self.assertEqual(client.get('/api/me').json()['vault']['id'],9)
 
     def test_duplicate_paths_keep_vault_identity_filter_and_pagination(self):
         _, first_version = self.seed('same', local=False, archive=True, verified=True)
-        seed_vault(self.connection, vault_id=10, name='Second', source_root='/second')
+        seed_vault(self.connection, id=10, name='Second', source_root='/second')
         second = self._cloud_only(10, 'photos/same.jpg', 'second-copy', 'DEEP_ARCHIVE', 'b' * 64)
         vaults = [{'id':9,'name':'Files','unconfirmed':False}, {'id':10,'name':'Second','unconfirmed':False}]
         one = self.catalog.search_protected_vaults(vaults, search='photos/same', state='cloud_only', page=1, page_size=1)

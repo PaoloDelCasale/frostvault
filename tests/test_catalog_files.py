@@ -7,18 +7,16 @@ methods, and the ``files`` / ``archive_versions`` constraints of the
 from __future__ import annotations
 
 import inspect
-import tempfile
 import unittest
 import uuid
-from pathlib import Path
 from unittest.mock import patch
 
 import psycopg
 
 from app.catalog import ArchiveCatalog, ReplacementInProgress, StaleReplacement
-from tests.catalog_support import fingerprint, protect, seed_vault, sha256_hex
-from tests.postgres import PostgresConnection, run_alembic
+from tests.catalog_support import fingerprint, protect, sha256_hex
 from tests import catalog_probe
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 DIGEST_A = sha256_hex(b"content-a")
 DIGEST_B = sha256_hex(b"content-b")
@@ -27,16 +25,14 @@ T1 = "2026-07-21T11:00:00+00:00"
 T2 = "2026-07-21T12:00:00+00:00"
 
 
-class _Fixture(unittest.TestCase):
+class _Fixture(FrostVaultTestCase):
+    owner = None
+
     def setUp(self) -> None:
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.database_path = Path(directory.name) / "files.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connection = PostgresConnection(str(self.database_path))
+        super().setUp()
+        self.connection = self.database.connect()
         self.addCleanup(self.connection.close)
-        seed_vault(self.connection)
+        seed_vault(self.connection, id=2, source_root="/source")
         self.catalog = ArchiveCatalog(self.connection)
 
     def observe(self, path: str = "a.txt", *, size: int = 9, mtime_ns: int = 100,
@@ -549,7 +545,7 @@ class ExplicitStateTests(_Fixture):
         self.assertIsNotNone(self.file()["cloud_since"])
         self.rejects("UPDATE files SET cloud_since=NULL WHERE id=%s", (file_id,),
                      error=psycopg.errors.RestrictViolation)
-        seed_vault(self.connection, vault_id=3, source_root="/other")
+        seed_vault(self.connection, id=3, source_root="/other")
         self.rejects("UPDATE files SET vault_id=3 WHERE id=%s", (file_id,))
         for column, value in (("object_key", "vaults/x/b.txt"),
                               ("provider_version_id", "other")):
@@ -613,7 +609,7 @@ class AggregateInvalidationTests(_Fixture):
         self.connection.commit()
         aggregates.mark_path_dirty(self.connection, 2, "0/a.bin")
         # The first transaction is still open and owns its mark row.
-        with PostgresConnection(str(self.database_path)) as writer:
+        with self.database.connect() as writer:
             writer.execute("SET LOCAL lock_timeout='250ms'")
             aggregates.mark_path_dirty(writer, 2, "0/b.bin")
         self.connection.commit()

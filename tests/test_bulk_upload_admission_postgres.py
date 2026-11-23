@@ -17,8 +17,8 @@ from app.services import bulk_upload_admission as bulk, protection_stop, vault_r
 from app.services.operation_policies import OperationPolicy, set_policy
 from app.services.upload_activity import upload_activity
 from tests.test_job_queue_fairness import QueueFixture
-from tests.owner_fixtures import insert_vault
 from tests import test_upload_provenance_worker as provenance_fixtures
+from tests.fixtures import seed_vault
 from app.services import upload_provenance as provenance
 from tests.postgres import PostgresConnection
 import unittest
@@ -326,7 +326,7 @@ class BulkAdmissionPostgresTests(QueueFixture):
         ids = list(range(2, bulk.VAULT_BATCH + 3))
         with self.db() as c:
             for vault_id in ids[2:]:
-                insert_vault(c, id=vault_id, name=f"Bulk {vault_id}",
+                seed_vault(c, id=vault_id, name=f"Bulk {vault_id}",
                              source_root=str(self.base / f"bulk-{vault_id}"), bucket="test-bucket")
         groups = {}
         for vault_id in ids:

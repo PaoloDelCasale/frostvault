@@ -15,14 +15,9 @@ Former cases now owned elsewhere:
 from __future__ import annotations
 
 from tests.fake_bucket_s3 import fake_vault_buckets
-from tests.postgres import PostgresConnection, database_dsn
-
 
 import os
-import tempfile
 import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
 
 for _flag, _value in (
@@ -34,41 +29,27 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
-from tests.owner_fixtures import insert_owner
 
-from app.config import Settings
 from app.services import source_layout
 from app.services import vaults as vaults_service
-from tests import test_upload_worker as fixtures
+from tests import test_upload_worker as worker
+from tests.fixtures import FrostVaultTestCase
 from tests.test_upload_worker import A, B
-from tests.test_database import run_alembic
 
 
-class SnapshotCreationTests(unittest.TestCase):
+class SnapshotCreationTests(FrostVaultTestCase):
+    owner = {"display_name": "Alice"}
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.database_path = Path(self._tmp.name) / "app.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.sources_root = Path(self._tmp.name) / "sources"
+        super().setUp()
+        self.sources_root = self.tmp_path / "sources"
         self.sources_root.mkdir()
         self.addCleanup(source_layout.reset_sources_root_override)
         source_layout.override_sources_root(self.sources_root)
-        with PostgresConnection(str(self.database_path)) as connection:
-            insert_owner(connection, display_name="Alice")
-        self.settings = replace(
-            Settings(),
-            database_dsn=database_dsn(str(self.database_path)),
-        )
         self.s3 = fake_vault_buckets(self)
-        for target in ("app.database.settings", "app.services.vaults.settings"):
-            patcher = patch(target, self.settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
 
     def _vaults(self) -> list[dict]:
-        with PostgresConnection(str(self.database_path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute("SELECT * FROM vaults").fetchall()
     def test_creation_has_no_history_choice_or_column(self) -> None:
         vault = vaults_service.create_vault("Snapshot Archive")
@@ -76,20 +57,7 @@ class SnapshotCreationTests(unittest.TestCase):
         self.assertNotIn("cloud_history_policy", self._vaults()[0])
 
 
-class CurrentSnapshotUploadTests(unittest.TestCase):
-    setUp = fixtures.UploadWorkerTests.setUp
-    db = fixtures.UploadWorkerTests.db
-    observe = fixtures.UploadWorkerTests.observe
-    write = fixtures.UploadWorkerTests.write
-    queue = fixtures.UploadWorkerTests.queue
-    claim = fixtures.UploadWorkerTests.claim
-    run_job = fixtures.UploadWorkerTests.run_job
-    job = fixtures.UploadWorkerTests.job
-    file_row = fixtures.UploadWorkerTests.file_row
-    rows = fixtures.UploadWorkerTests.rows
-    version = fixtures.UploadWorkerTests.version
-    assert_current = fixtures.UploadWorkerTests.assert_current
-
+class CurrentSnapshotUploadTests(worker.UploadWorkerCase):
     def protected_then_changed(self) -> dict:
         first = self.queue()
         self.run_job(first)

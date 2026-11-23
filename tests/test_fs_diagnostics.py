@@ -1,12 +1,7 @@
 """Filesystem problems come from the actual scan/watcher, never a sampled banner."""
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import os
-import tempfile
-import unittest
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,47 +9,35 @@ from watchfiles import Change
 
 from app import storage
 from app.catalog import ArchiveCatalog
-from app.config import settings
 
 from app.services import source_layout
 from app.services.fs_preflight import inspect_entry
-from tests.catalog_support import seed_vault
-from tests.owner_fixtures import insert_owner
-from tests.test_database import run_alembic
 from tests import catalog_probe
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
-class FilesystemProblemTests(unittest.TestCase):
+class FilesystemProblemTests(FrostVaultTestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        base = Path(self.temp.name)
+        super().setUp()
+        base = self.tmp_path
         self.root = base / "sources" / "managed" / "vault"
         self.root.mkdir(parents=True)
         source_layout.override_sources_root(base / "sources")
         self.addCleanup(source_layout.reset_sources_root_override)
-        self.path = base / "catalog.db"
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection)
-            seed_vault(connection, vault_id=9, name="Files", source_root=str(self.root))
+        with self.database.connect() as connection:
+            seed_vault(connection, id=9, name="Files", source_root=str(self.root))
         self.vault = {"id": 9, "source_root": str(self.root), "lifecycle": "active"}
-        self.cfg = replace(settings, database_dsn=database_dsn(str(self.path)))
-        self.patch = patch("app.database.settings", self.cfg)
-        self.patch.start()
-        self.addCleanup(self.patch.stop)
         storage.runtime_status.pop(9, None)
 
     def problems(self):
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             return connection.execute("SELECT event, message_params FROM notifications ORDER BY id").fetchall()
 
     def test_symlink_is_catalogued_as_unsupported_and_never_followed(self):
         (self.root / "ok.txt").write_text("hello")
         (self.root / "link.txt").symlink_to(self.root / "ok.txt")
         self.assertEqual(storage.scan_tree(self.vault, "2026-07-21T10:00:00+00:00"), 2)
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 9)}
         self.assertTrue(rows["ok.txt"]["upload_eligible"])
         self.assertFalse(rows["link.txt"]["upload_eligible"])
@@ -83,7 +66,7 @@ class FilesystemProblemTests(unittest.TestCase):
         self.assertEqual({p["message_params"]["path"] for p in problems}, {f"{n}.bin" for n in range(40)})
         self.assertTrue(all(p["event"] == "file_unreadable" for p in problems))
         self.assertNotIn("sensitive exception", str(problems))
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             copies = connection.execute("SELECT local_presence AS presence FROM files").fetchall()
         self.assertEqual(len(copies), 40)
         self.assertTrue(all(row["presence"] == "present" for row in copies))
@@ -144,7 +127,7 @@ class FilesystemProblemTests(unittest.TestCase):
         with patch("app.services.fs_preflight.os.scandir", side_effect=inaccessible):
             self.assertEqual(storage.scan_tree(self.vault, "incomplete"), 0)
         self.assertIn("private", str(self.problems()))
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT local_presence AS presence FROM files").fetchone()["presence"], "present")
 
     def test_watcher_checks_content_readability_not_just_stat(self):
@@ -210,7 +193,7 @@ class FilesystemProblemTests(unittest.TestCase):
         real_open = os.open
         def swapped(path, *args, **kwargs):
             target.unlink()
-            target.symlink_to(self.path)
+            target.symlink_to(self.tmp_path / "elsewhere")
             return real_open(path, *args, **kwargs)
         with patch("app.services.fs_preflight.os.open", side_effect=swapped):
             with self.assertRaises(OSError):

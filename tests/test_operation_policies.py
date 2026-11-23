@@ -8,11 +8,8 @@ Seams under test:
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import hashlib
 import os
-import tempfile
 import threading
 import unittest
 from datetime import datetime, timezone
@@ -30,10 +27,9 @@ from app.services.operation_policies import (
     preview_glob_rules,
     set_policy,
 )
-from tests.catalog_support import fingerprint, protect, seed_vault
-from tests.owner_fixtures import insert_owner
-from tests.test_database import run_alembic
+from tests.catalog_support import fingerprint, protect
 from tests import catalog_probe
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
 def _protect(catalog, path: str, digest: str, provider_version_id: str, verified_at: str) -> str:
@@ -45,18 +41,16 @@ def _protect(catalog, path: str, digest: str, provider_version_id: str, verified
     )
 
 
-class OperationPolicyDefaultTests(unittest.TestCase):
+class OperationPolicyDefaultTests(FrostVaultTestCase):
+    owner = None
+
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "policies.db"
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        with PostgresConnection(str(self.path)) as connection:
-            seed_vault(connection, vault_id=1)
+        super().setUp()
+        with self.database.connect() as connection:
+            seed_vault(connection, id=1, source_root="/source")
 
     def test_missing_row_means_automatic_upload_and_no_custom_globs(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             policy = get_policy(connection, 1)
         self.assertEqual(
             policy,
@@ -237,15 +231,13 @@ class LocalRetentionWindowTests(unittest.TestCase):
         )
 
 
-class OperationPolicyPersistenceTests(unittest.TestCase):
+class OperationPolicyPersistenceTests(FrostVaultTestCase):
+    owner = None
+
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "policies.db"
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        with PostgresConnection(str(self.path)) as connection:
-            seed_vault(connection, vault_id=1)
+        super().setUp()
+        with self.database.connect() as connection:
+            seed_vault(connection, id=1, source_root="/source")
 
     def test_set_policy_round_trips(self) -> None:
         desired = OperationPolicy(
@@ -255,7 +247,7 @@ class OperationPolicyPersistenceTests(unittest.TestCase):
             include_globs=("**/*.pdf",),
             exclude_globs=("tmp/**",),
         )
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             stored = set_policy(connection, 1, desired)
             loaded = get_policy(connection, 1)
         self.assertEqual(stored, desired)
@@ -269,7 +261,7 @@ class OperationPolicyPersistenceTests(unittest.TestCase):
         def update_policy() -> None:
             transition_started.wait(2)
             try:
-                with PostgresConnection(str(self.path)) as connection:
+                with self.database.connect() as connection:
                     set_policy(connection, 1, OperationPolicy(auto_upload=True))
             except BaseException as exc:
                 errors.append(exc)
@@ -278,7 +270,7 @@ class OperationPolicyPersistenceTests(unittest.TestCase):
 
         thread = threading.Thread(target=update_policy)
         thread.start()
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             connection.execute(
                 "UPDATE vaults SET lifecycle='stopping' WHERE id=1"
             )
@@ -289,14 +281,14 @@ class OperationPolicyPersistenceTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIsInstance(errors[0], LookupError)
         self.assertEqual(str(errors[0]), "vault_quiesced")
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             count = connection.execute(
                 "SELECT COUNT(*) AS total FROM vault_operation_policies WHERE vault_id=1"
             ).fetchone()["total"]
         self.assertEqual(count, 0)
 
 
-class AutoUploadEligibilityTests(unittest.TestCase):
+class AutoUploadEligibilityTests(FrostVaultTestCase):
     def setUp(self) -> None:
         # Upload remediation (#592) is outside this seam.
         remediation = patch(
@@ -305,17 +297,12 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         )
         remediation.start()
         self.addCleanup(remediation.stop)
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        super().setUp()
+        self.root = self.tmp_path
         self.source = self.root / "source"
         self.source.mkdir()
-        self.path = self.root / "catalog.db"
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        with PostgresConnection(str(self.path)) as connection:
-            insert_owner(connection)
-            seed_vault(connection, source_root=str(self.source))
+        with self.database.connect() as connection:
+            seed_vault(connection, source_root=str(self.source), id=2)
 
     def test_auto_upload_queues_only_stable_included_files(self) -> None:
         from app.services.operation_policies import queue_auto_uploads
@@ -334,7 +321,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         os.utime(stable, (old, old))
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
 
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             for name, path in (
                 ("ready.txt", stable),
@@ -384,7 +371,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
 
         os.utime(target, (old, old))
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             ArchiveCatalog(connection).observe_local_copy(
                 vault_id=2,
                 path="ready.txt",
@@ -419,7 +406,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         os.utime(target, (old, old))
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
         digest = hashlib.sha256(original).hexdigest()
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(
                 vault_id=2,
@@ -508,7 +495,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         from app.services.vault_relocation import prepare_reconnect_local_scan
 
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             set_policy(connection, 2, OperationPolicy(auto_upload=True, stability_seconds=300))
             scanned = self._stopped_upload(connection, "scanned.bin", b"same")
             watched = self._stopped_upload(connection, "watched.bin", b"same too")
@@ -536,7 +523,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
 
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
         old = datetime(2026, 7, 1, 11, 0, tzinfo=timezone.utc).timestamp()
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             set_policy(connection, 2, OperationPolicy(auto_upload=True, stability_seconds=300))
             target = self._stopped_upload(connection, "changed.bin", b"before")
             prepare_reconnect_local_scan(connection, 2)
@@ -551,7 +538,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
 
     def test_content_event_on_a_present_copy_still_releases_the_stop(self) -> None:
         # A same-size write with a restored mtime is a content event (#619).
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             target = self._stopped_upload(connection, "rewritten.bin", b"bytes")
             self._rescan(connection, target, invalidate=True)
             self.assertEqual(self._state(connection, "rewritten.bin"), "pending")
@@ -567,7 +554,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         os.utime(target, (old, old))
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
         digest = hashlib.sha256(payload).hexdigest()
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             catalog.observe_local_copy(
                 vault_id=2,
@@ -628,7 +615,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
 
         now = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
         due_version_id = None
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             for name, verified_at in (
                 ("due.txt", "2026-07-01T12:00:00+00:00"),
@@ -723,7 +710,7 @@ class AutoUploadEligibilityTests(unittest.TestCase):
         now = datetime(2026, 11, 15, 12, 0, tzinfo=timezone.utc)
         verified_at = "2026-01-01T12:00:00+00:00"
         names = ("a.txt", "priv/b.txt", "priv/secret/c.txt")
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             for name in names:
                 target = self.source / name

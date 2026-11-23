@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from dataclasses import replace
 import json
 import os
 import unittest
@@ -14,6 +13,7 @@ from app.services import protection_notifications as monitor
 from app.services.source_layout import VaultLocalAccess
 from tests.owner_fixtures import insert_job
 from tests import catalog_probe
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
 def monitor_vault(connection, vault, *, now):
@@ -113,20 +113,18 @@ class DelayRuleTests(unittest.TestCase):
         self.assertIn('Solo cloud: 5', it)
 
 
-class FixedNotificationPostgresTests(unittest.TestCase):
+class FixedNotificationPostgresTests(FrostVaultTestCase):
+    settings_overrides = {'smtp_host': 'smtp.example.test', 'smtp_from_address': 'alerts@example.com',
+                          'smtp_to_address': 'owner@example.com'}
+
     def setUp(self):
-        # Reuse only the established disposable database fixture, not its tests.
-        from tests import test_notifications as fixture
-        fixture.NotificationDeliveryTests.setUp(self)
-        self.email = replace(settings, smtp_host='smtp.example.test',
-                             smtp_from_address='alerts@example.com', smtp_to_address='owner@example.com')
-        self.email_patch = patch.object(inbox, 'settings', self.email)
-        self.email_patch.start()
-        self.addCleanup(self.email_patch.stop)
+        super().setUp()
+        with self.database.connect() as connection:
+            self.vault_id = seed_vault(connection)["id"]
+            self.job_id = insert_job(connection, vault_id=self.vault_id)
 
     def connect(self):
-        from tests.postgres import PostgresConnection
-        return PostgresConnection(str(self.path))
+        return self.database.connect()
 
     def test_every_terminal_event_fixed_routing_and_no_routine_events(self):
         with self.connect() as c:

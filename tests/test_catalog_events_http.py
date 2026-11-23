@@ -1,14 +1,9 @@
 """HTTP/SSE coverage for event-driven catalog invalidation (#227)."""
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import asyncio
 import json
-import tempfile
 import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import Mock, patch
 
 import httpx
@@ -17,8 +12,6 @@ from httpx import ASGITransport
 from watchfiles import Change
 
 from app import main, storage
-from app.config import settings
-
 from app.services.catalog_event_hub import (
     catalog_event_hub,
     coalesce_signals,
@@ -30,11 +23,9 @@ from app.services.catalog_event_stream import (
     stream_tick_snapshot,
 )
 from app.services.catalog_events import CatalogEventStore, record_catalog_revision
-from app.sessions import create_session, csrf_token_for, revoke_session, set_session_vault
+from app.sessions import revoke_session, set_session_vault
 from app.storage import apply_filesystem_changes
-from tests.catalog_support import seed_vault
-from tests.owner_fixtures import insert_owner
-from tests.test_database import run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault, sign_in
 from tests import catalog_event_probe
 
 
@@ -95,37 +86,19 @@ class CatalogEventHubTests(unittest.TestCase):
         self.assertEqual(merged["domains"], ["files", "stats"])
 
 
-class CatalogEventsHttpTests(unittest.TestCase):
+class CatalogEventsHttpTests(FrostVaultTestCase):
+    owner = {"password": "correct-horse-battery-staple"}
+    settings_overrides = {"filesystem_watch_enabled": False}
+
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
-        self.db_path = self.root / "catalog-events.db"
+        super().setUp()
+        self.root = self.tmp_path
         self.source = self.root / "source"
         self.source.mkdir()
-        migrated = run_alembic(self.db_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
 
-        with PostgresConnection(str(self.db_path)) as connection:
-            insert_owner(connection, password="correct-horse-battery-staple")
-            seed_vault(connection, vault_id=1, name="Alpha", source_root=str(self.source))
-            seed_vault(connection, vault_id=2, name="Beta", source_root=str(self.root / "beta"))
-
-        self.test_settings = replace(
-            settings,
-            database_dsn=database_dsn(str(self.db_path)),
-            cookie_secure=False,
-            filesystem_watch_enabled=False,
-        )
-        for target in (
-            "app.main.settings",
-            "app.database.settings",
-            "app.sessions.settings",
-            "app.storage.settings",
-        ):
-            patcher = patch(target, self.test_settings)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        with self.database.connect() as connection:
+            seed_vault(connection, id=1, name="Alpha", source_root=str(self.source))
+            seed_vault(connection, id=2, name="Beta", source_root=str(self.root / "beta"))
 
         access = Mock(
             local_operations_allowed=True,
@@ -147,13 +120,13 @@ class CatalogEventsHttpTests(unittest.TestCase):
         )
         self.addCleanup(self.client.close)
 
-        self.owner_token = self._authenticate(1, vault_id=1)
+        self.owner_token = self._owner_session(vault_id=1)
         self.owner_session_id = self._session_id_for_user(1)
 
-    def _authenticate(self, user_id: int, *, vault_id: int | None) -> str:
-        with PostgresConnection(str(self.db_path)) as connection:
-            raw_token = create_session(connection, auth_method="local")
-            csrf_token_for(connection, raw_token)
+    def _owner_session(self, *, vault_id: int | None) -> str:
+        """A Session of the Owner on ``vault_id``; ``self.client`` stays anonymous."""
+        raw_token = sign_in(self.http_client(), self.database, auth_method="local").token
+        with self.database.connect() as connection:
             session = connection.execute(
                 """
                 SELECT id, transition_version
@@ -173,7 +146,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         return raw_token
 
     def _session_id_for_user(self, user_id: int) -> str:
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             row = connection.execute(
                 """
                 SELECT id FROM sessions
@@ -187,7 +160,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         client = TestClient(
             app=main.app, client=("127.0.0.1", 50000), follow_redirects=False
         )
-        client.cookies.set(self.test_settings.session_cookie_name, token)
+        client.cookies.set(self.settings.session_cookie_name, token)
         return client
 
     def _parse_sse(self, body: str) -> list[dict[str, str]]:
@@ -228,7 +201,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         )
         self.assertEqual(changed, 5)
 
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             store = CatalogEventStore(connection)
             self.assertEqual(catalog_event_probe.current_revision(store, 1), 1)
             page = catalog_event_probe.read_events(store, vault_id=1, after_revision=0)
@@ -264,7 +237,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
                     {(Change.deleted, str(self.source / "kept.txt"))},
                 )
 
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             self.assertEqual(catalog_event_probe.current_revision(CatalogEventStore(connection), 1), 1)
             presence = connection.execute(
                 """
@@ -279,7 +252,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         self.assertIn(response.status_code, {401, 403})
 
     def test_sse_hello_and_catchup_are_vault_scoped(self) -> None:
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             CatalogEventStore(connection).append_event(
                 vault_id=1,
                 domain="catalog",
@@ -319,7 +292,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         self.assertTrue(snapshot.json()["changed"])
 
     def test_reconnect_after_revision_does_not_replay_older_events(self) -> None:
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             store = CatalogEventStore(connection)
             store.append_event(
                 vault_id=1,
@@ -385,7 +358,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
             async def publish_durable() -> None:
                 await asyncio.sleep(0.08)
                 # Intentionally skip catalog_event_hub.publish — other process.
-                with PostgresConnection(str(self.db_path)) as connection:
+                with self.database.connect() as connection:
                     record_catalog_revision(
                         connection,
                         vault_id=1,
@@ -436,7 +409,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
             async def revoke() -> None:
                 await asyncio.sleep(0.08)
-                with PostgresConnection(str(self.db_path)) as connection:
+                with self.database.connect() as connection:
                     self.assertTrue(revoke_session(connection, self.owner_session_id))
 
             await asyncio.gather(consume(), revoke())
@@ -459,7 +432,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
                 response = await client.get(
                     "/api/catalog/events?subscribe=false",
                     cookies={
-                        self.test_settings.session_cookie_name: self.owner_token
+                        self.settings.session_cookie_name: self.owner_token
                     },
                 )
             self.assertEqual(response.status_code, 200)
@@ -522,7 +495,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
                 if not published and any(
                     event.get("event") == "hello" for event in events
                 ):
-                    with PostgresConnection(str(self.db_path)) as connection:
+                    with self.database.connect() as connection:
                         event = record_catalog_revision(
                             connection,
                             vault_id=1,
@@ -559,7 +532,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
         self.assertEqual(subscribers, 0)
 
     def test_tick_snapshot_uses_one_connection_and_bounded_statements(self) -> None:
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             record_catalog_revision(
                 connection, vault_id=1, reason="a", invalidate=["files"]
             )
@@ -582,7 +555,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
     def test_bounded_backlog_thousands_of_events_emits_has_gap(self) -> None:
         total = 2500
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             for index in range(total):
                 CatalogEventStore(connection).append_event(
                     vault_id=1,
@@ -594,7 +567,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
                 )
 
         statements = [0]
-        with PostgresConnection(str(self.db_path)) as connection:
+        with self.database.connect() as connection:
             original_execute = connection.execute
 
             def counting_execute(sql, params=()):
@@ -665,7 +638,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
             async def publish_and_spoof_hub() -> None:
                 await asyncio.sleep(0.05)
-                with PostgresConnection(str(self.db_path)) as connection:
+                with self.database.connect() as connection:
                     CatalogEventStore(connection).append_event(
                         vault_id=1,
                         domain="catalog",
@@ -733,7 +706,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
     def test_idle_expiry_closes_live_stream(self) -> None:
         def expire() -> None:
-            with PostgresConnection(str(self.db_path)) as connection:
+            with self.database.connect() as connection:
                 connection.execute(
                     "UPDATE sessions SET idle_expires_at=%s WHERE id=%s",
                     ("2000-01-01T00:00:00+00:00", self.owner_session_id),
@@ -746,7 +719,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
     def test_absolute_expiry_closes_live_stream(self) -> None:
         def expire() -> None:
-            with PostgresConnection(str(self.db_path)) as connection:
+            with self.database.connect() as connection:
                 connection.execute(
                     "UPDATE sessions SET absolute_expires_at=%s WHERE id=%s",
                     ("2000-01-01T00:00:00+00:00", self.owner_session_id),
@@ -759,7 +732,7 @@ class CatalogEventsHttpTests(unittest.TestCase):
 
     def test_session_version_mismatch_closes_live_stream(self) -> None:
         def bump_user_version() -> None:
-            with PostgresConnection(str(self.db_path)) as connection:
+            with self.database.connect() as connection:
                 connection.execute(
                     "UPDATE owner SET session_version=session_version+1 WHERE id=1"
                 )

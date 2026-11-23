@@ -1,27 +1,20 @@
-from tests.postgres import PostgresConnection, database_dsn
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import Mock
 from app.catalog import ArchiveCatalog
 
 from app.services.lifecycle_profiles import GUIDED_PROFILES
 from app.services.lifecycle_policies import load_vault_plan, set_vault_plan, sync_lifecycle_rules_for_bucket
 from tests.catalog_support import fingerprint, protect
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.test_database import run_alembic
+from tests.fixtures import create_owner, fresh_database, seed_vault
 
 
 class VaultStoragePlanTests(unittest.TestCase):
     def test_isolated_vault_plans_preserve_catalog_and_only_cloud_copy(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "catalog.db"
-            result = run_alembic(path)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            with PostgresConnection(str(path)) as connection:
-                insert_owner(connection)
+        with fresh_database() as database:
+            with database.connect() as connection:
+                create_owner(connection)
                 for i in [1, 2]:
-                    insert_vault(connection, id=i, uuid=f"00000000-0000-4000-8000-00000000000{i}", name=f"Vault {i}", source_root=f"/source-{i}")
+                    seed_vault(connection, id=i, uuid=f"00000000-0000-4000-8000-00000000000{i}", name=f"Vault {i}", source_root=f"/source-{i}")
                 catalog = ArchiveCatalog(connection)
                 catalog.observe_local_copy(vault_id=1, path="only.txt", file_type="regular", size=5, mtime_ns=1, observed_at="2026-01-01T00:00:00+00:00")
                 fingerprint(catalog, 1, "only.txt", "a" * 64)

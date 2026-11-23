@@ -17,49 +17,40 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import uuid
-import unittest
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, Mock
 
 from botocore.exceptions import ClientError
-from fastapi.testclient import TestClient
 from app import main, storage
 from app.catalog import ArchiveCatalog
 from app.config import settings
 from app.services import cloud_preflight_gate as gate, vault_relocation
 from app.services.operation_policies import set_policy, OperationPolicy
-from app.sessions import create_session, csrf_token_for
 from tests.catalog_support import fingerprint, protect
-from tests.owner_fixtures import insert_owner, insert_vault
-from tests.postgres import PostgresConnection, database_dsn, run_alembic
+from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests.upload_provenance_provider import VersionedProvider
 
 
-class PreflightQueueTests(unittest.TestCase):
+class PreflightQueueTests(FrostVaultTestCase):
+    settings_overrides = {'operation_concurrency': 16}
+
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.base = Path(self.tmp.name)
-        self.database = self.base / 'catalog'
-        migrated = run_alembic(self.database)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        super().setUp()
+        self.base = self.tmp_path
         self.enterContext(patch.object(gate, '_ready_pid', None))
         self.now = datetime.now(timezone.utc)
         self.observed = (self.now - timedelta(minutes=10)).isoformat()
         self.vaults = []
         with self.db() as c:
-            insert_owner(c)
             for i in (1, 2):
                 root = self.base / str(i)
                 root.mkdir()
-                insert_vault(c, id=i, name=f'Vault {i}', source_root=str(root), bucket='bucket',
+                seed_vault(c, id=i, name=f'Vault {i}', source_root=str(root), bucket='bucket',
                              root_identity=vault_relocation.root_identity(root),
                              root_identity_version=vault_relocation.ROOT_IDENTITY_VERSION)
                 self.vaults.append(dict(c.execute('SELECT * FROM vaults WHERE id=%s', (i,)).fetchone()))
@@ -71,22 +62,13 @@ class PreflightQueueTests(unittest.TestCase):
                     stat = file.stat()
                     ArchiveCatalog(c).observe_local_copy(vault_id=i, path=name, file_type='regular', size=stat.st_size,
                                                          mtime_ns=stat.st_mtime_ns, observed_at=self.observed)
-        configured = replace(settings, database_dsn=database_dsn(self.database), cookie_secure=False, operation_concurrency=16)
-        for p in (patch('app.database.settings', configured), patch('app.main.settings', configured),
-                  patch('app.sessions.settings', configured), patch('app.storage.settings', configured),
-                  patch('app.storage.source_layout.vault_local_access', return_value=SimpleNamespace(
-                      local_operations_allowed=True, volume_alias=None, volume_health='healthy'))):
-            p.start()
-            self.addCleanup(p.stop)
-        self.client = TestClient(main.app, client=('127.0.0.1', 50000))
-        with self.db() as c:
-            token = create_session(c, auth_method='oidc')
-            csrf = csrf_token_for(c, token)
-        self.client.cookies.set(settings.session_cookie_name, token)
-        self.headers = {'X-CSRF-Token': csrf}
+        self.enterContext(patch('app.storage.source_layout.vault_local_access', return_value=SimpleNamespace(
+            local_operations_allowed=True, volume_alias=None, volume_health='healthy')))
+        self.client = self.http_client()
+        self.headers = self.sign_in().csrf_headers
 
     def db(self):
-        return PostgresConnection(self.database)
+        return self.database.connect()
 
     def fail_uploads(self, vault_id=None):
         with self.db() as c:
@@ -385,7 +367,7 @@ class PreflightQueueTests(unittest.TestCase):
         self.assertEqual(len(count), 1)
         # A real new process sees persisted backoff, not an in-memory cache.
         script = "from app.services.cloud_preflight_gate import check; from app.database import db; import json; print(json.dumps(check(db, lambda: (_ for _ in ()).throw(AssertionError('must not reprobe')))))"
-        env = {**os.environ, 'DATABASE_URL': database_dsn(self.database)}
+        env = {**os.environ, 'DATABASE_URL': self.database.dsn}
         result = subprocess.run([sys.executable, '-c', script], env=env, capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout)['failure_count'], 1)
         with self.db() as c:

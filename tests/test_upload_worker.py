@@ -16,7 +16,6 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import psycopg
@@ -25,8 +24,8 @@ from app import storage
 from app.catalog import ArchiveCatalog
 from app.services import upload_provenance as provenance
 from app.services.vault_relocation import enroll_vault_root_identity
-from tests.catalog_support import seed_vault
-from tests.postgres import PostgresConnection, database_dsn, run_alembic
+from tests import postgres as path_aliases
+from tests.fixtures import FrostVaultTestCase, fresh_database, override_settings, seed_vault
 from tests.upload_provenance_provider import VersionedProvider
 
 A = b"immutable content A"
@@ -69,28 +68,35 @@ class _FlakyCommit:
         return self._connection.__exit__(kind, value, traceback)
 
 
-class UploadWorkerTests(unittest.TestCase):
+class UploadWorkerCase(FrostVaultTestCase):
+    """One Vault (id 2) with ``report.txt`` on a synthetic versioned provider,
+    and the helpers that drive an upload Job: the base of the worker tests.
+    """
+
+    owner = None
+
     def setUp(self) -> None:
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.root = Path(directory.name)
+        # Written with the fixture functions instead of ``super().setUp()``:
+        # modules not yet on ``FrostVaultTestCase`` still borrow this method
+        # (and the helpers below) into plain ``TestCase`` classes (#801).
+        self.database = self.enterContext(fresh_database())
+        self.settings = self.enterContext(override_settings(database_dsn=self.database.dsn))
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.source = self.root / "source"
         self.source.mkdir()
         self.file = self.source / "report.txt"
         self.file.write_bytes(A)
-        self.db_path = self.root / "catalog"
-        migrated = run_alembic(self.db_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        # For the borrowers that still reach the database through the
+        # path-keyed aliases; it goes away with ``tests.postgres``.
+        self.db_path = path_aliases.adopt(self.root / "catalog", self.database)
         self.provider = VersionedProvider()
         self.heads = 0
         with self.db() as connection:
-            seed_vault(connection, vault_id=2, source_root=str(self.source))
+            seed_vault(connection, id=2, source_root=str(self.source))
             enroll_vault_root_identity(connection, 2, str(self.source))
             self.file_id = self.observe(connection)
             self.uuid = connection.execute("SELECT uuid FROM vaults WHERE id=2").fetchone()["uuid"]
         self.key = f"vaults/{self.uuid}/report.txt"
-        self.enterContext(patch("app.database.settings",
-                                SimpleNamespace(database_dsn=database_dsn(self.db_path))))
         self.enterContext(patch("app.storage.validate_cloud_vault"))
         self.enterContext(patch("app.storage.s3_client", return_value=self.provider))
         self.enterContext(patch("app.storage.upload_file", side_effect=self.provider.upload))
@@ -102,7 +108,7 @@ class UploadWorkerTests(unittest.TestCase):
     # -- helpers -------------------------------------------------------------
 
     def db(self) -> psycopg.Connection:
-        return PostgresConnection(self.db_path)
+        return self.database.connect()
 
     def observe(self, connection) -> str:
         stat = self.file.stat()
@@ -199,6 +205,9 @@ class UploadWorkerTests(unittest.TestCase):
             self.assertEqual(bytes(row["local_sha256"]), sha(payload))
         return version
 
+
+
+class UploadWorkerTests(UploadWorkerCase):
     # -- both Upload Verification Modes -------------------------------------
 
     def test_s3_checksum_mode_proves_the_digest_without_reading_back(self) -> None:

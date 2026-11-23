@@ -9,28 +9,23 @@ the current path lives in ``files`` behind ``files_vault_path_uq``.
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import tempfile
 import unittest
-from pathlib import Path
+
+import psycopg
 
 from app.catalog import ArchiveCatalog
 
-from tests.catalog_support import seed_vault
-from tests.test_database import run_alembic
 from tests import catalog_probe
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
-class SinglePathLookupPlanTests(unittest.TestCase):
+class SinglePathLookupPlanTests(FrostVaultTestCase):
+    owner = None
+
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "catalog.db"
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        with PostgresConnection(str(self.path)) as connection:
-            seed_vault(connection, vault_id=1)
+        super().setUp()
+        with self.database.connect() as connection:
+            seed_vault(connection, id=1, source_root="/source")
             catalog = ArchiveCatalog(connection)
             for index in range(50):
                 catalog.observe_local_copy(
@@ -42,7 +37,7 @@ class SinglePathLookupPlanTests(unittest.TestCase):
                     observed_at="2026-09-30T00:00:00+00:00",
                 )
 
-    def _plan(self, connection: PostgresConnection, sql: str, params: tuple) -> str:
+    def _plan(self, connection: psycopg.Connection, sql: str, params: tuple) -> str:
         # Small fixtures may legitimately prefer a sequential scan. Force index
         # planning to prove this query can bound lookup by both keys at scale.
         connection.execute("SET LOCAL enable_seqscan=off")
@@ -50,7 +45,7 @@ class SinglePathLookupPlanTests(unittest.TestCase):
         return "\n".join(row["QUERY PLAN"] for row in rows)
 
     def test_path_lookups_search_files_by_vault_and_path(self) -> None:
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
             captured: list[tuple[str, tuple]] = []
             original = connection.execute

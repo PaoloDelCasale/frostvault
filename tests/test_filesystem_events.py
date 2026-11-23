@@ -18,6 +18,7 @@ from watchfiles import Change, awatch
 from app import storage
 from app.services import runtime_status
 from tests import test_local_release
+from tests.fixtures import override_settings
 
 
 class ReleaseWatcherRaceTests(unittest.TestCase):
@@ -226,8 +227,9 @@ class LiveWatcherTests(unittest.IsolatedAsyncioTestCase):
             connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = None
             stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True)))
-            stack.enter_context(patch("app.storage._runtime_settings", return_value=SimpleNamespace(filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=poll_ms)))
-            stack.enter_context(patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=force_polling)))
+            stack.enter_context(override_settings(
+                filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=poll_ms,
+                filesystem_watch_force_polling=force_polling))
             stack.enter_context(patch("app.storage.awatch", side_effect=ticking_watch))
             # Keep callbacks on the event-loop thread for asyncio.Event safety.
             async def direct(function, *args, **kwargs):
@@ -646,8 +648,9 @@ class WatcherScanPairingTests(unittest.IsolatedAsyncioTestCase):
         connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
         connection.execute.return_value.fetchone.return_value = None
         stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True)))
-        stack.enter_context(patch("app.storage._runtime_settings", return_value=SimpleNamespace(filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30)))
-        stack.enter_context(patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=False)))
+        stack.enter_context(override_settings(
+            filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=30,
+            filesystem_watch_force_polling=False))
         stack.enter_context(patch("app.storage.WATCHER_GAP_RESCAN_MIN_SECONDS", 0.05))
         stack.enter_context(patch("app.storage.WATCHER_RECHECK_SECONDS", 0.05))
         stack.enter_context(patch("app.storage.awatch", side_effect=make_observer))
@@ -736,7 +739,7 @@ class WatcherScanPairingTests(unittest.IsolatedAsyncioTestCase):
     async def test_polling_keeps_its_permission_tolerance(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             task = self.start(stack, directory, [self.quiet], [{}])
-            stack.enter_context(patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=True)))
+            stack.enter_context(override_settings(filesystem_watch_force_polling=True))
             try:
                 await self.settle(lambda: self.awatch_kwargs)
                 self.assertTrue(self.awatch_kwargs[0]["ignore_permission_denied"])

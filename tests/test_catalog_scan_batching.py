@@ -11,31 +11,26 @@ Seams under test:
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
+from tests.fixtures import FrostVaultTestCase, fresh_database, seed_vault
 
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
+
+import psycopg
 
 from app.catalog import ArchiveCatalog
 
-from tests.catalog_support import seed_vault
-from tests.test_database import run_alembic
+
+def _seed_vault(connection: psycopg.Connection, vault_id: int = 2) -> None:
+    seed_vault(connection, id=vault_id, source_root="/source")
 
 
-def _seed_vault(connection: PostgresConnection, vault_id: int = 2) -> None:
-    seed_vault(connection, vault_id=vault_id)
+class CatalogScanBatchIdentityTests(FrostVaultTestCase):
+    owner = None
 
-
-class CatalogScanBatchIdentityTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.db_path = Path(self.tmp.name) / "catalog.db"
-        migrated = run_alembic(self.db_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connection = PostgresConnection(str(self.db_path))
+        super().setUp()
+        self.connection = self.database.connect()
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
         self.catalog = ArchiveCatalog(self.connection)
@@ -153,14 +148,11 @@ class CatalogScanBatchIdentityTests(unittest.TestCase):
 
     def test_batch_and_serialized_path_are_semantically_equivalent(self) -> None:
         """The batch path must produce exactly the per-file serialized state."""
-        # Serialized per-file reference on a second migrated database file so
-        # the two PostgreSQL handles never contend on one WAL file.
-        ref_db = Path(self.tmp.name) / "reference.db"
-        migrated_ref = run_alembic(ref_db)
-        self.assertEqual(migrated_ref.returncode, 0, migrated_ref.stderr)
+        # Serialized per-file reference on a second migrated database.
+        ref_db = self.enterContext(fresh_database())
         serialized_rows = None
-        with PostgresConnection(str(ref_db)) as reference:
-            seed_vault(reference)
+        with ref_db.connect() as reference:
+            seed_vault(reference, id=2, source_root="/source")
             catalog = ArchiveCatalog(reference)
             for path, file_type, size, mtime_ns, observed_at in [
                 ("photos/a.jpg", "regular", 100, 1, "2026-07-21T10:00:00+00:00"),
@@ -234,15 +226,13 @@ class CatalogScanBatchIdentityTests(unittest.TestCase):
         self.assertEqual(len(touches), 1)
 
 
-class CatalogScanBatchStatementCountTests(unittest.TestCase):
+class CatalogScanBatchStatementCountTests(FrostVaultTestCase):
+    owner = None
+
 
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.db_path = Path(self.tmp.name) / "catalog.db"
-        migrated = run_alembic(self.db_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        self.connection = PostgresConnection(str(self.db_path))
+        super().setUp()
+        self.connection = self.database.connect()
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
         self.catalog = ArchiveCatalog(self.connection)

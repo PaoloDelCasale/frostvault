@@ -11,24 +11,23 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app.storage import (
     download_exact_version_plaintext,
     s3_download_transfer_config,
 )
+from tests.fixtures import override_settings
 
 
 class RecoverDownloadPerfTests(unittest.TestCase):
 
     def test_s3_transfer_config_uses_settings_and_is_never_throttled(self) -> None:
-        settings = SimpleNamespace(
+        with override_settings(
             s3_download_max_concurrency=6,
             s3_download_multipart_threshold_mib=16,
             s3_download_multipart_chunksize_mib=8,
-        )
-        with patch("app.storage.settings", settings):
+        ):
             config = s3_download_transfer_config()
         self.assertEqual(config.max_concurrency, 6)
         self.assertEqual(config.multipart_threshold, 16 * 1024 * 1024)
@@ -66,14 +65,13 @@ class RecoverDownloadPerfTests(unittest.TestCase):
                 "s3_prefix": "docs",
 
             }
-            settings = SimpleNamespace(
-                s3_download_max_concurrency=10,
-                s3_download_multipart_threshold_mib=8,
-                s3_download_multipart_chunksize_mib=8,
-                job_progress_min_interval_ms=50,
-            )
             with (
-                patch("app.storage.settings", settings),
+                override_settings(
+                    s3_download_max_concurrency=10,
+                    s3_download_multipart_threshold_mib=8,
+                    s3_download_multipart_chunksize_mib=8,
+                    job_progress_min_interval_ms=50,
+                ),
                 patch("app.storage.s3_client", return_value=client),
                 patch("app.storage.set_job_progress"),
             ):

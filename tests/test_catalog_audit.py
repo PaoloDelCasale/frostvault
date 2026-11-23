@@ -1,29 +1,21 @@
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
-import unittest
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 from app.catalog import ArchiveCatalog
 
 from app.services.catalog_audit import audit_vault_catalog
-from tests.catalog_support import fingerprint, protect, seed_vault, sha256_hex
-from tests.test_database import run_alembic
-import tempfile
-from pathlib import Path
+from tests.catalog_support import fingerprint, protect, sha256_hex
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
-class CatalogAuditTests(unittest.TestCase):
+class CatalogAuditTests(FrostVaultTestCase):
+    owner = None
+
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "audit.db"
-        result = run_alembic(self.path)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        with PostgresConnection(str(self.path)) as connection:
-            seed_vault(connection, vault_id=1)
+        super().setUp()
+        with self.database.connect() as connection:
+            seed_vault(connection, id=1, source_root="/source")
             self.vault = dict(connection.execute(
                 "SELECT id, uuid FROM vaults WHERE id=1"
             ).fetchone(), s3_bucket="bucket", s3_key_layout="vault_prefix")
@@ -50,7 +42,7 @@ class CatalogAuditTests(unittest.TestCase):
         client = Mock()
         client.get_paginator.return_value = self._paginator([])
         vault = self.vault
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             report = audit_vault_catalog(connection, vault, client)
             row = connection.execute(
                 "SELECT availability FROM archive_versions"
@@ -75,7 +67,7 @@ class CatalogAuditTests(unittest.TestCase):
             ]
         )
         vault = self.vault
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             report = audit_vault_catalog(connection, vault, client)
             row = connection.execute(
                 "SELECT storage_class, availability FROM archive_versions"
@@ -97,7 +89,7 @@ class CatalogAuditUnknownObjectTests(CatalogAuditTests):
             ],
             [{"Key": self.key, "VersionId": "m1"}],
         )
-        with PostgresConnection(str(self.path)) as connection:
+        with self.database.connect() as connection:
             report = audit_vault_catalog(connection, self.vault, client)
             versions = connection.execute(
                 "SELECT provider_version_id FROM archive_versions"

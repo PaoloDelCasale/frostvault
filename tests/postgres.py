@@ -31,13 +31,23 @@ def _key(identity: str | Path) -> str:
     return str(Path(identity).absolute())
 
 
-def _database(identity: str | Path) -> fixtures.Database:
+def _database(identity: str | Path | fixtures.Database) -> fixtures.Database:
+    if isinstance(identity, fixtures.Database):
+        # A migrated fixture class kept its attribute name: borrowers pass it as their "path".
+        return identity
     key = _key(identity)
     with _LOCK:
         if key not in _DATABASES:
             _reclaim_finished()
             _DATABASES[key] = (fixtures.empty_database(), Path(key).parent)
         return _DATABASES[key][0]
+
+
+def adopt(identity: Path, database: fixtures.Database) -> Path:
+    """Let ``identity`` name a database a fixture already created."""
+    with _LOCK:
+        _DATABASES[_key(identity)] = (database, Path(_key(identity)).parent)
+    return identity
 
 
 def database_dsn(identity: str | Path) -> str:

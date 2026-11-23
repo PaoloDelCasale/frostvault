@@ -3,36 +3,22 @@
 Fixtures from ``tests.test_cloud_deletion`` (rebuilt model, #594): the file is
 Cloud-only after a real upload, in Vault 2 named ``Docs``.
 """
-from dataclasses import replace
 from datetime import datetime, timezone
-import unittest
-from unittest.mock import patch
 
-from fastapi.testclient import TestClient
 from app import main
-from app.config import settings
-from app.sessions import create_session, csrf_token_for
 from tests import test_cloud_deletion as fixtures
-from tests.owner_fixtures import insert_owner
-from tests.postgres import database_dsn
+from tests.fixtures import create_owner, http_client, override_settings, sign_in
 
 
 class CloudDeletionHttpTests(fixtures.CloudDeletionFixture):
     def setUp(self):
         super().setUp()
         self.cloud_only()
-        configured = replace(settings, database_dsn=database_dsn(self.db_path), cookie_secure=False)
-        for target in ("app.main.settings", "app.database.settings", "app.sessions.settings"):
-            patcher = patch(target, configured)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        self.client = TestClient(main.app, client=("127.0.0.1", 50000))
+        self.enterContext(override_settings(cookie_secure=False))
+        self.client = http_client()
         with self.db() as connection:
-            insert_owner(connection)
-            token = create_session(connection,auth_method="oidc")
-            csrf = csrf_token_for(connection,token)
-        self.client.cookies.set(settings.session_cookie_name,token)
-        self.headers = {"X-CSRF-Token":csrf}
+            create_owner(connection)
+        self.headers = sign_in(self.client, self.database).csrf_headers
         self.payload = {"path":"report.txt", "confirmation":"Docs", "reason":"deliberate deletion"}
 
     def reauth(self, recent):

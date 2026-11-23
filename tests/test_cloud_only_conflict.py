@@ -15,40 +15,26 @@ from __future__ import annotations
 
 import os
 import unittest
-from dataclasses import replace
 
 from fastapi import HTTPException
 
 from app import storage
 from app.catalog import ArchiveCatalog
-from app.config import settings
 from app.main import confirm_cloud_only_replacement, queue_jobs
 from app.services import notifications as notification_service
 from app.services.email_templates import render_email
 from app.services.operation_policies import OperationPolicy, queue_auto_uploads, set_policy
 from app.services.vaults import VAULT_ROW_SQL
-from tests import test_upload_worker as fixtures
+from tests import test_upload_worker as worker
+from tests.fixtures import override_settings
 from tests.test_upload_worker import A, B, sha
-from unittest.mock import patch
 
 PATH = "report.txt"
 
 
-class CloudOnlyPathConflictTests(unittest.TestCase):
-    db = fixtures.UploadWorkerTests.db
-    observe = fixtures.UploadWorkerTests.observe
-    write = fixtures.UploadWorkerTests.write
-    queue = fixtures.UploadWorkerTests.queue
-    claim = fixtures.UploadWorkerTests.claim
-    run_job = fixtures.UploadWorkerTests.run_job
-    job = fixtures.UploadWorkerTests.job
-    file_row = fixtures.UploadWorkerTests.file_row
-    rows = fixtures.UploadWorkerTests.rows
-    version = fixtures.UploadWorkerTests.version
-    assert_current = fixtures.UploadWorkerTests.assert_current
-
+class CloudOnlyPathConflictTests(worker.UploadWorkerCase):
     def setUp(self) -> None:
-        fixtures.UploadWorkerTests.setUp(self)
+        super().setUp()
         # The original is protected, then freed: the cloud holds the only copy.
         first = self.queue()
         self.run_job(first)
@@ -116,10 +102,9 @@ class CloudOnlyPathConflictTests(unittest.TestCase):
         self.assertEqual(self.problems(), [("cloud_only_conflict", "open")])
 
     def test_conflict_is_emailed_immediately_when_smtp_is_configured(self) -> None:
-        email_settings = replace(settings, smtp_host="smtp.example.com",
-                                 smtp_from_address="frostvault@example.com",
-                                 smtp_to_address="owner@example.com")
-        with patch.object(notification_service, "settings", email_settings):
+        with override_settings(smtp_host="smtp.example.com",
+                               smtp_from_address="frostvault@example.com",
+                               smtp_to_address="owner@example.com"):
             self.write(B)
             self.scan()
         channels = self.rows("""SELECT d.channel FROM notification_deliveries d

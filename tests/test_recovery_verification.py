@@ -20,29 +20,20 @@ while still cancelling the Job.
 
 from __future__ import annotations
 
-from tests.postgres import PostgresConnection, database_dsn
-
 import hashlib
-import io
 import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app.catalog import ArchiveCatalog
 
 from app.main import cancel_job_group, queue_jobs
-from app.storage import (
-    download_exact_version_plaintext,
-    process_jobs_once,
-    reconcile_interrupted_jobs,
-)
+from app.storage import process_jobs_once, reconcile_interrupted_jobs
 from app.services.vault_relocation import enroll_vault_root_identity
-from tests.catalog_support import seed_vault
-from tests.test_database import run_alembic
+from tests.fixtures import Database, FrostVaultTestCase, override_settings, seed_vault
 from tests import catalog_probe
 
 
@@ -101,6 +92,7 @@ def _attach_download_file(client: Mock) -> None:
 
 
 def _prepare_cloud_only_version(
+    database: Database,
     root: Path,
     *,
     relative_path: str,
@@ -108,30 +100,27 @@ def _prepare_cloud_only_version(
     storage_class: str = "STANDARD",
     provider_version_id: str = "s3-version-1",
     object_key: str | None = None,
-) -> tuple[Path, Path, str]:
+) -> tuple[Path, str]:
     """A Vault 2 (``Docs``) whose file's verified Current is Cloud-only (#594)."""
     source = root / "source"
     source.mkdir()
-    database_path = root / "catalog.db"
-    migrated = run_alembic(database_path)
-    assert migrated.returncode == 0, migrated.stderr
-    with PostgresConnection(str(database_path)) as connection:
-        seed_vault(connection, vault_id=2, source_root=str(source))
+    with database.connect() as connection:
+        seed_vault(connection, id=2, source_root=str(source))
         enroll_vault_root_identity(connection, 2, str(source))
     version_id = _add_cloud_only_version(
-        database_path, relative_path=relative_path, payload=payload,
+        database, relative_path=relative_path, payload=payload,
         storage_class=storage_class, provider_version_id=provider_version_id,
         object_key=object_key or f"docs/{relative_path}",
     )
-    return source, database_path, version_id
+    return source, version_id
 
 
 def _add_cloud_only_version(
-    database_path: Path, *, relative_path: str, payload: bytes, storage_class: str,
+    database: Database, *, relative_path: str, payload: bytes, storage_class: str,
     provider_version_id: str, object_key: str,
 ) -> str:
     """One more file of Vault 2 whose verified Current is its only copy."""
-    with PostgresConnection(str(database_path)) as connection:
+    with database.connect() as connection:
         catalog = ArchiveCatalog(connection)
         file_id = catalog.observe_local_copy(
             vault_id=2,
@@ -156,7 +145,7 @@ def _add_cloud_only_version(
 
 
 def _run_plain_recover(
-    database_path: Path,
+    database: Database,
     *,
     relative_path: str,
     downloaded_bytes: bytes | None,
@@ -208,10 +197,7 @@ def _run_plain_recover(
     client.get_calls = get_calls
     client.head_calls = head_calls
 
-    database_settings = SimpleNamespace(
-        database_dsn=database_dsn(str(database_path)),
-    )
-    worker_settings = SimpleNamespace(
+    worker_settings = dict(
         operation_concurrency=1,
         restore_poll_interval=900,
         restore_days=3,
@@ -220,47 +206,43 @@ def _run_plain_recover(
         restore_high_impact_eur=10.0,
         restore_approval_hold_seconds=3600,
     )
-    with patch("app.database.settings", database_settings):
-        queue_jobs(relative_path, "recover", 2)
-        with (
-            patch("app.storage.settings", worker_settings),
-            patch("app.storage.validate_cloud_vault"),
-            patch("app.storage.upload_s3_file") as sdk_upload,
-            patch("app.storage.s3_client", return_value=client),
-        ):
-            process_jobs_once()
-            client.sdk_upload = sdk_upload
+    queue_jobs(relative_path, "recover", 2)
+    with (
+        override_settings(**worker_settings),
+        patch("app.storage.validate_cloud_vault"),
+        patch("app.storage.upload_s3_file") as sdk_upload,
+        patch("app.storage.s3_client", return_value=client),
+    ):
+        process_jobs_once()
+        client.sdk_upload = sdk_upload
     return client
 
 
-class PlainRecoveryVerificationTests(unittest.TestCase):
+class PlainRecoveryVerificationTests(FrostVaultTestCase):
+    owner = None
+
     def _interrupt_recovery(
         self,
-        database_path: Path,
         *,
         relative_path: str,
     ) -> int:
-        database_settings = SimpleNamespace(
-            database_dsn=database_dsn(str(database_path)),
-        )
-        with patch("app.database.settings", database_settings):
-            queued = queue_jobs(relative_path, "recover", 2)
-            with PostgresConnection(str(database_path)) as connection:
-                connection.execute(
-                    """
-                    UPDATE jobs SET status='verifying' WHERE id=%s
-                    """,
-                    (queued["job_ids"][0],),
-                )
-                # A dead worker's expired lease.
-                connection.execute(
-                    """
-                    INSERT INTO job_leases(job_id, token, claimed_at, expires_at)
-                    VALUES (%s, gen_random_uuid(), '1999-12-31T23:00:00+00:00',
-                            '2000-01-01T00:00:00+00:00')
-                    """,
-                    (queued["job_ids"][0],),
-                )
+        queued = queue_jobs(relative_path, "recover", 2)
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE jobs SET status='verifying' WHERE id=%s
+                """,
+                (queued["job_ids"][0],),
+            )
+            # A dead worker's expired lease.
+            connection.execute(
+                """
+                INSERT INTO job_leases(job_id, token, claimed_at, expires_at)
+                VALUES (%s, gen_random_uuid(), '1999-12-31T23:00:00+00:00',
+                        '2000-01-01T00:00:00+00:00')
+                """,
+                (queued["job_ids"][0],),
+            )
         return queued["job_ids"][0]
 
     def test_restart_adopts_matching_destination_without_deleting_local_copy(
@@ -269,27 +251,21 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"archived-plaintext"
-            source, database_path, version_id = _prepare_cloud_only_version(
-                root,
+            source, version_id = _prepare_cloud_only_version(
+                self.database, root,
                 relative_path="report.txt",
                 payload=payload,
                 object_key="docs/report.txt",
             )
-            job_id = self._interrupt_recovery(
-                database_path, relative_path="report.txt"
-            )
+            job_id = self._interrupt_recovery(relative_path="report.txt")
             destination = source / "report.txt"
             destination.write_bytes(payload)
 
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path))
-            )
-            with patch("app.database.settings", database_settings):
-                summary = reconcile_interrupted_jobs()
+            summary = reconcile_interrupted_jobs()
 
             self.assertEqual(summary, {"completed": 1, "requeued": 0, "failed": 0})
             self.assertEqual(destination.read_bytes(), payload)
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "report.txt"
                 )
@@ -316,28 +292,22 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"archived-plaintext"
-            source, database_path, _version_id = _prepare_cloud_only_version(
-                root,
+            source, _version_id = _prepare_cloud_only_version(
+                self.database, root,
                 relative_path="report.txt",
                 payload=payload,
                 object_key="docs/report.txt",
             )
-            job_id = self._interrupt_recovery(
-                database_path, relative_path="report.txt"
-            )
+            job_id = self._interrupt_recovery(relative_path="report.txt")
             destination = source / "report.txt"
             conflict = b"user-created-conflict"
             destination.write_bytes(conflict)
 
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path))
-            )
-            with patch("app.database.settings", database_settings):
-                summary = reconcile_interrupted_jobs()
+            summary = reconcile_interrupted_jobs()
 
             self.assertEqual(summary, {"completed": 0, "requeued": 0, "failed": 1})
             self.assertEqual(destination.read_bytes(), conflict)
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "report.txt"
                 )
@@ -354,32 +324,26 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"archived-plaintext"
-            source, database_path, _version_id = _prepare_cloud_only_version(
-                root,
+            source, _version_id = _prepare_cloud_only_version(
+                self.database, root,
                 relative_path="report.txt",
                 payload=payload,
                 object_key="docs/report.txt",
             )
-            job_id = self._interrupt_recovery(
-                database_path, relative_path="report.txt"
-            )
+            job_id = self._interrupt_recovery(relative_path="report.txt")
             target = source / "report.txt"
             owned = target.with_name(f".report.txt.restore-{'a' * 32}.tmp")
             foreign = target.with_name(".report.txt.restore-not-owned.tmp")
             owned.write_bytes(b"partial")
             foreign.write_bytes(b"keep")
 
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path))
-            )
-            with patch("app.database.settings", database_settings):
-                summary = reconcile_interrupted_jobs()
+            summary = reconcile_interrupted_jobs()
 
             self.assertEqual(summary, {"completed": 0, "requeued": 1, "failed": 0})
             self.assertFalse(target.exists())
             self.assertFalse(owned.exists())
             self.assertEqual(foreign.read_bytes(), b"keep")
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 job = connection.execute(
                     "SELECT status FROM jobs WHERE id=%s", (job_id,)
                 ).fetchone()
@@ -389,27 +353,21 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"archived-plaintext"
-            source, database_path, _version_id = _prepare_cloud_only_version(
-                root,
+            source, _version_id = _prepare_cloud_only_version(
+                self.database, root,
                 relative_path="report.txt",
                 payload=payload,
                 object_key="docs/report.txt",
             )
-            job_id = self._interrupt_recovery(
-                database_path, relative_path="report.txt"
-            )
+            job_id = self._interrupt_recovery(relative_path="report.txt")
             destination = source / "report.txt"
             destination.symlink_to(source / "outside.txt")
 
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path))
-            )
-            with patch("app.database.settings", database_settings):
-                summary = reconcile_interrupted_jobs()
+            summary = reconcile_interrupted_jobs()
 
             self.assertEqual(summary["failed"], 1)
             self.assertTrue(destination.is_symlink())
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 job = connection.execute(
                     "SELECT status FROM jobs WHERE id=%s", (job_id,)
                 ).fetchone()
@@ -419,14 +377,14 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"archived-plaintext"
-            source, database_path, version_id = _prepare_cloud_only_version(
-                root,
+            source, version_id = _prepare_cloud_only_version(
+                self.database, root,
                 relative_path="report.txt",
                 payload=payload,
                 object_key="docs/report.txt",
             )
             client = _run_plain_recover(
-                database_path,
+                self.database,
                 relative_path="report.txt",
                 downloaded_bytes=payload,
             )
@@ -446,7 +404,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             )
             client.sdk_upload.assert_not_called()
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 catalog = ArchiveCatalog(connection)
                 observed = catalog_probe.get_file_by_path(catalog, 2, "report.txt")
                 listed = catalog_probe.list_file_rows(catalog, 2)
@@ -480,8 +438,8 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"photo-from-2019"
-            source, database_path, _version_id = _prepare_cloud_only_version(
-                root,
+            source, _version_id = _prepare_cloud_only_version(
+                self.database, root,
                 relative_path="photo.jpg",
                 payload=payload,
                 object_key="docs/photo.jpg",
@@ -491,7 +449,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             ).timestamp()
             before_recovery = datetime.now(timezone.utc)
             _run_plain_recover(
-                database_path,
+                self.database,
                 relative_path="photo.jpg",
                 downloaded_bytes=payload,
                 downloaded_mtime=original_mtime,
@@ -500,7 +458,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), payload)
             self.assertEqual(target.stat().st_mtime, original_mtime)
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 connection.execute("DELETE FROM notifications WHERE job_id IS NOT NULL")
                 connection.execute("DELETE FROM jobs")
                 set_policy(
@@ -533,14 +491,14 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"archived-plaintext"
-            source, database_path, _version_id = _prepare_cloud_only_version(
-                root,
+            source, _version_id = _prepare_cloud_only_version(
+                self.database, root,
                 relative_path="report.txt",
                 payload=payload,
                 object_key="docs/report.txt",
             )
             _run_plain_recover(
-                database_path,
+                self.database,
                 relative_path="report.txt",
                 downloaded_bytes=b"tampered-bytes",
             )
@@ -549,7 +507,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             self.assertFalse(target.exists())
             self.assertEqual(list(source.glob("**/.*.restore-*.tmp")), [])
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "report.txt"
                 )
@@ -567,14 +525,14 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"archived-plaintext"
-            _source, database_path, _version_id = _prepare_cloud_only_version(
-                root,
+            _source, _version_id = _prepare_cloud_only_version(
+                self.database, root,
                 relative_path="report.txt",
                 payload=payload,
                 object_key="docs/report.txt",
             )
             client = _run_plain_recover(
-                database_path,
+                self.database,
                 relative_path="report.txt",
                 downloaded_bytes=payload,
             )
@@ -607,8 +565,8 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             root = Path(directory)
             archived = b"archived-plaintext"
             preexisting = b"on-disk-local-copy"
-            source, database_path, _version_id = _prepare_cloud_only_version(
-                root,
+            source, _version_id = _prepare_cloud_only_version(
+                self.database, root,
                 relative_path="report.txt",
                 payload=archived,
                 object_key="docs/report.txt",
@@ -616,14 +574,14 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             destination = source / "report.txt"
             destination.write_bytes(preexisting)
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "report.txt"
                 )
             self.assertEqual(observed["local_copy"]["presence"], "missing")
 
             _run_plain_recover(
-                database_path,
+                self.database,
                 relative_path="report.txt",
                 downloaded_bytes=archived,
             )
@@ -635,7 +593,7 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
             )
             self.assertEqual(list(source.glob("**/.*.restore-*.tmp")), [])
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
                     2, "report.txt"
                 )
@@ -651,20 +609,22 @@ class PlainRecoveryVerificationTests(unittest.TestCase):
                 r"local copy.*already exists|already exists.*recovery destination",
             )
 
-class GlacierRestoreWorkflowTests(unittest.TestCase):
+class GlacierRestoreWorkflowTests(FrostVaultTestCase):
+    owner = None
+
     def test_glacier_version_requests_restore_before_download(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"cold-archive"
-            source, database_path, version_id = _prepare_cloud_only_version(
-                root,
+            source, version_id = _prepare_cloud_only_version(
+                self.database, root,
                 relative_path="cold.txt",
                 payload=payload,
                 storage_class="GLACIER",
                 object_key="docs/cold.txt",
             )
             client = _run_plain_recover(
-                database_path,
+                self.database,
                 relative_path="cold.txt",
                 downloaded_bytes=payload,
                 storage_class="GLACIER",
@@ -682,7 +642,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
             client.get_object.assert_not_called()
             self.assertFalse((source / "cold.txt").exists())
 
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 job = connection.execute(
                     "SELECT j.status, j.message FROM jobs j JOIN files f ON f.id=j.file_id WHERE f.path=%s",
                     ("cold.txt",),
@@ -709,52 +669,48 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"cold-archive"
-            _source, database_path, version_id = _prepare_cloud_only_version(
-                root,
+            _source, version_id = _prepare_cloud_only_version(
+                self.database, root,
                 relative_path="cold.txt",
                 payload=payload,
                 storage_class="GLACIER",
                 object_key="docs/cold.txt",
             )
             restore_expiry = "2026-07-28T12:00:00+00:00"
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            with patch("app.database.settings", database_settings):
-                queued = queue_jobs("cold.txt", "recover", 2)
-                with PostgresConnection(str(database_path)) as connection:
-                    connection.execute(
-                        """
-                        UPDATE jobs
-                        SET status='restoring',
-                            message=%s,
-                            updated_at=%s
-                        WHERE id=%s
-                        """,
-                        (
-                            "Waiting for Glacier restore; RestoreObject cannot "
-                            "be cancelled after AWS accepts it",
-                            "2026-07-24T10:00:00+00:00",
-                            queued["job_ids"][0],
-                        ),
-                    )
-                    ArchiveCatalog(connection).update_restore_state(
-                        version_id,
-                        state="restoring",
-                        expiry=restore_expiry,
-                        checked_at="2026-07-24T10:00:00+00:00",
-                        storage_class="GLACIER",
-                    )
-
-                result = cancel_job_group(
-                    queued["group_id"],
-                    "recover",
-                    {"id": 2},
-                    1,
+            queued = queue_jobs("cold.txt", "recover", 2)
+            with self.database.connect() as connection:
+                connection.execute(
+                    """
+                    UPDATE jobs
+                    SET status='restoring',
+                        message=%s,
+                        updated_at=%s
+                    WHERE id=%s
+                    """,
+                    (
+                        "Waiting for Glacier restore; RestoreObject cannot "
+                        "be cancelled after AWS accepts it",
+                        "2026-07-24T10:00:00+00:00",
+                        queued["job_ids"][0],
+                    ),
+                )
+                ArchiveCatalog(connection).update_restore_state(
+                    version_id,
+                    state="restoring",
+                    expiry=restore_expiry,
+                    checked_at="2026-07-24T10:00:00+00:00",
+                    storage_class="GLACIER",
                 )
 
+            result = cancel_job_group(
+                queued["group_id"],
+                "recover",
+                {"id": 2},
+                1,
+            )
+
             self.assertEqual(result["cancelled_count"], 1)
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 job = connection.execute(
                     "SELECT status, group_id FROM jobs WHERE id=%s",
                     (queued["job_ids"][0],),
@@ -787,23 +743,19 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = b"cold-archive"
-            source, database_path, version_id = _prepare_cloud_only_version(
-                root,
+            source, version_id = _prepare_cloud_only_version(
+                self.database, root,
                 relative_path="cold.txt",
                 payload=payload,
                 storage_class="GLACIER",
                 object_key="docs/cold.txt",
             )
-            database_settings = SimpleNamespace(
-                database_dsn=database_dsn(str(database_path)),
-            )
-            with patch("app.database.settings", database_settings):
-                queue_jobs("cold.txt", "recover", 2)
-                with PostgresConnection(str(database_path)) as connection:
-                    connection.execute(
-                        "UPDATE jobs SET status='restoring', updated_at=%s",
-                        ("2020-01-01T00:00:00+00:00",),
-                    )
+            queue_jobs("cold.txt", "recover", 2)
+            with self.database.connect() as connection:
+                connection.execute(
+                    "UPDATE jobs SET status='restoring', updated_at=%s",
+                    ("2020-01-01T00:00:00+00:00",),
+                )
 
             client = Mock()
             client.head_object = Mock(
@@ -819,15 +771,14 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
             )
             client.restore_object = Mock()
             _attach_download_file(client)
-            worker_settings = SimpleNamespace(
+            worker_settings = dict(
                 operation_concurrency=1,
                 restore_poll_interval=1,
                 restore_days=3,
                 restore_tier="Bulk",
             )
             with (
-                patch("app.database.settings", database_settings),
-                patch("app.storage.settings", worker_settings),
+                override_settings(**worker_settings),
                 patch("app.storage.validate_cloud_vault"),
                 patch("app.storage.upload_s3_file"),
                 patch("app.storage.s3_client", return_value=client),
@@ -838,7 +789,7 @@ class GlacierRestoreWorkflowTests(unittest.TestCase):
             client.download_file.assert_called_once()
             client.get_object.assert_called_once()
             self.assertEqual((source / "cold.txt").read_bytes(), payload)
-            with PostgresConnection(str(database_path)) as connection:
+            with self.database.connect() as connection:
                 job = connection.execute(
                     "SELECT j.status FROM jobs j JOIN files f ON f.id=j.file_id WHERE f.path=%s", ("cold.txt",)
                 ).fetchone()

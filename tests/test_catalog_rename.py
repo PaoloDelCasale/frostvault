@@ -8,37 +8,33 @@ verify, cleanup of the old key) stays in ``test_rename_sync`` for #595.
 """
 from __future__ import annotations
 
-import tempfile
 import threading
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from unittest.mock import patch
 
 import psycopg
 
 from app.catalog import ArchiveCatalog, VaultFileNotFound
-from tests.catalog_support import fingerprint, protect, seed_vault, sha256_hex
-from tests.postgres import PostgresConnection, run_alembic
+from tests.catalog_support import fingerprint, protect, sha256_hex
 from tests import catalog_probe
+from tests.fixtures import FrostVaultTestCase, seed_vault
 
 DIGEST_A = sha256_hex(b"content-a")
 DIGEST_B = sha256_hex(b"content-b")
 
 
-class _CatalogFixture(unittest.TestCase):
+class _CatalogFixture(FrostVaultTestCase):
+    owner = None
+
     def setUp(self) -> None:
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.database_path = Path(directory.name) / "rename.db"
-        migrated = run_alembic(self.database_path)
-        self.assertEqual(migrated.returncode, 0, migrated.stderr)
-        with PostgresConnection(str(self.database_path)) as connection:
-            seed_vault(connection)
+        super().setUp()
+        with self.database.connect() as connection:
+            seed_vault(connection, id=2, source_root="/source")
 
     def connect(self) -> psycopg.Connection:
-        return PostgresConnection(str(self.database_path))
+        return self.database.connect()
 
     def seed_rename(
         self,

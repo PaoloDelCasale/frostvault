@@ -1,21 +1,16 @@
 """Read-only aggregate parity and scale against disposable PostgreSQL16 in CI."""
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-import unittest
 from app.services import throughput
 from app.services.throughput import ThroughputMeter
 from app.services.operation_policies import OperationPolicy, auto_upload_path_is_included, set_policy
 from app.services.upload_activity import _eligibility_sql, upload_activity
 from tests import test_protection_states as fixtures
-from tests.catalog_support import seed_vault
-
+from tests.fixtures import seed_vault
 NOW = datetime(2026, 11, 6, 10, tzinfo=timezone.utc)
 
 
-class UploadActivityPostgresTests(unittest.TestCase):
-    setUp = fixtures.ProtectionStatePostgresTests.setUp
-    seed = fixtures.ProtectionStatePostgresTests.seed
-
+class UploadActivityPostgresTests(fixtures.ProtectionStateFixture):
     def job(self, name, status, *, total=12, transferred=0, reconcile=False, origin='manual'):
         file_id, _ = self.seed(name)
         job_id = self.connection.execute("""INSERT INTO jobs(vault_id,file_id,action,status,
@@ -89,7 +84,7 @@ class UploadActivityPostgresTests(unittest.TestCase):
         self.assertEqual(upload_activity(self.connection, now=NOW)['global']['uploading']['files'], 17)
 
     def test_global_vault_isolation_suspension_exclusions_and_read_only_scale(self):
-        seed_vault(self.connection, vault_id=10, name='Second', source_root='/second')
+        seed_vault(self.connection, id=10, name='Second', source_root='/second')
         self.seed('waiting')
         self.seed('skip')
         self.seed('protected', archive=True, verified=True)
@@ -121,7 +116,7 @@ class UploadActivityPostgresTests(unittest.TestCase):
             to_timestamp(%s),to_timestamp(%s),%s)""", (vault_id, file_id, status, at, at, at, total))
 
     def test_paused_vaults_stay_apart_from_the_totals(self):
-        seed_vault(self.connection, vault_id=10, name='Paused', source_root='/paused')
+        seed_vault(self.connection, id=10, name='Paused', source_root='/paused')
         self.connection.execute("UPDATE vaults SET paused=true WHERE id=10")
         for index in range(5):
             self.connection.execute("""INSERT INTO files(vault_id,path,path_since) VALUES (10,%s,%s)""",

@@ -6,10 +6,7 @@ from contextlib import aclosing
 import hashlib
 import io
 import os
-from pathlib import Path
 import threading
-from types import SimpleNamespace
-import unittest
 from unittest.mock import patch
 import uuid
 
@@ -20,19 +17,13 @@ from watchfiles import Change, awatch
 
 from app import storage
 from app.catalog import ArchiveCatalog
-from tests import test_auto_upload_watcher as fixtures
+from tests import test_auto_upload_watcher as watcher
 from tests.catalog_support import fingerprint, protect
+from tests.fixtures import override_settings
 from tests.upload_support import job_row
 
 
-class FilesystemCatalogTests(unittest.TestCase):
-    setUp = fixtures.WatcherAutomaticUploadTests.setUp
-    db = fixtures.WatcherAutomaticUploadTests.db
-    write = fixtures.WatcherAutomaticUploadTests.write
-    advance = fixtures.WatcherAutomaticUploadTests.advance
-    queue = fixtures.WatcherAutomaticUploadTests.queue
-    jobs = fixtures.WatcherAutomaticUploadTests.jobs
-
+class FilesystemCatalogTests(watcher.WatcherCase):
     def entries(self):
         """Observed Local Copies (``files.local_*``), named as the shared helpers expect."""
         with self.db() as connection:
@@ -347,12 +338,8 @@ class FilesystemCatalogTests(unittest.TestCase):
         self.assertEqual((self.root / on_disk).read_bytes(), b"photo")
 
 
-class LiveWatcherCatalogTests(unittest.TestCase):
-    setUp = fixtures.WatcherAutomaticUploadTests.setUp
-    db = fixtures.WatcherAutomaticUploadTests.db
+class LiveWatcherCatalogTests(watcher.WatcherCase):
     entries = FilesystemCatalogTests.entries
-    advance = fixtures.WatcherAutomaticUploadTests.advance
-    queue = fixtures.WatcherAutomaticUploadTests.queue
 
     def test_new_directory_then_later_copy_is_protected_on_both_backends(self):
         for force_polling in (False, True):
@@ -442,8 +429,8 @@ class LiveWatcherCatalogTests(unittest.TestCase):
                 loop.call_soon_threadsafe(later_seen.set)
             return result
 
-        with (patch("app.storage.settings", SimpleNamespace(filesystem_watch_force_polling=force_polling)),
-              patch("app.storage._runtime_settings", return_value=SimpleNamespace(filesystem_watch_debounce_ms=30, filesystem_watch_poll_ms=300 if force_polling else 30)),
+        with (override_settings(filesystem_watch_force_polling=force_polling, filesystem_watch_debounce_ms=30,
+                                filesystem_watch_poll_ms=300 if force_polling else 30),
               patch("app.storage.awatch", side_effect=ticking_watch),
               patch("app.storage.apply_filesystem_changes", side_effect=apply),
               # The scan paired with every watcher start has its own tests.
