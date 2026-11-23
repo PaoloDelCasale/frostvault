@@ -2,7 +2,8 @@
 
 ``ensure_directory_aggregates`` reads ``directory_aggregate_status`` first; the
 file listing of a Vault is its only caller. The read is made to fail here by
-taking the table away, the "partial schema" the old fallback was written for.
+taking the table away, the "partial schema" a removed fallback was written for:
+the failure is not swallowed, the caller gets the database error itself.
 """
 from __future__ import annotations
 
@@ -32,12 +33,11 @@ class AggregateStatusReadFailureTests(FrostVaultTestCase):
             connection.execute(
                 "ALTER TABLE directory_aggregate_status_away RENAME TO directory_aggregate_status")
 
-    def test_failed_status_read_is_swallowed_and_the_next_statement_fails(self) -> None:
-        """Today the caller never gets a fallback value: PostgreSQL has aborted
-        the transaction, so the statement after the swallowed error raises
-        ``InFailedSqlTransaction`` and the real cause is lost."""
+    def test_failed_status_read_reaches_the_caller_with_its_cause(self) -> None:
+        """The error is the one PostgreSQL gave, not the ``InFailedSqlTransaction``
+        of the statement that used to run after a swallowed failure."""
         connection = self.enterContext(self.database.connect())
-        with self.assertRaises(psycopg.errors.InFailedSqlTransaction):
+        with self.assertRaises(psycopg.errors.UndefinedTable):
             directory_aggregates.ensure_directory_aggregates(connection, 1)
         self.assertEqual(connection.info.transaction_status, TransactionStatus.INERROR)
         connection.rollback()
