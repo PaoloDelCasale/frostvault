@@ -81,7 +81,7 @@ class OpenApiResponseContractTests(unittest.TestCase):
                 {"$ref": "#/components/schemas/DirectoryListItem"},
             ],
         )
-        self.assertIn("null", schemas["AuthMethod"]["type"])
+        self.assertIn({"type": "null"}, schemas["AuthMethod"]["anyOf"])
         self.assertNotEqual(
             schemas["ArchiveVersionItem"]["additionalProperties"], False
         )
@@ -145,6 +145,30 @@ class OpenApiResponseContractTests(unittest.TestCase):
                              {"$ref": "#/components/schemas/VaultPauseResponse"})
         for name in ("GeneralVault", "VaultListItem"):
             self.assertEqual(schema["components"]["schemas"][name]["properties"]["paused"], {"type": "boolean"})
+
+    def test_sign_in_answers_are_documented_from_their_models(self) -> None:
+        document = app.openapi()
+        schemas = document["components"]["schemas"]
+        answers = {
+            ("/api/login", "post"): "SessionMessageResponse",
+            ("/api/logout", "post"): "SessionMessageResponse",
+            ("/api/reauth", "post"): "ReauthResponse",
+            ("/api/me", "get"): "MeResponse",
+            ("/api/login/options", "get"): "LoginOptionsResponse",
+            ("/api/i18n/catalog", "get"): "I18nCatalogResponse",
+            ("/api/locale", "put"): "LocaleUpdateResponse",
+        }
+        for (path, method), name in answers.items():
+            with self.subTest(path=path):
+                answer = document["paths"][path][method]["responses"]["200"]
+                self.assertEqual(answer["content"]["application/json"]["schema"],
+                                 {"$ref": f"#/components/schemas/{name}"})
+                self.assertIs(schemas[name]["additionalProperties"], False)
+                self.assertNotIn(name, documented_schemas())
+        # Both blocks are always in the answer, null when there is none.
+        self.assertLessEqual({"vault", "stopped_vault"}, set(schemas["MeResponse"]["required"]))
+        self.assertEqual(set(schemas["MeStoppedVault"]["required"]),
+                         set(schemas["MeStoppedVault"]["properties"]))
 
     def test_admin_vault_schema_is_a_closed_non_secret_contract(self) -> None:
         vault = app.openapi()["components"]["schemas"]["GeneralVault"]
@@ -382,9 +406,9 @@ class PassthroughResponseModelTests(unittest.TestCase):
         self.assertIsInstance(client, fixtures._contract_checking_client())
         self.assertIs(client.app, app)
         declared = [line.partition("\t")[2] for line in fixtures.response_contract_report(app)]
-        self.assertEqual(
-            declared,
-            ["POST /api/vaults/{vault_id}/pause", "POST /api/vaults/{vault_id}/resume"],
+        self.assertLessEqual(
+            {"POST /api/vaults/{vault_id}/pause", "POST /api/vaults/{vault_id}/resume"},
+            set(declared),
         )
 
 

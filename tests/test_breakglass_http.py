@@ -37,7 +37,7 @@ class BreakGlassHttpTests(FrostVaultTestCase):
         self.cookie_name = self.settings.session_cookie_name
 
     def _client(self, peer: tuple[str, int]) -> TestClient:
-        return TestClient(app=main.app, client=peer, follow_redirects=False)
+        return self.http_client(client=peer, follow_redirects=False)
 
     def _backoff_rows(self) -> int:
         with self.database.connect() as connection:

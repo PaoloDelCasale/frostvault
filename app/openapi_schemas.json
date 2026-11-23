@@ -646,12 +646,6 @@
       ],
       "type": "object"
     },
-    "AuthMethod": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
     "CatalogRevisionResponse": {
       "additionalProperties": true,
       "properties": {
@@ -1230,32 +1224,6 @@
       ],
       "type": "object"
     },
-    "I18nCatalogResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "locale": {
-          "type": "string"
-        },
-        "locales": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "messages": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
-        }
-      },
-      "required": [
-        "locale",
-        "locales",
-        "messages"
-      ],
-      "type": "object"
-    },
     "JobCancelResponse": {
       "additionalProperties": true,
       "properties": {
@@ -1642,114 +1610,6 @@
       "required": [
         "days",
         "storage_class"
-      ],
-      "type": "object"
-    },
-    "LocaleUpdateResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "locale": {
-          "type": "string"
-        },
-        "message": {
-          "type": "string"
-        },
-        "message_key": {
-          "type": "string"
-        },
-        "messages": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
-        }
-      },
-      "required": [
-        "locale",
-        "message",
-        "message_key",
-        "messages"
-      ],
-      "type": "object"
-    },
-    "MeResponse": {
-      "additionalProperties": true,
-      "properties": {
-        "auth_method": {
-          "$ref": "#/components/schemas/AuthMethod"
-        },
-        "csrf_token": {
-          "type": "string"
-        },
-        "display_name": {
-          "type": "string"
-        },
-        "id": {
-          "type": "number"
-        },
-        "locale": {
-          "type": "string"
-        },
-        "locales": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "session_version": {
-          "type": "number"
-        },
-        "vault": {
-          "anyOf": [
-            {
-              "$ref": "#/components/schemas/MeVault"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "stopped_vault": {
-          "anyOf": [
-            {
-              "$ref": "#/components/schemas/MeStoppedVault"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "required": [
-        "id",
-        "display_name",
-        "session_version",
-        "csrf_token",
-        "auth_method",
-        "locale",
-        "locales",
-        "vault"
-      ],
-      "type": "object"
-    },
-    "MeVault": {
-      "additionalProperties": true,
-      "properties": {
-        "id": {
-          "type": "number"
-        },
-        "name": {
-          "type": "string"
-        },
-        "uuid": {
-          "format": "uuid",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "uuid",
-        "name"
       ],
       "type": "object"
     },
@@ -2695,45 +2555,6 @@
       ],
       "type": "object"
     },
-    "MeStoppedVault": {
-      "additionalProperties": true,
-      "properties": {
-        "id": {
-          "type": "number"
-        },
-        "lifecycle": {
-          "enum": [
-            "stopping",
-            "tombstone"
-          ],
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "root_released": {
-          "type": "boolean"
-        },
-        "root_released_at": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "uuid": {
-          "format": "uuid",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "uuid",
-        "name",
-        "lifecycle",
-        "root_released"
-      ],
-      "type": "object"
-    },
     "StopProtectionStatus": {
       "type": "object",
       "additionalProperties": false,
@@ -3482,25 +3303,6 @@
         "ready_by",
         "expires_at"
       ]
-    },
-    "LoginOptionsResponse": {
-      "type": "object",
-      "properties": {
-        "oidc_enabled": {
-          "type": "boolean"
-        },
-        "oidc_provider_name": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "oidc_enabled",
-        "oidc_provider_name"
-      ],
-      "additionalProperties": true
     },
     "VaultDeletionPreview": {
       "type": "object",
