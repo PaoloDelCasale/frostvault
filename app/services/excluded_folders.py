@@ -32,7 +32,9 @@ from .path_rules import FolderRule, folder_rule, normalize_globs
 def _parts(relative: str | tuple[str, ...]) -> tuple[str, ...]:
     if isinstance(relative, tuple):
         return relative
-    return tuple(part for part in relative.split("/") if part)
+    # The text split on "/", as the SQL of the same rule reads it; the Vault
+    # root ("") has no parts.
+    return tuple(relative.split("/")) if relative else ()
 
 
 @dataclass(frozen=True)

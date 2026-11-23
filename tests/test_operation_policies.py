@@ -118,7 +118,7 @@ class GlobRuleTests(unittest.TestCase):
             OperationPolicy(include_globs=("**/a/b/**", "a*b*c", "foo*bar", "foo"),
                             exclude_globs=("x/**", "?")),
             OperationPolicy(exclude_globs=("[!x]*", "a[[]1].jpg", "**/._*", "*.raw")),
-            OperationPolicy(include_globs=("/abs/**", "**/a.jpg", "rel/**", "*/**"),
+            OperationPolicy(include_globs=("abs/**", "**/a.jpg", "rel/**", "*/**"),
                             exclude_globs=("**", "deep/**/leaf.raw")),
             OperationPolicy(include_globs=("ph*/**", "**", "**/**/a.jpg"), exclude_globs=("photos",)),
             OperationPolicy(exclude_globs=("*/*", "**/*.JPG", "win/**", "a?b.jpg")),
@@ -129,6 +129,19 @@ class GlobRuleTests(unittest.TestCase):
             for path in paths:
                 self.assertEqual(matcher(path), auto_upload_path_is_included(path, policy),
                                  (path, policy.include_globs, policy.exclude_globs))
+
+    def test_admission_reads_the_globs_as_the_policy_stores_them(self) -> None:
+        """#811: ``normalize_globs`` is the one way in, also for a policy never saved."""
+        from app.services.operation_policies import AutoUploadPathMatcher, validate_policy
+        written = OperationPolicy(include_globs=("  photos\\**  ", ""), exclude_globs=("photos\\raw/**", "  "))
+        stored = OperationPolicy(include_globs=("photos/**",), exclude_globs=("photos/raw/**",))
+        for path in ("photos/a.jpg", "photos/raw/a.CR2", "docs/a.txt", "photos"):
+            self.assertEqual(path_is_included(path, written), path_is_included(path, stored), path)
+            self.assertEqual(AutoUploadPathMatcher(written)(path), AutoUploadPathMatcher(stored)(path), path)
+        absolute = OperationPolicy(include_globs=("/abs/**",))
+        self.assertRaises(ValueError, validate_policy, absolute)
+        self.assertRaises(ValueError, path_is_included, "abs/a.jpg", absolute)
+        self.assertRaises(ValueError, AutoUploadPathMatcher, absolute)
 
 
 class StabilityWindowTests(unittest.TestCase):

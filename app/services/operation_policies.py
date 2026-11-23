@@ -15,7 +15,6 @@ import stat
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import PurePosixPath
 from typing import Any, Sequence
 
 from .path_rules import (
@@ -80,7 +79,7 @@ def auto_upload_path_is_included(path: str, policy: OperationPolicy) -> bool:
     """Fixed noise exclusions are additional to, never editable via, user globs."""
     return not any(
         name_matches(part, pattern)
-        for part in PurePosixPath(path.replace("\\", "/")).parts
+        for part in path.replace("\\", "/").split("/")
         for pattern in AUTO_UPLOAD_EXCLUSIONS
     ) and path_is_included(path, policy)
 
@@ -240,11 +239,12 @@ def set_policy(
 
 def path_is_included(path: str, policy: OperationPolicy) -> bool:
     normalized = path.replace("\\", "/")
-    if policy.include_globs and not any(
-        path_matches(normalized, pattern) for pattern in policy.include_globs
+    include_globs = normalize_globs(policy.include_globs)
+    if include_globs and not any(
+        path_matches(normalized, pattern) for pattern in include_globs
     ):
         return False
-    if any(path_matches(normalized, pattern) for pattern in policy.exclude_globs):
+    if any(path_matches(normalized, pattern) for pattern in normalize_globs(policy.exclude_globs)):
         return False
     return True
 
@@ -262,8 +262,8 @@ class AutoUploadPathMatcher:
 
     def __init__(self, policy: "OperationPolicy") -> None:
         self._noise = any_name_glob(AUTO_UPLOAD_EXCLUSIONS)
-        self._include = GlobSet(policy.include_globs)
-        self._exclude = GlobSet(policy.exclude_globs)
+        self._include = GlobSet(normalize_globs(policy.include_globs))
+        self._exclude = GlobSet(normalize_globs(policy.exclude_globs))
 
     def __call__(self, path: str) -> bool:
         normalized = path.replace("\\", "/")
