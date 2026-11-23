@@ -1,4 +1,4 @@
-import type { StatsResponse } from "@/api/types";
+import type { StatsResponse } from "@/api";
 
 /** Files already in the cloud while the Vault awaits its first confirmation. */
 export type Adoption = { inCloud: number; total: number };

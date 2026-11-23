@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
-import { vaultApi } from "@/api/vault";
-import type { GlobPreviewResponse, OperationPolicy, OperationPolicyGlobEdit } from "@/api/types";
+import { vaultApi, type GlobPreviewResponse, type OperationPolicy, type OperationPolicyGlobEdit } from "@/api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";

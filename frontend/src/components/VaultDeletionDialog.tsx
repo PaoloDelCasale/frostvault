@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
-import { ApiError, cancelVaultDeletion, fetchVaultDeletion, previewVaultDeletion, requestVaultDeletion, retryVaultDeletion } from "@/api";
-import type { VaultDeletionPreview, VaultDeletionStatus } from "@/api/types";
+import { ApiError, vaultApi, type VaultDeletionPreview, type VaultDeletionStatus } from "@/api";
 import { Dialog } from "@/components/Dialog";
 import { FormField, FormInput } from "@/components/FormField";
 import { MinimumStorageNote } from "@/components/MinimumStorageNote";
@@ -112,7 +111,7 @@ export function VaultDeletionDialog({ open, onOpenChange, vaultId, vaultName, on
   const loadPreview = useCallback(async () => {
     setPreview({ state: "loading" });
     try {
-      setPreview({ state: "ready", value: await previewVaultDeletion(vaultId) });
+      setPreview({ state: "ready", value: await vaultApi(vaultId).previewDeletion() });
     } catch (failure) {
       setPreview({ state: "failed", error: errorMessage(failure, translateRef.current) });
     }
@@ -121,7 +120,7 @@ export function VaultDeletionDialog({ open, onOpenChange, vaultId, vaultName, on
   const load = useCallback(async () => {
     setError("");
     try {
-      const value = await fetchVaultDeletion(vaultId);
+      const value = await vaultApi(vaultId).deletion();
       setStatus(value);
       if (!value.request && value.deletable) await loadPreview();
     } catch (failure) {
@@ -168,11 +167,11 @@ export function VaultDeletionDialog({ open, onOpenChange, vaultId, vaultName, on
     event.preventDefault();
     // Only a dedicated Vault Bucket (empty prefix) can be deleted (#739).
     const dedicated = preview.state === "ready" && preview.value.prefix === "";
-    await act(() => requestVaultDeletion(vaultId, { confirmation, reason, delete_bucket: dedicated && deleteBucket }));
+    await act(() => vaultApi(vaultId).requestDeletion({ confirmation, reason, delete_bucket: dedicated && deleteBucket }));
   }
 
   async function cancel() {
-    await act(() => cancelVaultDeletion(vaultId));
+    await act(() => vaultApi(vaultId).cancelDeletion());
     // Back to the form, with a fresh listing.
     await loadPreview();
   }
@@ -212,7 +211,7 @@ export function VaultDeletionDialog({ open, onOpenChange, vaultId, vaultName, on
           <p className="text-sm text-muted">{t("vault_deletion.failed_help")}</p>
         </> : null}
         {request.preview ? <PreviewSummary preview={request.preview} t={t} locale={locale} /> : null}
-        {request.retryable ? <Button variant="danger" disabled={busy} onClick={() => void act(() => retryVaultDeletion(vaultId))}>
+        {request.retryable ? <Button variant="danger" disabled={busy} onClick={() => void act(() => vaultApi(vaultId).retryDeletion())}>
           {t("vault_deletion.retry")}
         </Button> : null}
         {request.cancellable ? <Button variant="secondary" disabled={busy} onClick={() => void cancel()}>

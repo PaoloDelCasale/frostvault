@@ -2,11 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  configureApiClient,
-  resetApiClientForTests,
-  type ApiFetch,
-} from "@/api";
+import { configureApiClient, resetApiClientForTests, type ApiFetch } from "@/api";
 import { NotificationCenter } from "@/components/NotificationCenter";
 import { jsonResponse } from "./support/http";
 import { createTestQueryClient } from "./support/queryClient";

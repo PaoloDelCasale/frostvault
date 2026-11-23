@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Pause, Play } from "lucide-react";
-import { apiRequest } from "@/api";
-import type { components } from "@/api/openapi.generated";
+import { vaultApi } from "@/api";
 import { useI18n } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { notify } from "@/components/toastQueue";
@@ -17,9 +16,7 @@ export function VaultPauseControl({ vaultId, paused }: { vaultId: number; paused
     if (paused === undefined || busy) return;
     setBusy(true);
     try {
-      const result = await apiRequest<components["schemas"]["VaultPauseResponse"]>(
-        `/api/vaults/${vaultId}/${paused ? "resume" : "pause"}`, { method: "POST" },
-      );
+      const result = await vaultApi(vaultId).setPaused(!paused);
       notify(result.message);
       await client.invalidateQueries({ queryKey: ["general-vaults"] });
       await client.invalidateQueries({ queryKey: ["vaults"] });

@@ -1,14 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 
-import {
-  apiQueryKeys,
-  configureApiClient,
-  fetchI18nCatalog,
-  i18nCatalogQueryOptions,
-  updateLocale,
-} from "@/api";
-import type { I18nCatalogResponse } from "@/api";
+import { apiQueryKeys, configureApiClient, fetchI18nCatalog, i18nCatalogQueryOptions, updateLocale, type I18nCatalogResponse } from "@/api";
 import {
   I18nContext,
   type I18nContextValue,

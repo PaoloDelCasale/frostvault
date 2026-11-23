@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { fetchMinimumStorage, type MinimumStorageSummary } from "@/api";
+import { vaultApi, type MinimumStorageSummary } from "@/api";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
 import { formatApproxMoney, formatBytes, formatDate, formatGroupedCount, formatMonth } from "@/pages/archive/format";
@@ -19,7 +19,7 @@ export function MinimumStoragePanel({ vaultId }: { vaultId: number }) {
   useEffect(() => {
     let live = true;
     setSummary(null); setLoadError("");
-    void fetchMinimumStorage(vaultId).then((data) => { if (live) setSummary(data); })
+    void vaultApi(vaultId).minimumStorage().then((data) => { if (live) setSummary(data); })
       .catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
     return () => { live = false; };
   }, [vaultId]);

@@ -10,11 +10,11 @@ import {
   fetchMe,
   fetchNotifications,
   fetchVaults,
-  reconnectGeneralVault,
   selectVault,
   markNotificationRead,
   markAllNotificationsRead,
 } from "./endpoints";
+import { vaultApi } from "./vault";
 import { estimateGeneralStorageCost, requestScan } from "../../tests/support/endpointProbes";
 import { jsonResponse } from "../../tests/support/http";
 
@@ -169,7 +169,7 @@ describe("foundation endpoint helpers", () => {
       }),
     );
 
-    await reconnectGeneralVault(7, {
+    await vaultApi(7).reconnect({
       volume_alias: "photos",
       relative_path: "new-name",
       reason: "operator renamed directory",

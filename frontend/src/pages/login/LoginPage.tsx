@@ -1,7 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 
-import { ApiError, loginWithPassword } from "@/api/client";
-import { fetchLoginOptions } from "@/api/endpoints";
+import { ApiError, fetchLoginOptions, loginWithPassword } from "@/api";
 import { AuthCard } from "@/components/AuthCard";
 import { ThemeControl } from "@/components/ThemeControl";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";

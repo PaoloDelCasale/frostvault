@@ -5,10 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  configureApiClient,
-  resetApiClientForTests,
-} from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import { I18nContext, type I18nContextValue } from "@/i18n/context";
 import { translate } from "@/i18n/translate";
 import { LoginPage } from "@/pages/login/LoginPage";

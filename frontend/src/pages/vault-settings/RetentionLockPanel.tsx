@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { fetchRetentionLock, type RetentionLockStatus } from "@/api";
+import { vaultApi, type RetentionLockStatus } from "@/api";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
 import { formatBytes, formatDateTime, formatGroupedCount, formatUtcDate } from "@/pages/archive/format";
@@ -19,7 +19,7 @@ export function RetentionLockPanel({ vaultId }: { vaultId: number }) {
   useEffect(() => {
     let live = true;
     setState(null); setLoadError("");
-    void fetchRetentionLock(vaultId).then((data) => { if (live) setState(data); })
+    void vaultApi(vaultId).retentionLock().then((data) => { if (live) setState(data); })
       .catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
     return () => { live = false; };
   }, [vaultId]);

@@ -1,8 +1,7 @@
 import { act, cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { configureApiClient, resetApiClientForTests } from "@/api";
-import type { UploadActivityResponse, UploadActivitySummary, UploadThroughput } from "@/api/types";
+import { configureApiClient, resetApiClientForTests, type UploadActivityResponse, type UploadActivitySummary, type UploadThroughput } from "@/api";
 import { UploadActivity } from "@/components/UploadActivity";
 import { formatBytes } from "@/pages/archive/format";
 import { expectedFinishShort, expectedFinishText, stoppedShort, stoppedText } from "@/lib/throughput";

@@ -1,4 +1,4 @@
-import type { UploadThroughput } from "@/api/types";
+import type { UploadThroughput } from "@/api";
 import { formatMegabytesPerSecond, type Phase } from "@/lib/throughput";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;

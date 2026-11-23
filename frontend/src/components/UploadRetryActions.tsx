@@ -1,8 +1,6 @@
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/api";
-import { vaultApi } from "@/api/vault";
-import type { BulkUploadAdmissionResponse, RetryFailedUploadsResponse } from "@/api/types";
+import { retryFailedUploads, vaultApi } from "@/api";
 import { useI18n } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { errorMessage } from "@/lib/errorMessage";
@@ -30,7 +28,7 @@ export function UploadRetryActions({ vaultId, showHelp = true }: { vaultId?: num
     staleTime: 0,
     queryFn: () => {
       if (!accepted) throw new Error("Missing upload request");
-      return vaultApi(accepted.vaultId).request<BulkUploadAdmissionResponse>(`/api/upload/admissions/${accepted.groupId}`);
+      return vaultApi(accepted.vaultId).uploadAdmission(accepted.groupId);
     },
     refetchInterval: (query) => query.state.data?.status === "pending" ? 2000 : false,
   });
@@ -47,7 +45,7 @@ export function UploadRetryActions({ vaultId, showHelp = true }: { vaultId?: num
         if (pendingRequest.current?.vaultId !== vaultId) {
           pendingRequest.current = { vaultId, requestId: newRequestId() };
         }
-        const result = await vaultApi(vaultId).post<{ admission?: BulkUploadAdmissionResponse }>("/api/upload", { path: "", is_directory: true, request_id: pendingRequest.current.requestId });
+        const result = await vaultApi(vaultId).upload({ path: "", is_directory: true, request_id: pendingRequest.current.requestId });
         if (result.admission) {
           client.setQueryData(["bulk-upload-admission", vaultId, result.admission.group_id], result.admission);
           setAccepted({ vaultId, groupId: result.admission.group_id });
@@ -56,7 +54,7 @@ export function UploadRetryActions({ vaultId, showHelp = true }: { vaultId?: num
         setNotice(t("uploads.whole_started"));
         await client.invalidateQueries({ queryKey: ["upload-activity"] });
       } else {
-        const result = await apiRequest<RetryFailedUploadsResponse>(`/api/upload/retry-failed${vaultId === undefined ? "" : `?vault_id=${vaultId}`}`, { method: "POST" });
+        const result = await (vaultId === undefined ? retryFailedUploads() : vaultApi(vaultId).retryFailedUploads());
         setNotice(t("uploads.retry_result", { count: result.item_count }));
       }
     } catch (reason) { setError(true); setNotice(errorMessage(reason, t)); }

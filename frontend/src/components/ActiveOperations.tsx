@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { vaultApi } from "@/api/vault";
+import { vaultApi } from "@/api";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { recoveryTimeline } from "@/pages/archive/recoveryLabel";
@@ -28,7 +28,7 @@ function ActiveOperationsPage({ vaultId, moves = false, t }: Props) {
     if (busy) return;
     setBusy(group); setMessage("");
     try {
-      await api.post(approve ? "/api/recover/approve" : "/api/jobs/cancel", { group_id: group, ...(approve ? {} : { action }) });
+      await (approve ? api.approveRecover(group) : api.cancelJobGroup(group, action));
       // Only a stopped wait leaves AWS working: before AWS accepted, cancelling stops everything.
       if (stoppedWaiting) setMessage(t("ui.operation_not_cancellable"));
       await Promise.all([client.invalidateQueries({ queryKey: ["jobs", vaultId] }), client.invalidateQueries({ queryKey: ["files"] })]);

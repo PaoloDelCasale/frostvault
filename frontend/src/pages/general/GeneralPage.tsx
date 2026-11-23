@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Overview } from "@/api/vault";
+import type { Overview } from "@/api";
 import { Panel } from "@/components/Panel";
 import { UploadRetryActions } from "@/components/UploadRetryActions";
 import { useI18n } from "@/i18n";

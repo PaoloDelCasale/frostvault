@@ -1,4 +1,4 @@
-import type { StatsResponse } from "@/api/types";
+import type { StatsResponse } from "@/api";
 import { ProgressBar } from "@/components/ProgressBar";
 import type { Adoption } from "@/lib/adoption";
 import { formatRemaining } from "@/lib/remaining";

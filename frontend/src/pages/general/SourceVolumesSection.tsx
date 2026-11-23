@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import {
-  fetchGeneralSourceVolumes,
-  type SourceVolumeInventoryItem,
-} from "@/api";
+import { fetchGeneralSourceVolumes, type SourceVolumeInventoryItem } from "@/api";
 import { Panel } from "@/components/Panel";
 import { useI18n } from "@/i18n/useI18n";
 import { errorMessage } from "@/lib/errorMessage";

@@ -1,4 +1,4 @@
-import type { ArchiveListItem } from "@/api/types";
+import type { ArchiveListItem } from "@/api";
 import type { BadgeState } from "@/components/Badge";
 import { formatDateTime } from "./format";
 export function itemStateBadge(item: ArchiveListItem, t: (key: string, params?: Record<string, string | number>) => string) {

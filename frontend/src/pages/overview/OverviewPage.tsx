@@ -2,8 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Archive, CircleAlert, Clock, Euro, Hourglass, Plus, ShieldCheck } from "lucide-react";
 
-import { apiQueryKeys, fetchBillingExport, fetchGeneralVaults, retryVaultBucket, type GeneralVault, type StatsResponse, type VaultCreationCancelled, type VaultListItem } from "@/api";
-import { vaultApi, type Overview } from "@/api/vault";
+import { apiQueryKeys, fetchBillingExport, fetchGeneralVaults, vaultApi, type GeneralVault, type Overview, type StatsResponse, type VaultCreationCancelled, type VaultListItem } from "@/api";
 import { ProblemCount } from "@/components/ProblemCount";
 import { VaultStateBadge } from "@/components/VaultStateBadge";
 import { vaultState } from "@/lib/vaultState";
@@ -95,7 +94,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
   const [cancelledCreation, setCancelledCreation] = useState<VaultCreationCancelled | null>(null);
   const stats = useQueries({ queries: vaults.map((vault) => ({
     queryKey: apiQueryKeys.vaultStats(vault.id),
-    queryFn: () => vaultApi(vault.id).request<StatsResponse>("/api/stats"),
+    queryFn: () => vaultApi(vault.id).stats(),
     refetchInterval: STATS_REFRESH_MS,
   })) });
   const number = useMemo(() => new Intl.NumberFormat(locale), [locale]);
@@ -123,7 +122,7 @@ export function OverviewPage({ vaults, overview }: { vaults: VaultListItem[]; ov
     setRetrying(vaultId);
     setRetryError(null);
     try {
-      const state = await retryVaultBucket(vaultId);
+      const state = await vaultApi(vaultId).retryBucket();
       // A Vault that became active joins the Vault list.
       if (state.state === "ready") await queryClient.invalidateQueries();
       else await general.refetch();

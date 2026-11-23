@@ -2,16 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import {
-  ApiError,
-  downloadGeneralMetadataBackup,
-  fetchGeneralMetadataBackups,
-  runGeneralMetadataBackup,
-  type MetadataBackupDownload,
-  type MetadataBackupRun,
-  type MetadataBackupStatus,
-} from "@/api";
-import type { MetadataBackupVerification } from "@/api/types";
+import { ApiError, downloadGeneralMetadataBackup, fetchGeneralMetadataBackups, runGeneralMetadataBackup, type MetadataBackupDownload, type MetadataBackupRun, type MetadataBackupStatus, type MetadataBackupVerification } from "@/api";
 import { Badge, type BadgeState } from "@/components/Badge";
 import { Panel } from "@/components/Panel";
 import { Button } from "@/components/ui/button";

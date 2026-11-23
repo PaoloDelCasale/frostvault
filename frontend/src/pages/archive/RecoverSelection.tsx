@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ArchiveListItem, RecoverEstimateResponse } from "@/api/types";
-import { vaultApi } from "@/api/vault";
+import { vaultApi, type ArchiveListItem, type RecoverEstimateResponse } from "@/api";
 import { Dialog } from "@/components/Dialog";
 import { Button } from "@/components/ui/button";
 import { errorMessage } from "@/lib/errorMessage";

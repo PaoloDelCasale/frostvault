@@ -1,19 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 
-import {
-  ApiError,
-  browseSourceVolume,
-  createVault,
-  fetchGeneralSourceVolumes,
-  fetchVaultBucket,
-  retryVaultBucket,
-  selectVault,
-} from "@/api";
-import type {
-  VaultBucketStatus,
-  VaultCreationCancelled,
-  VaultCreationMode,
-} from "@/api";
+import { ApiError, browseSourceVolume, createVault, fetchGeneralSourceVolumes, selectVault, vaultApi, type VaultBucketStatus, type VaultCreationCancelled, type VaultCreationMode } from "@/api";
 
 import { AccountPreferencesMenu } from "@/components/AccountPreferencesMenu";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
@@ -95,7 +82,7 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
     if (pendingVault === null) return;
     let stopped = false;
     const timer = window.setInterval(() => {
-      void fetchVaultBucket(pendingVault).then(async (state) => {
+      void vaultApi(pendingVault).bucket().then(async (state) => {
         if (stopped) return;
         if (state.state === "ready") {
           stopped = true;
@@ -129,7 +116,7 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
     setError(null);
     setSubmitting(true);
     try {
-      const state = await retryVaultBucket(pending.vault_id);
+      const state = await vaultApi(pending.vault_id).retryBucket();
       if (state.state === "ready") await openVault(state.vault_id);
       else setPending(state);
     } catch (err) {

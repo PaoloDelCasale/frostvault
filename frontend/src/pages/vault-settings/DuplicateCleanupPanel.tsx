@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { cancelCloudDeletionGroup, fetchDuplicateCleanup, updateDuplicateCleanup, type DuplicateCleanupStatus } from "@/api";
+import { vaultApi, type DuplicateCleanupStatus } from "@/api";
 import { FormField, FormInput } from "@/components/FormField";
 import { MinimumStorageNote } from "@/components/MinimumStorageNote";
 import { RetentionLockNote } from "@/components/RetentionLockNote";
@@ -38,7 +38,7 @@ export function DuplicateCleanupPanel({ vaultId, paused, onNotice }: { vaultId: 
   useEffect(() => {
     let live = true;
     setStatus(null); setLoadError("");
-    void fetchDuplicateCleanup(vaultId).then((data) => { if (live) accept(data); })
+    void vaultApi(vaultId).duplicateCleanup().then((data) => { if (live) accept(data); })
       .catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
     return () => { live = false; };
   }, [vaultId]);
@@ -64,17 +64,17 @@ export function DuplicateCleanupPanel({ vaultId, paused, onNotice }: { vaultId: 
     } catch (error) { onNotice(errorMessage(error, t), true); }
     finally { setBusy(false); }
   }
-  const toggle = () => status && void run(() => updateDuplicateCleanup(vaultId, { enabled: !status.enabled }), flashEnabledSaved);
+  const toggle = () => status && void run(() => vaultApi(vaultId).updateDuplicateCleanup({ enabled: !status.enabled }), flashEnabledSaved);
   // Waiting for the Minimum Storage Duration only deletes less: turning it on
   // asks for no fresh sign-in, turning it off does (#731).
-  const toggleMinimum = () => status && void run(() => updateDuplicateCleanup(vaultId, { beyond_minimum: !status.beyond_minimum }), flashMinimumSaved);
+  const toggleMinimum = () => status && void run(() => vaultApi(vaultId).updateDuplicateCleanup({ beyond_minimum: !status.beyond_minimum }), flashMinimumSaved);
   const save = () => valid && dirty && void run(
-    () => updateDuplicateCleanup(vaultId, { grace_days: grace, cap_files: files, cap_bytes: capBytes }),
+    () => vaultApi(vaultId).updateDuplicateCleanup({ grace_days: grace, cap_files: files, cap_bytes: capBytes }),
     () => onNotice(t("duplicate_cleanup.saved")));
   const cancel = (groupId: string) => void run(async () => {
-    await cancelCloudDeletionGroup(vaultId, groupId);
+    await vaultApi(vaultId).cancelJobGroup(groupId, "cloud-purge");
     onNotice(t("duplicate_cleanup.cancelled"));
-    return fetchDuplicateCleanup(vaultId);
+    return vaultApi(vaultId).duplicateCleanup();
   });
 
   const outcome = status?.last_outcome;

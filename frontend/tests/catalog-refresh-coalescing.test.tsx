@@ -1,8 +1,7 @@
 import { act, cleanup, render } from "@testing-library/react";
 import { QueryObserver } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useCatalogEvents } from "@/api/useCatalogEvents";
-import type { CatalogEventSourceFactory } from "@/api/catalogEvents";
+import { useCatalogEvents, type CatalogEventSourceFactory } from "@/api";
 import { createTestQueryClient } from "./support/queryClient";
 
 function setup() {

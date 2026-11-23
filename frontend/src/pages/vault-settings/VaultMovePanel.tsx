@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { fetchVaultMove, startVaultMove, type VaultMovePreview } from "@/api";
+import { vaultApi, type VaultMovePreview } from "@/api";
 import { MenuSelect } from "@/components/MenuSelect";
 import { ActiveOperations } from "@/components/ActiveOperations";
 import { Button } from "@/components/ui/button";
@@ -22,7 +22,7 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
   const [previewError, setPreviewError] = useState("");
   useEffect(() => {
     let live = true;
-    void fetchVaultMove(vaultId).then((next) => {
+    void vaultApi(vaultId).move().then((next) => {
       if (live) {
         if (next.vault_id !== vaultId) {
           setError(t("move.vault_changed"));
@@ -41,7 +41,7 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
     setBusy(true);
     setError("");
     try {
-      const result = await startVaultMove({ vault_id: vaultId, target_class: target, acknowledge_costs: true });
+      const result = await vaultApi(vaultId).startMove({ target_class: target, acknowledge_costs: true });
       onNotice(t("move.queued", { count: result.item_count }));
       setAcknowledged(false);
     } catch (cause) {
@@ -50,7 +50,7 @@ export function VaultMovePanel({ vaultId, onNotice }: { vaultId: number; onNotic
       return;
     }
     try {
-      const next = await fetchVaultMove(vaultId);
+      const next = await vaultApi(vaultId).move();
       if (next.vault_id !== vaultId) {
         setPreview(null);
         setError(t("move.vault_changed"));

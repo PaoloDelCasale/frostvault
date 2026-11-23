@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 
-import { fetchLifecycle, updateLifecycleDefault, type LifecycleProfile, type LifecycleResponse } from "@/api";
+import { vaultApi, type LifecycleProfile, type LifecycleResponse } from "@/api";
 import { FormField, FormInput } from "@/components/FormField";
 import { MenuSelect } from "@/components/MenuSelect";
 import { Button } from "@/components/ui/button";
@@ -35,7 +35,7 @@ export function LifecyclePanel({ vaultId, onNotice }: { vaultId: number; onNotic
 
   useEffect(() => {
     if (!ready) return;
-    void fetchLifecycle(vaultId).then(apply).catch((cause: unknown) => setError(errorMessage(cause, translateRef.current)));
+    void vaultApi(vaultId).lifecycle().then(apply).catch((cause: unknown) => setError(errorMessage(cause, translateRef.current)));
   }, [ready, vaultId]);
 
   // Saving is offered only for a change from the stored plan (#658).
@@ -51,7 +51,7 @@ export function LifecyclePanel({ vaultId, onNotice }: { vaultId: number; onNotic
     setError("");
     try {
       const profile: LifecycleProfile = { transitions: rules.map((rule) => ({ days: Number(rule.days), storage_class: rule.storage_class })) };
-      const next = await updateLifecycleDefault(selection === "custom" ? { profile } : selection, vaultId);
+      const next = await vaultApi(vaultId).updateLifecycle(selection === "custom" ? { profile } : selection);
       apply(next);
       onNotice(t(next.sync_pending ? "folder_settings.plan_sync_pending" : "folder_settings.plan_saved"));
     } catch (cause) {

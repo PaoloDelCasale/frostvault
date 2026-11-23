@@ -7,15 +7,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useEffect, useState, type ReactNode } from "react";
 
-import { CATALOG_REFRESH_MS, STATS_REFRESH_MS } from "@/api/useCatalogEvents";
-import {
-  apiQueryKeys,
-  openCatalogEventSource,
-  parseCatalogEventData,
-  useCatalogEvents,
-  type CatalogEventSourceFactory,
-  type CatalogRevisionSignal,
-} from "@/api";
+import { CATALOG_REFRESH_MS, STATS_REFRESH_MS, apiQueryKeys, openCatalogEventSource, parseCatalogEventData, useCatalogEvents, type CatalogEventSourceFactory, type CatalogRevisionSignal } from "@/api";
 import { createTestQueryClient, renderWithQueryClient } from "./support/queryClient";
 
 type MessageListener = (event: MessageEvent<string>) => void;

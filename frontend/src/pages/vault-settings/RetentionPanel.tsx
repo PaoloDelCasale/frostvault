@@ -1,10 +1,6 @@
 import { useEffect, useState } from "react";
 
-import {
-  fetchOperationPolicy,
-  updateOperationPolicy,
-  type OperationPolicy,
-} from "@/api";
+import { vaultApi, type OperationPolicy } from "@/api";
 import { FormField, FormSelect } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
@@ -38,7 +34,7 @@ export function RetentionPanel({ onNotice, vaultId }: RetentionPanelProps) {
     setLoadError("");
     void (async () => {
       try {
-        acceptPolicy(await fetchOperationPolicy(vaultId));
+        acceptPolicy(await vaultApi(vaultId).policy());
         setLoadState(t("folder_settings.retention_loaded"));
       } catch (error) {
         setLoadState("");
@@ -55,9 +51,9 @@ export function RetentionPanel({ onNotice, vaultId }: RetentionPanelProps) {
     if (!dirty) return;
     setSaving(true);
     try {
-      acceptPolicy(await updateOperationPolicy({
+      acceptPolicy(await vaultApi(vaultId).updatePolicy({
         local_release_after_days: enabled ? days : null,
-      }, vaultId));
+      }));
       onNotice(t(enabled ? "folder_settings.retention_enabled" : "folder_settings.retention_disabled"));
     } catch (error) {
       onNotice(errorMessage(error, t), true);

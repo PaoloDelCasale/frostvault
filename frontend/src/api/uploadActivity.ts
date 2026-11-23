@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { apiRequest } from "@/api/client";
-import type { UploadActivityResponse, UploadActivitySummary } from "@/api/types";
-import { CATALOG_REFRESH_MS } from "@/api/useCatalogEvents";
+import { fetchUploadActivity } from "./endpoints";
+import type { UploadActivitySummary } from "./types";
+import { CATALOG_REFRESH_MS } from "./useCatalogEvents";
 
 const stages = ["stability_wait", "queued", "uploading", "verifying"] as const;
 
@@ -17,7 +17,7 @@ export function uploadBacklog(activity: UploadActivitySummary): { files: number;
 export function useUploadActivity() {
   return useQuery({
     queryKey: ["upload-activity"],
-    queryFn: () => apiRequest<UploadActivityResponse>("/api/upload-activity"),
+    queryFn: fetchUploadActivity,
     staleTime: CATALOG_REFRESH_MS,
     refetchInterval: CATALOG_REFRESH_MS,
   });

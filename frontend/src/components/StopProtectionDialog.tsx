@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
-import { cancelStoppedFolderDeletion, fetchStopProtection, stopProtection } from "@/api";
-import type { StopProtectionStatus } from "@/api/types";
+import { vaultApi, type StopProtectionStatus } from "@/api";
 import { Dialog } from "@/components/Dialog";
 import { FormField, FormInput } from "@/components/FormField";
 import { Button } from "@/components/ui/button";
@@ -44,7 +43,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
     setConfirmation("");
     setReason("");
     setError("");
-    void fetchStopProtection(vaultId).then((value) => {
+    void vaultApi(vaultId).stopProtection().then((value) => {
       if (!cancelled) setOperation(value);
     }).catch((failure: unknown) => {
       if (!cancelled) setError(errorMessage(failure, translateRef.current));
@@ -57,7 +56,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
     setBusy(true);
     setError("");
     try {
-      setOperation(await stopProtection(vaultId, { cloud_disposition: choice, confirmation, reason }));
+      setOperation(await vaultApi(vaultId).stop({ cloud_disposition: choice, confirmation, reason }));
       changed.current = true;
     } catch (failure) {
       setError(errorMessage(failure, t));
@@ -68,7 +67,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
     setBusy(true);
     setError("");
     try {
-      setOperation(await cancelStoppedFolderDeletion(vaultId));
+      setOperation(await vaultApi(vaultId).cancelStoppedDeletion());
       changed.current = true;
     } catch (failure) {
       setError(errorMessage(failure, t));
@@ -79,7 +78,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
     setBusy(true);
     setError("");
     try {
-      setOperation(await stopProtection(vaultId, { cloud_disposition: "keep", confirmation: vaultName,
+      setOperation(await vaultApi(vaultId).stop({ cloud_disposition: "keep", confirmation: vaultName,
         reason: t("stop_protection.keep_remaining") }));
       changed.current = true;
     } catch (failure) {
@@ -119,7 +118,7 @@ export function StopProtectionDialog({ open, onOpenChange, vaultId, vaultName, o
           {t("stop_protection.cancel_deletion")}
         </Button> : null}
         <Button variant="secondary" onClick={() => {
-          void fetchStopProtection(vaultId).then(setOperation).catch((failure: unknown) => {
+          void vaultApi(vaultId).stopProtection().then(setOperation).catch((failure: unknown) => {
             setError(errorMessage(failure, t));
           });
         }}>{t("stop_protection.refresh")}</Button>

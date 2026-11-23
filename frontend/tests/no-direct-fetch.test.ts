@@ -47,4 +47,22 @@ describe("fetch confinement", () => {
 
     expect(offenders).toEqual([]);
   });
+
+  // #800: a request URL, and the Vault it is bound to, is built only by the API module.
+  it("writes no API URL and reaches the API only through the barrel outside frontend/src/api", async () => {
+    const files = await collectSourceFiles(srcRoot);
+    const offenders: string[] = [];
+    const apiUrl = /["'`]\/api\//;
+    const deepImport = /from\s+["']@\/api\//;
+
+    for (const file of files) {
+      if (file.startsWith(apiRoot + path.sep)) continue;
+      const source = await readFile(file, "utf8");
+      if (apiUrl.test(source) || deepImport.test(source)) {
+        offenders.push(path.relative(srcRoot, file));
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
 });

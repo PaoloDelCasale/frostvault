@@ -1,4 +1,4 @@
-import { ApiError, ReauthenticationRedirectError } from "@/api/client";
+import { ApiError, ReauthenticationRedirectError } from "@/api";
 
 export type ErrorTranslate = (
   key: string,

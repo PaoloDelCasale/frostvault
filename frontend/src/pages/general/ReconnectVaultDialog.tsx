@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
-import type { GeneralVault, SourceVolumeInventoryItem } from "@/api";
-import { browseSourceVolume, fetchGeneralSourceVolumes, reconnectGeneralVault } from "@/api";
+import { browseSourceVolume, fetchGeneralSourceVolumes, vaultApi, type GeneralVault, type SourceVolumeInventoryItem } from "@/api";
 import { Dialog } from "@/components/Dialog";
 import { SourceDirectoryBrowser } from "@/components/SourceDirectoryBrowser";
 import { FormField, FormInput } from "@/components/FormField";
@@ -57,7 +56,7 @@ export function ReconnectVaultDialog({ vault, open, onOpenChange, onNotice, onCo
     if (!vault || !ready) return;
     setSubmitting(true); setError("");
     try {
-      await reconnectGeneralVault(vault.id, {
+      await vaultApi(vault.id).reconnect({
         volume_alias: alias,
         relative_path: managedSelected ? vault.uuid : path ?? "",
         reason: reason.trim(),

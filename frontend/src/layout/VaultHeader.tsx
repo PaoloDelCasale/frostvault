@@ -1,11 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { fetchGeneralVaults } from "@/api";
-import { useVaultStats } from "@/api/useVaultStats";
+import { fetchGeneralVaults, uploadBacklog, useUploadActivity, useVaultStats, type StatsResponse } from "@/api";
 type Params = Record<string, string | number>;
 import { ScanStatus } from "@/components/ScanStatus";
-import { uploadBacklog, useUploadActivity } from "@/api/uploadActivity";
-import type { StatsResponse } from "@/api/types";
 import { SpeedSparkline } from "@/components/SpeedSparkline";
 import { expectedFinishText, phaseSpeeds, stoppedText } from "@/lib/throughput";
 import { adoptionOf } from "@/lib/adoption";

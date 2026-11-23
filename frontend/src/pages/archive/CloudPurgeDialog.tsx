@@ -1,6 +1,6 @@
 import { useEffect, useId, useState, type FormEvent } from "react";
 
-import type { CloudDeletionPreview, CloudDeletionSettings } from "@/api/types";
+import type { CloudDeletionPreview, CloudDeletionSettings } from "@/api";
 import { Dialog } from "@/components/Dialog";
 import { FormField, FormInput } from "@/components/FormField";
 import { MinimumStorageNote } from "@/components/MinimumStorageNote";

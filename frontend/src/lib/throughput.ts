@@ -1,4 +1,4 @@
-import type { ExpectedFinish, UploadThroughput } from "@/api/types";
+import type { ExpectedFinish, UploadThroughput } from "@/api";
 import { formatDayMonth, formatDecimal, formatTimeOfDay } from "@/pages/archive/format";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;

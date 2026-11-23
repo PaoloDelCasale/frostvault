@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchMe, fetchVaults, logout, useCatalogEvents, type MeResponse, type VaultListItem } from "@/api";
-import { fetchOverview } from "@/api/vault";
+import { fetchMe, fetchOverview, fetchVaults, logout, useCatalogEvents, type MeResponse, type VaultListItem } from "@/api";
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/theme";
 import { VaultHeader } from "@/layout/VaultHeader";

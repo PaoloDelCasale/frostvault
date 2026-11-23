@@ -7,12 +7,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  ApiError,
-  apiRequest,
-  configureApiClient,
-  resetApiClientForTests,
-} from "@/api";
+import { ApiError, apiRequest, configureApiClient, resetApiClientForTests } from "@/api";
 import { I18nContext, type I18nContextValue } from "@/i18n/context";
 import { ReauthPasswordGate } from "@/pages/archive/ReauthPasswordGate";
 import { jsonResponse } from "./support/http";

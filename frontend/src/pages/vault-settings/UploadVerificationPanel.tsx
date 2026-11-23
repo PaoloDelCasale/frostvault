@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { fetchOperationPolicy, updateOperationPolicy, type OperationPolicy } from "@/api";
+import { vaultApi, type OperationPolicy } from "@/api";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { errorMessage } from "@/lib/errorMessage";
@@ -19,7 +19,7 @@ export function UploadVerificationPanel({ vaultId, onNotice }: { vaultId: number
   useEffect(() => {
     let live = true;
     setPolicy(null); setLoadError("");
-    void fetchOperationPolicy(vaultId).then((data) => { if (live) { setPolicy(data); setChoice(choiceOf(data)); } })
+    void vaultApi(vaultId).policy().then((data) => { if (live) { setPolicy(data); setChoice(choiceOf(data)); } })
       .catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
     return () => { live = false; };
   }, [vaultId]);
@@ -28,7 +28,7 @@ export function UploadVerificationPanel({ vaultId, onNotice }: { vaultId: number
     if (!dirty) return;
     setBusy(true);
     try {
-      const next = await updateOperationPolicy({ upload_verification: choice === "inherit" ? null : choice }, vaultId);
+      const next = await vaultApi(vaultId).updatePolicy({ upload_verification: choice === "inherit" ? null : choice });
       setPolicy(next); setChoice(choiceOf(next));
       onNotice(t("settings.verification_saved"));
     } catch (error) { onNotice(errorMessage(error, t), true); }

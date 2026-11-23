@@ -1,9 +1,8 @@
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { configureApiClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests, type Overview } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
-import type { Overview } from "@/api/vault";
 import { BillingExportSection } from "@/pages/general/BillingExportSection";
 import { OverviewPage } from "@/pages/overview/OverviewPage";
 import { createVaultAccessFetch, defaultBillingExport, defaultVaultBilledCost, renderVaultAccess } from "./vault-settings-harness";

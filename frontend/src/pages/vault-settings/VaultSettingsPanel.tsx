@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchGeneralVaults, fetchOperationPolicy, updateOperationPolicy } from "@/api";
+import { fetchGeneralVaults, vaultApi } from "@/api";
 import { VaultPauseControl } from "@/components/VaultPauseControl";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
 import { notify } from "@/components/toastQueue";
@@ -69,14 +69,14 @@ export function VaultSettingsPanel({ vaultId, vaultName, onStopped }: { vaultId:
   useEffect(() => {
     let live = true;
     setLoadError("");
-    void fetchOperationPolicy(vaultId).then((data) => { if (live) setAuto(data.auto_upload); }).catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
+    void vaultApi(vaultId).policy().then((data) => { if (live) setAuto(data.auto_upload); }).catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
     return () => { live = false; };
   }, [vaultId]);
   async function toggle() {
     if (auto === null) return;
     setBusy(true);
     try {
-      const next = (await updateOperationPolicy({ auto_upload: !auto }, vaultId)).auto_upload;
+      const next = (await vaultApi(vaultId).updatePolicy({ auto_upload: !auto })).auto_upload;
       // A checkbox saves on change and confirms beside itself, not with a toast (#658).
       setAuto(next); flashAutoSaved();
     } catch (error) { show(errorMessage(error, t), true); }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { cancelCloudDeletionGroup, fetchMirrorCleanup, updateMirrorCleanup, type MirrorCleanupStatus } from "@/api";
+import { vaultApi, type MirrorCleanupStatus } from "@/api";
 import { FormField, FormInput } from "@/components/FormField";
 import { MinimumStorageNote } from "@/components/MinimumStorageNote";
 import { RetentionLockNote } from "@/components/RetentionLockNote";
@@ -43,7 +43,7 @@ export function MirrorCleanupPanel({ vaultId, paused, onNotice }: { vaultId: num
   useEffect(() => {
     let live = true;
     setStatus(null); setLoadError("");
-    void fetchMirrorCleanup(vaultId).then((data) => { if (live) accept(data); })
+    void vaultApi(vaultId).mirrorCleanup().then((data) => { if (live) accept(data); })
       .catch((error: unknown) => { if (live) setLoadError(errorMessage(error, translateRef.current)); });
     return () => { live = false; };
   }, [vaultId]);
@@ -69,15 +69,15 @@ export function MirrorCleanupPanel({ vaultId, paused, onNotice }: { vaultId: num
     } catch (error) { onNotice(errorMessage(error, t), true); }
     finally { setBusy(false); }
   }
-  const toggle = () => status && void run(() => updateMirrorCleanup(vaultId, { enabled: !status.enabled }), flashEnabledSaved);
-  const toggleMinimum = () => status && void run(() => updateMirrorCleanup(vaultId, { beyond_minimum: !status.beyond_minimum }), flashMinimumSaved);
+  const toggle = () => status && void run(() => vaultApi(vaultId).updateMirrorCleanup({ enabled: !status.enabled }), flashEnabledSaved);
+  const toggleMinimum = () => status && void run(() => vaultApi(vaultId).updateMirrorCleanup({ beyond_minimum: !status.beyond_minimum }), flashMinimumSaved);
   const save = () => valid && dirty && void run(
-    () => updateMirrorCleanup(vaultId, { grace_days: grace, cap_files: files, cap_bytes: capBytes, folders }),
+    () => vaultApi(vaultId).updateMirrorCleanup({ grace_days: grace, cap_files: files, cap_bytes: capBytes, folders }),
     () => onNotice(t("mirror_cleanup.saved")));
   const cancel = (groupId: string) => void run(async () => {
-    await cancelCloudDeletionGroup(vaultId, groupId);
+    await vaultApi(vaultId).cancelJobGroup(groupId, "cloud-purge");
     onNotice(t("mirror_cleanup.cancelled"));
-    return fetchMirrorCleanup(vaultId);
+    return vaultApi(vaultId).mirrorCleanup();
   });
 
   const outcome = status?.last_outcome;
