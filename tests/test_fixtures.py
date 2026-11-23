@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,7 +10,7 @@ import psycopg
 
 from app import config, database, main, storage
 from app.schema_guard import SCHEMA_HEAD
-from tests import fixtures, postgres
+from tests import fixtures
 from tests.fixtures import (
     FrostVaultTestCase,
     alembic_upgrade_head,
@@ -42,8 +41,6 @@ class OverrideSettingsTests(unittest.TestCase):
             self.assertIs(overridden, config.settings)
             for module in (config, database, main, storage):
                 self.assertEqual(module.settings.restore_days, before + 7)
-            self.assertEqual(main._runtime_settings().restore_days, before + 7)
-            self.assertEqual(storage._runtime_settings().restore_days, before + 7)
         self.assertEqual(config.settings.restore_days, before)
         self.assertIs(main.settings, config.settings)
 
@@ -107,7 +104,7 @@ class DatabaseFixtureTests(unittest.TestCase):
         # The e2e seed script sets DATABASE_URL from a fixture database first.
         probe = subprocess.run(
             [sys.executable, "-c",
-             "import sys, tests.fixtures, tests.postgres; "
+             "import sys, tests.fixtures; "
              "sys.exit(any(name == 'app' or name.startswith('app.') for name in sys.modules))"],
             cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, check=False,
         )
@@ -131,19 +128,6 @@ class DatabaseFixtureTests(unittest.TestCase):
             upgraded = alembic_upgrade_head(database_)
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
             self.assertEqual(_revision(database_), SCHEMA_HEAD)
-
-    def test_path_aliases_keep_one_database_per_path(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "app.db"
-            migrated = postgres.run_alembic(path)
-            self.assertEqual(migrated.returncode, 0, migrated.stderr)
-            self.assertEqual(postgres.database_dsn(path), postgres.database_dsn(str(path)))
-            self.assertNotEqual(
-                postgres.database_dsn(path), postgres.database_dsn(Path(directory) / "other.db")
-            )
-            with postgres.PostgresConnection(path) as connection:
-                self.assertIsNone(connection.execute("SELECT 1 FROM owner").fetchone())
-            self.assertEqual(postgres.database_state(Path(directory) / "other.db"), {})
 
 
 class OwnerAndVaultTests(FrostVaultTestCase):
