@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resetApiClientForTests } from "@/api";
 import { problemLink } from "@/lib/problemLink";
 import { vaultFilesUrl, vaultSettingsUrl } from "@/router";
-import { createVaultAccessFetch, defaultDuplicateCleanup, jsonResponse, loadCatalog, renderVaultAccess } from "./vault-settings-harness";
+import { createVaultAccessFetch, defaultDuplicateCleanup, loadCatalog, renderVaultAccess } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
 
 afterEach(() => { cleanup(); resetApiClientForTests(); });
 

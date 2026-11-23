@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { configureApiClient, resetApiClientForTests } from "@/api";
 import { RecoverSelection, type Target } from "@/pages/archive/RecoverSelection";
-import { jsonResponse } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
 const target: Target = { vaultId: 2, vaultName: "Second", item: { type: "file", name: "same.jpg", path: "same.jpg", state: "cloud_only" } };
 const t = (key: string, params?: Record<string, string | number>) => `${key}${params ? JSON.stringify(params) : ""}`;
 afterEach(resetApiClientForTests);

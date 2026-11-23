@@ -1,12 +1,14 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import type { Overview } from "@/api/vault";
 import { BillingExportSection } from "@/pages/general/BillingExportSection";
 import { OverviewPage } from "@/pages/overview/OverviewPage";
-import { createVaultAccessFetch, defaultBillingExport, defaultVaultBilledCost, jsonResponse, renderVaultAccess } from "./vault-settings-harness";
+import { createVaultAccessFetch, defaultBillingExport, defaultVaultBilledCost, renderVaultAccess } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 afterEach(() => { cleanup(); resetApiClientForTests(); document.documentElement.lang = ""; });
 
@@ -91,7 +93,7 @@ describe("Billed Cost on the Vault page", () => {
 function renderSystemSection(body: unknown, locale: "en" | "it" = "en") {
   resetApiClientForTests();
   configureApiClient({ fetch: createVaultAccessFetch({ "GET /api/billing-export": () => jsonResponse(body) }, { locale }) });
-  render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider><BillingExportSection /></I18nProvider></ApiQueryProvider>);
+  renderWithQueryClient(<I18nProvider><BillingExportSection /></I18nProvider>);
 }
 
 describe("Billing export on the System page", () => {
@@ -149,8 +151,8 @@ describe("Billed Cost on the Overview", () => {
       "GET /api/general/vaults": () => jsonResponse({ items: [] }),
       "GET /api/stats": () => jsonResponse({ states: { protected: 1 }, storage: {}, runtime: {} }),
     }, { locale: "en" }) });
-    render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider>
-      <OverviewPage vaults={[{ id: 1, uuid: "u1", name: "Foto" } as never]} overview={overview} /></I18nProvider></ApiQueryProvider>);
+    renderWithQueryClient(<I18nProvider>
+      <OverviewPage vaults={[{ id: 1, uuid: "u1", name: "Foto" } as never]} overview={overview} /></I18nProvider>);
   }
 
   it("names what AWS billed for the FrostVault buckets in the newest month, not the whole bill", async () => {

@@ -4,12 +4,13 @@ import { fileURLToPath } from "node:url";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import type { CloudDeletionPreview } from "@/api/types";
 import { FileBrowser } from "@/pages/archive/FileBrowser";
 import { CloudPurgeDialog } from "@/pages/archive/CloudPurgeDialog";
 import { translate } from "@/i18n/translate";
-import { jsonResponse } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 const t = (key: string, params?: Record<string, string | number>) => params ? `${key} ${JSON.stringify(params)}` : key;
 const preview = (overrides: Partial<CloudDeletionPreview> = {}): CloudDeletionPreview => ({
@@ -45,7 +46,7 @@ function setup(items: unknown[], total = items.length, search = "") {
     if (url.startsWith("/api/jobs")) return jsonResponse({ groups: [] });
     return jsonResponse({ items, total, aggregate_status: "ready" });
   }) });
-  render(<ApiQueryProvider client={createAppQueryClient()}><FileBrowser vaultId={1} vaultName="Immich" t={t} capabilities={{ delete_enabled: true, cloud_deletion_enabled: true }} /></ApiQueryProvider>);
+  renderWithQueryClient(<FileBrowser vaultId={1} vaultName="Immich" t={t} capabilities={{ delete_enabled: true, cloud_deletion_enabled: true }} />);
   return { posts, fail409: () => { purgeStatus = 409; } };
 }
 afterEach(() => { resetApiClientForTests(); window.history.replaceState({}, "", "/"); });

@@ -1,10 +1,12 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import App from "@/App";
 import { I18nProvider } from "@/i18n/I18nProvider";
-import { defaultBillingExport, defaultCloudUsage, defaultDuplicateCleanup, defaultMirrorCleanup, defaultMinimumStorage, defaultVaultBilledCost, jsonResponse, loadCatalog } from "./vault-settings-harness";
+import { defaultBillingExport, defaultCloudUsage, defaultDuplicateCleanup, defaultMirrorCleanup, defaultMinimumStorage, defaultVaultBilledCost, loadCatalog } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 const vaults = [{ id: 1, uuid: "first", name: "First" }, { id: 2, uuid: "second", name: "Second" }];
 const location = () => `${window.location.pathname}${window.location.search}`;
@@ -47,7 +49,7 @@ describe("Owner app routing and shell (#512)", () => {
     }) });
   });
   afterEach(resetApiClientForTests);
-  function show() { render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider><App /></I18nProvider></ApiQueryProvider>); }
+  function show() { renderWithQueryClient(<I18nProvider><App /></I18nProvider>); }
 
   it.each(["/", "/system", "/problems", "/vaults/new", "/vaults/1/files", "/vaults/1/settings"])("shows upload activity in the header on %s", async (path) => {
     window.history.replaceState({}, "", path); show();

@@ -1,7 +1,6 @@
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, waitFor } from "@testing-library/react";
 import {
-  QueryClient,
-  QueryClientProvider,
+  type QueryClient,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -17,11 +16,12 @@ import {
   type CatalogEventSourceFactory,
   type CatalogRevisionSignal,
 } from "@/api";
+import { createTestQueryClient, renderWithQueryClient } from "./support/queryClient";
 
 type MessageListener = (event: MessageEvent<string>) => void;
 
 function createQueryClient() {
-  return new QueryClient({
+  return createTestQueryClient({
     defaultOptions: { queries: { retry: false } },
   });
 }
@@ -63,9 +63,7 @@ function Harness({
 }
 
 function renderWithClient(client: QueryClient, ui: ReactNode) {
-  return render(
-    <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
-  );
+  return renderWithQueryClient(ui, { client });
 }
 
 describe("catalog event helpers", () => {

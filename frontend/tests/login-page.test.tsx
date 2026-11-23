@@ -17,6 +17,7 @@ import {
   THEME_ACTIVE_USER_STORAGE_KEY,
   themeStorageKey,
 } from "@/theme/theme";
+import { jsonResponse } from "./support/http";
 
 const localesDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -26,13 +27,6 @@ const localesDir = path.resolve(
 function loadCatalog(locale: "en" | "it"): Record<string, string> {
   const raw = readFileSync(path.join(localesDir, `${locale}.json`), "utf8");
   return JSON.parse(raw) as Record<string, string>;
-}
-
-function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
 }
 
 describe("LoginPage local sign-in", () => {

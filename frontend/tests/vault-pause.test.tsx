@@ -1,12 +1,14 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests, setCsrfToken } from "@/api";
+import { configureApiClient, resetApiClientForTests, setCsrfToken } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { ToastRegion } from "@/components/Toast";
 import { VaultHeader } from "@/layout/VaultHeader";
 import { VaultSettingsPanel } from "@/pages/vault-settings/VaultSettingsPanel";
-import { createVaultAccessFetch, jsonResponse } from "./vault-settings-harness";
+import { createVaultAccessFetch } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 afterEach(resetApiClientForTests);
 
@@ -30,9 +32,9 @@ describe("Persistent Vault pause controls (#537)", () => {
       },
     });
     configureApiClient({ fetch: fetcher }); setCsrfToken("pause-csrf");
-    render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider>{page === "header"
+    renderWithQueryClient(<I18nProvider>{page === "header"
       ? <VaultHeader vaultId={2} vaultName="Photos" active="files" t={(key) => key} />
-      : <VaultSettingsPanel vaultId={2} vaultName="Photos" onStopped={vi.fn()} />}<ToastRegion closeLabel="Close notification" /></I18nProvider></ApiQueryProvider>);
+      : <VaultSettingsPanel vaultId={2} vaultName="Photos" onStopped={vi.fn()} />}<ToastRegion closeLabel="Close notification" /></I18nProvider>);
     return posts;
   }
 

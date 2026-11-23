@@ -7,11 +7,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiQueryProvider,
   configureApiClient,
-  createAppQueryClient,
   resetApiClientForTests,
 } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { useI18n } from "@/i18n/useI18n";
+import { jsonResponse } from "./support/http";
+import { createTestQueryClient } from "./support/queryClient";
 
 const localesDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -21,13 +22,6 @@ const localesDir = path.resolve(
 function loadCatalog(locale: "en" | "it"): Record<string, string> {
   const raw = readFileSync(path.join(localesDir, `${locale}.json`), "utf8");
   return JSON.parse(raw) as Record<string, string>;
-}
-
-function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
 }
 
 function Probe() {
@@ -92,7 +86,7 @@ describe("I18nProvider locale switching", () => {
   });
 
   function renderProvider() {
-    const client = createAppQueryClient({
+    const client = createTestQueryClient({
       defaultOptions: { queries: { retry: false } },
     });
     return render(

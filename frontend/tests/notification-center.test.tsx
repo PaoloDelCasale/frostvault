@@ -4,18 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   configureApiClient,
-  createAppQueryClient,
   resetApiClientForTests,
   type ApiFetch,
 } from "@/api";
 import { NotificationCenter } from "@/components/NotificationCenter";
-
-function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
+import { jsonResponse } from "./support/http";
+import { createTestQueryClient } from "./support/queryClient";
 
 const catalog: Record<string, string> = {
   "ui.notifications_open": "Open notifications",
@@ -86,7 +80,7 @@ function renderCenter(fetchMock: ApiFetch) {
     <NotificationCenter
       locale="en"
       t={translate}
-      queryClient={createAppQueryClient()}
+      queryClient={createTestQueryClient()}
     />,
   );
 }
@@ -815,7 +809,7 @@ describe("NotificationCenter", () => {
       <NotificationCenter
         locale="it"
         t={tIt}
-        queryClient={createAppQueryClient()}
+        queryClient={createTestQueryClient()}
       />,
     );
     await user.click(

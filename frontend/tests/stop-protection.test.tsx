@@ -1,14 +1,16 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { StopProtectionDialog } from "@/components/StopProtectionDialog";
 import { formatDateTime } from "@/pages/archive/format";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 const messages = JSON.parse(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../app/locales/en.json"), "utf8"));
 const initial = { vault_id: 1, vault_name: "Photos", stopped: false, root_released: false,
@@ -27,9 +29,9 @@ function setup(props: { onOpenChange?: (open: boolean) => void; onCompleted?: ()
     const body = url.startsWith("/api/i18n/catalog") ? { locale: "en", locales: ["en", "it"], messages }
       : url.endsWith("/cancel-deletion") ? { ...initial, stopped: true, root_released: true }
       : method === "POST" ? pending : props.status ?? initial;
-    return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
+    return jsonResponse(body);
   }) });
-  render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider><StopProtectionDialog open onOpenChange={props.onOpenChange ?? vi.fn()} onCompleted={props.onCompleted} vaultId={1} vaultName="Photos" /></I18nProvider></ApiQueryProvider>);
+  renderWithQueryClient(<I18nProvider><StopProtectionDialog open onOpenChange={props.onOpenChange ?? vi.fn()} onCompleted={props.onCompleted} vaultId={1} vaultName="Photos" /></I18nProvider>);
   return calls;
 }
 

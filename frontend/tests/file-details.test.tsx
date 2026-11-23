@@ -1,9 +1,10 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests } from "@/api";
+import { configureApiClient, resetApiClientForTests } from "@/api";
 import { FileDetails } from "@/pages/archive/FileDetails";
-import { jsonResponse } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 const t = (key: string) => key;
 const stale = { type: "file" as const, name: "same.jpg", path: "same.jpg", state: "cloud_only" };
@@ -23,7 +24,7 @@ function setup(state: string, local: boolean, conflict = false, reconciliation =
     if (url.startsWith("/api/cloud-deletion")) return jsonResponse({ purge_delay_seconds: 604800 });
     return jsonResponse({});
   }) });
-  render(<ApiQueryProvider client={createAppQueryClient()}><FileDetails target={{ item: stale, vaultId: 2, vaultName: "Second" }} t={t} onClose={vi.fn()} onRecover={vi.fn()} onRefresh={vi.fn()} /></ApiQueryProvider>);
+  renderWithQueryClient(<FileDetails target={{ item: stale, vaultId: 2, vaultName: "Second" }} t={t} onClose={vi.fn()} onRecover={vi.fn()} onRefresh={vi.fn()} />);
   return calls;
 }
 afterEach(() => { resetApiClientForTests(); purgeFailure = null; versionExtra = {}; });

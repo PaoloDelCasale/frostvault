@@ -1,10 +1,12 @@
-import { render, screen, within } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests, type ApiFetch } from "@/api";
+import { configureApiClient, resetApiClientForTests, type ApiFetch } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { VaultHeader } from "@/layout/VaultHeader";
 import { OverviewPage } from "@/pages/overview/OverviewPage";
-import { jsonResponse, loadCatalog } from "./vault-settings-harness";
+import { loadCatalog } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 afterEach(resetApiClientForTests);
 
@@ -25,7 +27,7 @@ function setup(ui: React.ReactElement, stats = STATS, paused = false) {
       id: Number(id), uuid: `v${id}`, name: `Vault ${id}`, paused: paused && id === "1", lifecycle: "active", source_root: `/sources/v${id}`, s3_prefix: `v${id}` })) });
     return jsonResponse({}, 404);
   }) });
-  render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider>{ui}</I18nProvider></ApiQueryProvider>);
+  renderWithQueryClient(<I18nProvider>{ui}</I18nProvider>);
 }
 
 const vaults = [1, 2, 3].map((id) => ({ id, uuid: `v${id}`, name: `Vault ${id}` }));

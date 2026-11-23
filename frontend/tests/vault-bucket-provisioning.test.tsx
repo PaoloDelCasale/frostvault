@@ -1,11 +1,13 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiQueryProvider, configureApiClient, createAppQueryClient, resetApiClientForTests, type ApiFetch } from "@/api";
+import { configureApiClient, resetApiClientForTests, type ApiFetch } from "@/api";
 import { I18nProvider } from "@/i18n/I18nProvider";
 import { problemLink } from "@/lib/problemLink";
 import { OverviewPage } from "@/pages/overview/OverviewPage";
-import { jsonResponse, loadCatalog } from "./vault-settings-harness";
+import { loadCatalog } from "./vault-settings-harness";
+import { jsonResponse } from "./support/http";
+import { renderWithQueryClient } from "./support/queryClient";
 
 afterEach(resetApiClientForTests);
 
@@ -38,9 +40,9 @@ function setup(retryState: "failed" | "ready" = "failed", bucket: Record<string,
     ] });
     return jsonResponse({}, 404);
   }) });
-  render(<ApiQueryProvider client={createAppQueryClient()}><I18nProvider>
+  renderWithQueryClient(<I18nProvider>
     <OverviewPage vaults={[{ id: 1, uuid: "v1", name: "Photos" }]} />
-  </I18nProvider></ApiQueryProvider>);
+  </I18nProvider>);
   return { calls, messages };
 }
 
