@@ -4,12 +4,17 @@ This module is intentionally a persistence seam, not a read-path integration.
 Callers own the canonical catalog mutation and pass the same database
 connection to :class:`CatalogEventStore` so the mutation, revision allocation,
 and event insert commit or roll back together.
+
+The store is also the only reader of the journal: the event stream asks it for
+one bounded catch-up (:meth:`CatalogEventStore.read_catchup`) and only turns
+the answer into a signal.
 """
 from __future__ import annotations
 
 import json
 import re
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,6 +25,21 @@ MAX_EVENT_PAYLOAD_BYTES = 4096
 MAX_EVENT_PAGE_SIZE = 100
 
 _DOMAIN_RE = re.compile(r"^[a-z][a-z0-9_.-]*$")
+
+# The two statements of a catch-up, with the text the event stream has always
+# sent (indentation included).
+_CATCHUP_HIGH_WATER_SQL = """
+        SELECT revision, retained_from_revision
+        FROM vault_catalog_revisions
+        WHERE vault_id=%s
+        """
+_CATCHUP_EVENT_PAGE_SQL = """
+        SELECT id, vault_id, revision, domain, scope, payload, created_at
+        FROM catalog_events
+        WHERE vault_id=%s AND revision>%s
+        ORDER BY revision
+        LIMIT %s
+        """
 
 
 def _now() -> str:
@@ -157,6 +177,24 @@ def _event_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True)
+class CatchupRead:
+    """What the journal holds after a cursor, for one bounded catch-up.
+
+    ``revision`` is the Vault's high-water mark. ``has_gap`` means the events
+    after the cursor cannot be replayed (pruned by retention, missing, or more
+    than the bound): the reader must resynchronize at ``revision``. Otherwise
+    ``events`` are all of them, in revision order. ``events_read`` counts the
+    journal rows read and ``statements`` the statements run (one or two).
+    """
+
+    revision: int
+    events: tuple[dict[str, Any], ...]
+    has_gap: bool
+    events_read: int
+    statements: int
+
+
 class CatalogEventStore:
     """Allocate per-Vault revisions and append bounded catalog events.
 
@@ -271,6 +309,61 @@ class CatalogEventStore:
             scope=event_scope,
             payload_json=event_payload,
             created_at=stamp,
+        )
+
+    def read_catchup(
+        self,
+        *,
+        vault_id: int,
+        after_revision: int,
+        max_events: int,
+    ) -> CatchupRead:
+        """Read the events after ``after_revision``, at most ``max_events``.
+
+        Never loops pages: one high-water read + one bounded event page.
+        """
+        max_events = max(1, min(int(max_events), MAX_EVENT_PAGE_SIZE))
+
+        state = self.connection.execute(
+            _CATCHUP_HIGH_WATER_SQL,
+            (vault_id,),
+        ).fetchone()
+        current = int(state["revision"]) if state else 0
+        retained_from = int(state["retained_from_revision"]) if state else 1
+
+        if after_revision >= current and after_revision >= retained_from - 1:
+            return CatchupRead(current, (), False, 0, 1)
+
+        # Retention gap or cursor behind retained history → full invalidate.
+        if after_revision < retained_from - 1:
+            return CatchupRead(current, (), True, 0, 1)
+
+        rows = self.connection.execute(
+            _CATCHUP_EVENT_PAGE_SQL,
+            (vault_id, after_revision, max_events + 1),
+        ).fetchall()
+        has_more = len(rows) > max_events
+        visible = rows[:max_events]
+        events_read = len(visible)
+
+        if not visible:
+            # Missing retained events → treat as gap, do not silently advance.
+            return CatchupRead(current, (), after_revision < current, 0, 2)
+
+        expected = max(after_revision + 1, retained_from)
+        if int(visible[0]["revision"]) > expected:
+            return CatchupRead(current, (), True, events_read, 2)
+
+        if has_more:
+            # Bound exceeded: do not page.  Client converges via invalidate-all.
+            return CatchupRead(current, (), True, events_read, 2)
+
+        return CatchupRead(
+            current,
+            tuple(_event_from_row(row) for row in visible),
+            False,
+            events_read,
+            2,
         )
 
     def prune_events(

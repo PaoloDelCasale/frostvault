@@ -363,18 +363,14 @@ def request_vault_rebuild(connection: Any, vault_id: int) -> None:
 
 
 def _status_row(connection: Any, vault_id: int) -> dict[str, Any] | None:
-    try:
-        return connection.execute(
-            """
+    return connection.execute(
+        """
             SELECT vault_id, status, updated_at
             FROM directory_aggregate_status
             WHERE vault_id=%s
             """,
-            (int(vault_id),),
-        ).fetchone()
-    except Exception:
-        # Pre-migration callers (or tests on partial schemas) skip silently.
-        return None
+        (int(vault_id),),
+    ).fetchone()
 
 
 def set_maintenance_scheduling_enabled(enabled: bool) -> None:

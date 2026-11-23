@@ -39,7 +39,7 @@ from .catalog_event_hub import (
     normalize_invalidate_domains,
     signal_from_event,
 )
-from .catalog_events import MAX_EVENT_PAGE_SIZE
+from .catalog_events import MAX_EVENT_PAGE_SIZE, CatalogEventStore
 from .shutdown import shutdown_state
 
 
@@ -119,124 +119,40 @@ def coalesced_catchup_from_connection(
 ) -> tuple[dict[str, Any], int, bool]:
     """Bounded journal catch-up on an already-open connection.
 
-    Returns ``(signal, events_read, backlog_truncated)``.
-    Never loops pages: one high-water read + one bounded event page.
+    Returns ``(signal, events_read, backlog_truncated)``. The journal store
+    reads (one high-water read + at most one bounded event page); this turns
+    what it read into one coalesced signal.
     """
-    max_events = max(1, min(int(max_events), MAX_EVENT_PAGE_SIZE))
+    read = CatalogEventStore(connection).read_catchup(
+        vault_id=vault_id,
+        after_revision=after_revision,
+        max_events=max_events,
+    )
+    if statement_counter is not None:
+        statement_counter[0] += read.statements
 
-    def _count() -> None:
-        if statement_counter is not None:
-            statement_counter[0] += 1
-
-    _count()
-    state = connection.execute(
-        """
-        SELECT revision, retained_from_revision
-        FROM vault_catalog_revisions
-        WHERE vault_id=%s
-        """,
-        (vault_id,),
-    ).fetchone()
-    current = int(state["revision"]) if state else 0
-    retained_from = int(state["retained_from_revision"]) if state else 1
-
-    if after_revision >= current and after_revision >= retained_from - 1:
+    if read.has_gap:
         return (
-            {
-                "vault_id": vault_id,
-                "revision": current,
-                "domains": [],
-                "has_gap": False,
-            },
-            0,
-            False,
-        )
-
-    # Retention gap or cursor behind retained history → full invalidate.
-    if after_revision < retained_from - 1:
-        return _invalidate_all_signal(vault_id=vault_id, revision=current), 0, True
-
-    _count()
-    rows = connection.execute(
-        """
-        SELECT id, vault_id, revision, domain, scope, payload, created_at
-        FROM catalog_events
-        WHERE vault_id=%s AND revision>%s
-        ORDER BY revision
-        LIMIT %s
-        """,
-        (vault_id, after_revision, max_events + 1),
-    ).fetchall()
-    has_more = len(rows) > max_events
-    visible = rows[:max_events]
-    events_read = len(visible)
-
-    if not visible:
-        if after_revision < current:
-            # Missing retained events → treat as gap, do not silently advance.
-            return (
-                _invalidate_all_signal(vault_id=vault_id, revision=current),
-                0,
-                True,
-            )
-        return (
-            {
-                "vault_id": vault_id,
-                "revision": current,
-                "domains": [],
-                "has_gap": False,
-            },
-            0,
-            False,
-        )
-
-    expected = max(after_revision + 1, retained_from)
-    if int(visible[0]["revision"]) > expected:
-        return (
-            _invalidate_all_signal(vault_id=vault_id, revision=current),
-            events_read,
+            _invalidate_all_signal(vault_id=vault_id, revision=read.revision),
+            read.events_read,
             True,
         )
 
-    if has_more:
-        # Bound exceeded: do not page.  Client converges via invalidate-all.
-        return (
-            _invalidate_all_signal(vault_id=vault_id, revision=current),
-            events_read,
-            True,
-        )
-
-    decoded: list[dict[str, Any]] = []
-    for row in visible:
-        payload = row["payload"] if isinstance(row["payload"], dict) else {}
-        decoded.append(
-            signal_from_event(
-                {
-                    "vault_id": row["vault_id"],
-                    "revision": int(row["revision"]),
-                    "domain": row["domain"],
-                    "scope": row["scope"],
-                    "payload": payload,
-                    "created_at": row["created_at"].isoformat(),
-                    "has_gap": False,
-                }
-            )
-        )
-    merged = coalesce_signals(*decoded)
+    merged = coalesce_signals(*(signal_from_event(event) for event in read.events))
     if merged is None:
         return (
             {
                 "vault_id": vault_id,
-                "revision": current,
+                "revision": read.revision,
                 "domains": [],
                 "has_gap": False,
             },
-            events_read,
+            read.events_read,
             False,
         )
     # Fully consumed bounded page: high-water is the newest visible revision.
     merged["has_gap"] = bool(merged.get("has_gap"))
-    return merged, events_read, False
+    return merged, read.events_read, False
 
 
 def stream_tick_snapshot(
