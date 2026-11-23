@@ -22,6 +22,7 @@ from app.catalog import ArchiveCatalog
 from app.services import health, notifications, vault_relocation
 from app.services.operation_policies import queue_auto_uploads
 from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
+from app.services.job_queue import JobQueue
 
 
 class QueueStallDetectorTests(unittest.TestCase):
@@ -197,7 +198,7 @@ class QueueFixture(FrostVaultTestCase):
     def candidates(self, **kwargs):
         stamp = self.clock.isoformat()
         with self.db() as connection:
-            return ArchiveCatalog(connection).list_claimable_jobs(
+            return JobQueue(connection).list_claimable_jobs(
                 now=stamp, restore_due_before=stamp, **kwargs
             )
 
@@ -333,7 +334,7 @@ class TierWindowTests(QueueFixture):
                     """,
                     (expires_at, expires_at, vault_id),
                 )
-            counts = ArchiveCatalog(connection).active_job_counts(now=self.clock.isoformat())
+            counts = JobQueue(connection).active_job_counts(now=self.clock.isoformat())
         self.assertEqual(counts, {2: 1})
 
 

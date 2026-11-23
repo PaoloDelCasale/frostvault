@@ -35,6 +35,7 @@ from app.services.operation_policies import set_policy, OperationPolicy
 from tests.catalog_support import fingerprint, protect
 from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests.upload_provenance_provider import VersionedProvider
+from app.services.job_queue import JobQueue
 
 
 class PreflightQueueTests(FrostVaultTestCase):
@@ -117,8 +118,7 @@ class PreflightQueueTests(FrostVaultTestCase):
         self.retry(1)
         gate.check(self.db, lambda: None, now=self.now)
         gate._ready_pid = None  # The persisted state outlives the process.
-        with patch('app.storage._validate_cloud_vault', side_effect=gate.ReadinessFailure('Check AWS credentials')), patch.object(
-            ArchiveCatalog, 'claim_job', wraps=ArchiveCatalog.claim_job
+        with patch('app.storage._validate_cloud_vault', side_effect=gate.ReadinessFailure('Check AWS credentials')), patch.object(JobQueue, 'claim_job', wraps=JobQueue.claim_job
         ) as claim, patch('app.storage.process_job') as dispatch:
             self.assertEqual(storage.process_jobs_once(), 0)
         claim.assert_not_called()

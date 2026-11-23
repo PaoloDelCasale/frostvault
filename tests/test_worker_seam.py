@@ -75,7 +75,7 @@ class WorkerAdapterTests(unittest.TestCase):
     def test_the_local_stop_check_is_shutdown_then_this_process_cancellation(self) -> None:
         adapter = storage.worker_adapter
         self.addCleanup(storage.shutdown_state.reset)
-        with patch("app.storage.cancelled_jobs", {7}):
+        with patch("app.services.job_queue.cancelled_jobs", {7}):
             self.assertTrue(adapter.stopped_in_process(7))
             self.assertFalse(adapter.stopped_in_process(8))
             storage.shutdown_state.request()

@@ -13,9 +13,9 @@ import uuid
 import psycopg
 
 from app import storage
-from app.catalog import ArchiveCatalog
 from tests import test_upload_worker as fixtures
 from tests.test_upload_worker import A, B, _FlakyCommit, sha
+from app.services.job_queue import JobQueue
 
 C = b"third content C"
 
@@ -79,13 +79,13 @@ class UploadCleanupTests(fixtures.UploadWorkerCase):
 
     def test_replacement_deletes_the_exact_superseded_version_before_completion(self) -> None:
         completions = []
-        real = storage._set_job_in_transaction
+        real = storage.job_runner.set_job_in_transaction
 
         def completing(connection, job_id, status, *args, **kwargs):
             if status == "completed":
                 completions.append(list(self.provider.deleted))
             return real(connection, job_id, status, *args, **kwargs)
-        self.enterContext(fixtures.patch.object(storage, "_set_job_in_transaction",
+        self.enterContext(fixtures.patch.object(storage.job_runner, "set_job_in_transaction",
                                                 side_effect=completing))
         first, old = self.upload(A)
         self.old_id = str(old["id"])
@@ -196,7 +196,7 @@ class UploadCleanupTests(fixtures.UploadWorkerCase):
     def test_cancellation_after_the_keeper_commit_stops_the_delete(self) -> None:
         def cancel(job_id):
             with self.db() as connection:
-                ArchiveCatalog(connection).cancel_jobs(
+                JobQueue(connection).cancel_open_jobs(
                     vault_id=2, job_ids=[job_id], message="stop", message_key=None,
                     now=storage.now_iso())
         self.stopped_after_keeper(cancel)

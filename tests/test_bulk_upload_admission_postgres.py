@@ -20,6 +20,7 @@ from tests.test_job_queue_fairness import QueueFixture
 from tests import test_upload_provenance_worker as provenance_fixtures
 from tests.fixtures import seed_vault
 from app.services import upload_provenance as provenance
+from app.services.job_queue import JobQueue
 
 
 class BulkAdmissionProvenanceTests(provenance_fixtures.UploadProvenanceWorkerCase):
@@ -227,7 +228,7 @@ class BulkAdmissionPostgresTests(QueueFixture):
         self.assertEqual(modes, {"read_back"})
         self.assertEqual({j["origin"] for j in jobs}, {"manual"})
         with self.db() as c:
-            self.assertIsNone(ArchiveCatalog(c).claim_job(job_id=jobs[0]["id"], claim_token=str(uuid.uuid4()),
+            self.assertIsNone(JobQueue(c).claim_job(job_id=jobs[0]["id"], claim_token=str(uuid.uuid4()),
                 claimed_at=self.clock.isoformat(), claim_expires_at=(self.clock + timedelta(hours=1)).isoformat(),
                 now=self.clock.isoformat(), restore_due_before=self.clock.isoformat()))
 

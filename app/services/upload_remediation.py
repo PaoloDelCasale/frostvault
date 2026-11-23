@@ -252,7 +252,7 @@ def transition(connection: Any, job_id: int, status: str, stamp: Any, *,
     ``bound=False``: the caller read in this transaction that the Job has no
     episode binding (bindings change only with the Job's creation or
     completion), so the binding is not read again. ``job``: the row the
-    caller's transition just moved (``ArchiveCatalog.transitioned_job``).
+    caller's transition just moved (``JobQueue.transitioned_job``).
     """
     job = job or connection.execute(
         "SELECT id, file_id, vault_id, action, status, retry_count, run_after, archive_version_id "

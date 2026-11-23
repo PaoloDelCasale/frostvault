@@ -26,6 +26,7 @@ from app.services import upload_provenance as provenance
 from app.services.vault_relocation import enroll_vault_root_identity
 from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests.upload_provenance_provider import VersionedProvider
+from app.services.job_queue import JobQueue
 
 A = b"immutable content A"
 B = b"different content B"
@@ -96,7 +97,7 @@ class UploadWorkerCase(FrostVaultTestCase):
         self.addCleanup(storage.shutdown_state.reset)
         # Job ids restart at 1 in every disposable catalog: a cancel flag
         # another test raised for the same id must not stop this test's Job.
-        self.enterContext(patch("app.storage.cancelled_jobs", set()))
+        self.enterContext(patch("app.services.job_queue.cancelled_jobs", set()))
 
     # -- helpers -------------------------------------------------------------
 
@@ -129,9 +130,9 @@ class UploadWorkerCase(FrostVaultTestCase):
 
     def claim(self, job_id: int) -> dict:
         with self.db() as connection:
-            claimed = ArchiveCatalog(connection).claim_job(
+            claimed = JobQueue(connection).claim_job(
                 job_id=job_id, claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(),
-                claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                claim_expires_at=storage.job_runner.claim_expiry_at(), now=storage.now_iso(),
                 restore_due_before=storage.now_iso())
             self.assertIsNotNone(claimed, "the Job must be claimable")
             job = connection.execute(

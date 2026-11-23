@@ -21,9 +21,9 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from app import storage
-from app.catalog import ArchiveCatalog
 from app.services import cloud_deletion
 from tests import test_cloud_deletion as fixtures
+from app.services.job_queue import JobQueue
 
 
 class CloudDeletionLeaseTests(fixtures.CloudDeletionFixture):
@@ -36,9 +36,9 @@ class CloudDeletionLeaseTests(fixtures.CloudDeletionFixture):
     def raw_claim(self, lead: int, token: str) -> list:
         stamp = storage.now_iso()
         with self.db() as connection:
-            return ArchiveCatalog(connection).claim_purge_group(
+            return JobQueue(connection).claim_purge_group(
                 lead_job_id=lead, claim_token=token, claimed_at=stamp,
-                claim_expires_at=storage._claim_expiry_at(stamp), now=stamp,
+                claim_expires_at=storage.job_runner.claim_expiry_at(stamp), now=stamp,
                 message="Deleting", message_key="job.cloud_purge_deleting")
 
     def leases(self, group_id: str) -> set[str]:
@@ -158,7 +158,7 @@ class CloudDeletionLeaseTests(fixtures.CloudDeletionFixture):
         scheduled = self.schedule()
         job = self.claim_group(scheduled.job_ids[0])
         replacement = str(uuid.uuid4())
-        renew = ArchiveCatalog.renew_purge_group_claim
+        renew = JobQueue.renew_purge_group_claim
         calls = []
 
         def taken_over(catalog, **kwargs):
@@ -170,7 +170,7 @@ class CloudDeletionLeaseTests(fixtures.CloudDeletionFixture):
                     connection.execute("UPDATE job_leases SET token=%s WHERE job_id=%s",
                                        (replacement, job["id"]))
             return renew(catalog, **kwargs)
-        with patch.object(ArchiveCatalog, "renew_purge_group_claim", taken_over), \
+        with patch.object(JobQueue, "renew_purge_group_claim", taken_over), \
                 self.assertRaises(storage.JobLeaseLost):
             storage.process_cloud_purge(job)
         self.assertEqual(self.provider.delete_requests, 1)

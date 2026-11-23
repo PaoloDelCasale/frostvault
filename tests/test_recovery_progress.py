@@ -12,6 +12,7 @@ from app.services.recovery_progress import project_recovery
 from app.storage import process_jobs_once
 from tests.fixtures import FrostVaultTestCase, override_settings
 from tests.test_recovery_verification import _prepare_cloud_only_version
+from app.services.job_queue import JobQueue
 
 VAULT = 2
 
@@ -63,7 +64,7 @@ class RecoveryInProgressCatalogTests(FrostVaultTestCase):
 
     def setUp(self):
         super().setUp()
-        self.enterContext(patch("app.storage.cancelled_jobs", set()))
+        self.enterContext(patch("app.services.job_queue.cancelled_jobs", set()))
         _source, _ = _prepare_cloud_only_version(
             self.database, self.tmp_path, relative_path="cold/c0.bin", payload=b"x",
             storage_class="DEEP_ARCHIVE", object_key="docs/cold/c0.bin",
@@ -143,7 +144,7 @@ class RecoveryInProgressCatalogTests(FrostVaultTestCase):
         with self.database.connect() as connection:
             ids = [row["id"] for row in connection.execute(
                 "SELECT id FROM jobs WHERE action='recover' AND status NOT IN ('completed','failed','cancelled')")]
-            ArchiveCatalog(connection).cancel_jobs(
+            JobQueue(connection).cancel_open_jobs(
                 vault_id=VAULT, job_ids=ids, message="Recovery stopped",
                 message_key="job.recovery_stopped", now=datetime.now(timezone.utc).isoformat())
 

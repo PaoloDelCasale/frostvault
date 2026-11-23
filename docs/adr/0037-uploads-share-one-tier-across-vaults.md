@@ -41,9 +41,9 @@ the protection of the other Vaults to stop.
    of automatic re-queueing until its content is observed again, like a failed
    or cancelled automatic upload already did. A manual upload that failed, or
    that closed for another reason (removed file, metadata restore), does not.
-5. **One rule in Python and SQL.** `job_scheduler.job_priority` keeps the order
+5. **One rule in Python and SQL.** `job_queue.job_priority` keeps the order
    inside a Vault and the per-Vault, per-tier candidate windows;
-   `job_scheduler.cross_vault_tier` is the order across Vaults. The catalog
+   `job_queue.cross_vault_tier` is the order across Vaults. The catalog
    mirrors both in SQL, and a test checks the mirrors against the Python side.
 
 ## Consequences

@@ -9,11 +9,11 @@ import uuid
 from unittest.mock import patch
 
 from app import storage
-from app.catalog import ArchiveCatalog
 from app.services import upload_provenance as provenance
 from tests import service_probes
 from tests import test_upload_provenance_worker as base
 from tests.upload_support import claimed_job_row
+from app.services.job_queue import JobQueue
 
 A, B = base.A, base.B
 CHANGED = "Local file changed since fingerprinting"
@@ -25,9 +25,9 @@ class StaleUploadSnapshotTests(base.UploadProvenanceWorkerCase):
         # The retry delay is the Vault stability window: make the Job due now.
         with self.database.connect() as connection:
             connection.execute("UPDATE jobs SET run_after=NULL WHERE id=%s", (job_id,))
-            claimed = ArchiveCatalog(connection).claim_job(
+            claimed = JobQueue(connection).claim_job(
                 job_id=job_id, claim_token=uuid.uuid4().hex, claimed_at=storage.now_iso(),
-                claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                claim_expires_at=storage.job_runner.claim_expiry_at(), now=storage.now_iso(),
                 restore_due_before=storage.now_iso())
             self.assertIsNotNone(claimed)
             job = claimed_job_row(connection, job_id, claimed)

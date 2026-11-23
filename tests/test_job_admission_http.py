@@ -46,7 +46,7 @@ class JobAdmissionHttpFixture(FrostVaultTestCase):
     def setUp(self) -> None:
         super().setUp()
         # Cancelling raises process-wide cancel flags by Job id.
-        self.enterContext(patch("app.storage.cancelled_jobs", set()))
+        self.enterContext(patch("app.services.job_queue.cancelled_jobs", set()))
         self.source, self.deep_a = _prepare_cloud_only_version(
             self.database, self.tmp_path, relative_path="photos/a.jpg", payload=b"x",
             storage_class="DEEP_ARCHIVE",

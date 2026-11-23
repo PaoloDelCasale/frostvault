@@ -1,10 +1,10 @@
 """Fair Job scheduling and cancellation (issue #12).
 
 Seams under test:
-- ``app.services.job_scheduler.select_fair_jobs`` — deterministic fair
+- ``app.services.job_queue.select_fair_jobs`` — deterministic fair
   interleave across Vaults so one Vault cannot starve others.
 - Cancellation remains observable through Job status via the existing
-  ``cancel_jobs`` seam (covered in an integration slice below).
+  ``signal_job_cancellation`` seam (covered in an integration slice below).
 - Expired intermediate leases are swept by ``process_jobs_once`` without a
   second restart; stuck gauges stay distinct from ``queue_depth``.
 """
@@ -33,10 +33,9 @@ for _flag, _value in (
 
 from app.catalog import ArchiveCatalog
 
-from app.services.job_scheduler import select_fair_jobs
+from app.services.job_queue import select_fair_jobs
 from app import storage as storage_module
 from app.storage import (
-    cancel_jobs,
     claimable_queue_depth,
     observe_stuck_lease_jobs,
     process_job,
@@ -45,6 +44,7 @@ from app.storage import (
 )
 from app.services import metrics as metrics_service
 from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
+from app.services.job_queue import JobQueue, signal_job_cancellation
 
 DEAD_WORKER = "00000000-0000-4000-8000-00000000dead"
 LIVE_WORKER = "00000000-0000-4000-8000-0000000011fe"
@@ -119,7 +119,7 @@ class SelectFairJobsTests(unittest.TestCase):
         self.assertEqual(order, [1, 5, 2, 6])
 
     def test_priority_tiers(self) -> None:
-        from app.services.job_scheduler import job_priority
+        from app.services.job_queue import job_priority
         self.assertLess(job_priority({"action": "recover", "origin": "manual"}),
                         job_priority({"action": "upload", "origin": "manual"}))
         self.assertLess(job_priority({"action": "upload", "origin": "manual"}),
@@ -132,7 +132,7 @@ class SelectFairJobsTests(unittest.TestCase):
     def test_automatic_free_space_never_outranks_a_manual_upload(self) -> None:
         # Owner operations are what the Owner asked for; a cleanup the system
         # admitted on its own ranks with automatic uploads (review of #503).
-        from app.services.job_scheduler import job_priority
+        from app.services.job_queue import job_priority
         self.assertGreater(job_priority({"action": "free-space", "origin": "automatic"}),
                            job_priority({"action": "upload", "origin": "manual"}))
         jobs = [
@@ -185,7 +185,7 @@ class SelectFairJobsTests(unittest.TestCase):
 
     def test_waiting_work_ages_up_one_tier_per_interval(self) -> None:
         from datetime import datetime, timezone
-        from app.services.job_scheduler import AGING_SECONDS, effective_priority
+        from app.services.job_queue import AGING_SECONDS, effective_priority
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
         waited = "2026-07-01T11:00:00+00:00"
         self.assertEqual(effective_priority({"action": "upload", "origin": "manual", "requested_at": waited,
@@ -293,6 +293,8 @@ class SchedulerFileIsolationTests(unittest.TestCase):
         self.catalog.claim_job.return_value = self.healthy
         self.enterContext(patch("app.storage.db", return_value=connection))
         self.enterContext(patch("app.storage.ArchiveCatalog", return_value=self.catalog))
+        self.enterContext(patch("app.storage.JobQueue", return_value=self.catalog))
+        self.enterContext(patch("app.services.job_queue.JobQueue", return_value=self.catalog))
         self.enterContext(patch("app.storage.reconcile_interrupted_jobs"))
         self.enterContext(patch("app.storage.observe_failed_job_backlog", return_value=(0, 0)))
         self.enterContext(override_settings(operation_concurrency=2, restore_poll_interval=0))
@@ -510,7 +512,7 @@ class FairSchedulerIntegrationTests(SchedulerCase):
     def test_cancelled_queued_job_is_not_started(self) -> None:
         job_id = self._insert_upload_job(vault_id=10, path="a.txt")
 
-        cancel_jobs([job_id])
+        signal_job_cancellation([job_id])
         with self.database.connect() as connection:
             connection.execute(
                 "UPDATE jobs SET status='cancelled', message=%s, updated_at=%s WHERE id=%s",
@@ -612,7 +614,7 @@ class FairSchedulerIntegrationTests(SchedulerCase):
         job_id = self._insert_upload_job(vault_id=10, path="a.txt")
         timestamp = storage_module.now_iso()
         with self.database.connect() as connection:
-            claimed = ArchiveCatalog(connection).claim_job(
+            claimed = JobQueue(connection).claim_job(
                 job_id=job_id,
                 claim_token=LIVE_WORKER,
                 claimed_at=timestamp,
@@ -667,7 +669,7 @@ class FairSchedulerIntegrationTests(SchedulerCase):
         job_id = self._insert_upload_job(vault_id=10, path="a.txt")
         timestamp = storage_module.now_iso()
         with self.database.connect() as connection:
-            claimed = ArchiveCatalog(connection).claim_job(
+            claimed = JobQueue(connection).claim_job(
                 job_id=job_id,
                 claim_token=LIVE_WORKER,
                 claimed_at=timestamp,
@@ -699,8 +701,8 @@ class FairSchedulerIntegrationTests(SchedulerCase):
                 "app.storage.db",
                 side_effect=lambda: self.database.connect(),
             ),
-            patch("app.storage.JOB_CLAIM_LEASE_SECONDS", 0.01),
-            patch("app.storage._renew_claim_if_owned", return_value=None),
+            patch("app.services.job_queue.JOB_CLAIM_LEASE_SECONDS", 0.01),
+            patch.object(storage_module.job_runner, "renew_claim_if_owned", return_value=None),
             patch(
                 "app.storage.source_layout.vault_local_access",
                 return_value=SimpleNamespace(local_operations_allowed=True),

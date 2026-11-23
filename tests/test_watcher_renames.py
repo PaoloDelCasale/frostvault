@@ -17,7 +17,7 @@ from unittest.mock import patch
 from watchfiles import Change
 
 from app import storage
-from app.services import catalog_incidents, job_scheduler
+from app.services import catalog_incidents, job_queue
 from app.services import notifications as notification_service
 from tests import test_auto_upload_watcher as watcher_fixtures
 from tests.upload_provenance_provider import VersionedProvider
@@ -101,7 +101,7 @@ class WatcherRenameTests(watcher_fixtures.WatcherCase):
         rename = self.jobs()[-1]
         # Nobody asked for it: system work at the automatic tier (#629).
         self.assertEqual(rename["origin"], "automatic")
-        self.assertEqual(job_scheduler.job_priority(rename), job_scheduler.AUTOMATIC_PRIORITY)
+        self.assertEqual(job_queue.job_priority(rename), job_queue.AUTOMATIC_PRIORITY)
         self.assertEqual(self.run_jobs(provider), 1)
         self.assertEqual(self.jobs()[-1]["status"], "completed", self.jobs()[-1]["message"])
         self.assertEqual(self.jobs()[-1]["origin"], "automatic")

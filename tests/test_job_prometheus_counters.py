@@ -99,7 +99,7 @@ class JobPrometheusCounterTests(FrostVaultTestCase):
         self.assertNotIn("jobs_failed_total", text)
 
     def test_lost_claim_does_not_increment(self) -> None:
-        with patch("app.storage._claim_is_lost", return_value=True):
+        with patch("app.services.job_queue.claim_is_lost", return_value=True):
             self.assertFalse(set_job(self.job_id, "failed", "stale"))
             self.assertFalse(schedule_upload_retry(self.job_id, retry_count=1))
         text = metrics_service.render_prometheus()
@@ -107,7 +107,7 @@ class JobPrometheusCounterTests(FrostVaultTestCase):
         self.assertNotIn("jobs_retries_total", text)
 
     def test_cas_miss_does_not_increment(self) -> None:
-        with patch("app.storage._claim_token_for", return_value=DEAD_WORKER):
+        with patch("app.services.job_queue.claim_token_for", return_value=DEAD_WORKER):
             self.assertFalse(set_job(self.job_id, "failed", "stale"))
         text = metrics_service.render_prometheus()
         self.assertNotIn("jobs_failed_total", text)

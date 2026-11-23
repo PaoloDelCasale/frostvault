@@ -7,8 +7,9 @@ import threading
 import uuid
 
 from app.catalog import ArchiveCatalog
-from app.services.job_scheduler import effective_priority, job_priority, select_fair_jobs
+from app.services.job_queue import effective_priority, job_priority, select_fair_jobs
 from tests.test_job_scheduler import SchedulerCase
+from app.services.job_queue import JobQueue
 
 
 class VaultTurnSelectionTests(unittest.TestCase):
@@ -59,10 +60,10 @@ class DurableVaultTurnTests(SchedulerCase):
 
     def observe(self, seconds=0, excluded=()):
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
-            jobs = catalog.list_claimable_jobs(now=self.stamp(seconds), restore_due_before=self.stamp(seconds),
+            queue = JobQueue(connection)
+            jobs = queue.list_claimable_jobs(now=self.stamp(seconds), restore_due_before=self.stamp(seconds),
                                                limit=1, per_vault_limit=1, exclude_job_ids=excluded)
-            turns = catalog.observe_scheduler_turns(now=self.stamp(seconds),
+            turns = queue.observe_scheduler_turns(now=self.stamp(seconds),
                                                     runnable_vault_ids=[j['vault_id'] for j in jobs])
             for job in jobs:
                 job.update(turns.get(job['vault_id'], {}))
@@ -70,7 +71,7 @@ class DurableVaultTurnTests(SchedulerCase):
 
     def claim(self, job_id, seconds=0, generation=None):
         with self.database.connect() as connection:
-            return ArchiveCatalog(connection).claim_job(
+            return JobQueue(connection).claim_job(
                 job_id=job_id, claim_token=str(uuid.uuid4()), claimed_at=self.stamp(seconds),
                 claim_expires_at=self.stamp(seconds + 300), now=self.stamp(seconds),
                 restore_due_before=self.stamp(seconds), scheduler_generation=generation)
@@ -199,7 +200,7 @@ class DurableVaultTurnTests(SchedulerCase):
                         if 'SELECT generation FROM scheduler_vault_turns' in sql:
                             waiting.set()
                         return connection.execute(sql, params)
-                return ArchiveCatalog(ObserveLock()).claim_job(
+                return JobQueue(ObserveLock()).claim_job(
                     job_id=second, claim_token=str(uuid.uuid4()), claimed_at=test.stamp(700),
                     claim_expires_at=test.stamp(1000), now=test.stamp(700),
                     restore_due_before=test.stamp(700))
@@ -236,7 +237,7 @@ class DurableVaultTurnTests(SchedulerCase):
 
         def claim_group():
             with self.database.connect() as connection:
-                return ArchiveCatalog(connection).claim_purge_group(
+                return JobQueue(connection).claim_purge_group(
                     lead_job_id=ids[0], claim_token=str(uuid.uuid4()), claimed_at=self.stamp(900),
                     claim_expires_at=self.stamp(1200), now=self.stamp(900),
                     message='deleting', message_key='job.cloud_purge_deleting')
@@ -294,7 +295,7 @@ class DurableVaultTurnTests(SchedulerCase):
         self.observe(1800)
         before = self.state()
         with self.database.connect() as connection:
-            result = ArchiveCatalog(connection).claim_job(
+            result = JobQueue(connection).claim_job(
                 job_id=auto, claim_token=str(uuid.uuid4()), claimed_at=self.stamp(1800),
                 claim_expires_at=self.stamp(2100), now=self.stamp(1800),
                 restore_due_before=self.stamp(1800), scheduler_generation=0)
@@ -311,7 +312,7 @@ class DurableVaultTurnTests(SchedulerCase):
         auto = self.auto_job()
         self.assertIsNotNone(self.claim(manual))
         with self.database.connect() as connection:
-            rows = ArchiveCatalog(connection).list_claimable_jobs(
+            rows = JobQueue(connection).list_claimable_jobs(
                 now=self.stamp(), restore_due_before=self.stamp(),
                 limit=1, per_vault_limit=1, unserved_only=True)
         self.assertEqual([row['id'] for row in rows], [auto])
@@ -417,19 +418,19 @@ class CrossVaultUploadTierDbTests(SchedulerCase):
         manual = self.add_jobs(10, 40, 'manual')
         automatic = self.add_jobs(20, 20, 'automatic')
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
+            queue = JobQueue(connection)
             for job_id in manual[:16]:
-                self.assertIsNotNone(catalog.claim_job(
+                self.assertIsNotNone(queue.claim_job(
                     job_id=job_id, claim_token=str(uuid.uuid4()), claimed_at=self.stamp,
                     claim_expires_at='2026-11-13T20:00:00+00:00', now=self.stamp,
                     restore_due_before=self.stamp))
             # Eight of Vault 10's Jobs finish: eight slots open.
             connection.execute("UPDATE jobs SET status='completed' WHERE id = ANY(%s)", (manual[:8],))
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
-            rows = catalog.list_claimable_jobs(now=self.stamp, restore_due_before=self.stamp,
+            queue = JobQueue(connection)
+            rows = queue.list_claimable_jobs(now=self.stamp, restore_due_before=self.stamp,
                                                limit=160, per_vault_limit=16)
-            active = catalog.active_job_counts(now=self.stamp)
+            active = queue.active_job_counts(now=self.stamp)
         self.assertEqual(active, {10: 8})
         # SQL rows already follow the cross-Vault tier: both Vaults' uploads share it.
         self.assertEqual({row['vault_id'] for row in rows}, {10, 20})
@@ -437,15 +438,15 @@ class CrossVaultUploadTierDbTests(SchedulerCase):
         self.assertEqual([job['id'] for job in picked], automatic[:8])
 
     def test_sql_tiers_mirror_python(self):
-        from app.services.job_scheduler import cross_vault_tier
+        from app.services.job_queue import cross_vault_tier
         pairs = [(action, origin)
                  for action in ('upload', 'recover', 'free-space', 'rename', 'cloud-purge', 'storage-class')
                  for origin in ('manual', 'automatic')]
         values = ', '.join(['(%s, %s)'] * len(pairs))
         with self.database.connect() as connection:
             rows = connection.execute(
-                f"SELECT j.action, j.origin, {ArchiveCatalog._SCHEDULING_TIER_SQL} AS base, "
-                f"{ArchiveCatalog._CROSS_VAULT_TIER_SQL} AS cross_vault "
+                f"SELECT j.action, j.origin, {JobQueue._SCHEDULING_TIER_SQL} AS base, "
+                f"{JobQueue._CROSS_VAULT_TIER_SQL} AS cross_vault "
                 f"FROM (VALUES {values}) AS j(action, origin)",
                 [value for pair in pairs for value in pair]).fetchall()
         for row in rows:

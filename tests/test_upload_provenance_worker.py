@@ -39,6 +39,8 @@ from tests.catalog_support import queue_rename_job
 from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests.upload_provenance_provider import VersionedProvider
 from tests.upload_support import claimed_job_row, job_row
+from app.services import job_queue
+from app.services.job_queue import JobQueue
 
 A = b"immutable content A"
 B = b"immutable content B"
@@ -96,7 +98,7 @@ class UploadProvenanceWorkerCase(FrostVaultTestCase):
 
     def run_job(self, job_id):
         with self.database.connect() as connection:
-            claimed = ArchiveCatalog(connection).claim_job(job_id=job_id, claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(), claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(), restore_due_before=storage.now_iso())
+            claimed = JobQueue(connection).claim_job(job_id=job_id, claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(), claim_expires_at=storage.job_runner.claim_expiry_at(), now=storage.now_iso(), restore_due_before=storage.now_iso())
             self.assertIsNotNone(claimed)
             job = claimed_job_row(connection, job_id, claimed)
         return storage.process_job(job)
@@ -203,18 +205,18 @@ class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
         from app.services.upload_execution import UploadExecution
         job_id = self.queue()
         with self.database.connect() as connection:
-            claimed = ArchiveCatalog(connection).claim_job(job_id=job_id,
+            claimed = JobQueue(connection).claim_job(job_id=job_id,
                 claim_token=str(uuid.uuid4()), claimed_at=storage.now_iso(),
-                claim_expires_at=storage._claim_expiry_at(), now=storage.now_iso(),
+                claim_expires_at=storage.job_runner.claim_expiry_at(), now=storage.now_iso(),
                 restore_due_before=storage.now_iso())
             self.assertIsNotNone(claimed)
             job = claimed_job_row(connection, job_id, claimed)
-        self.assertIsNone(storage._claim_token_for(job_id))
+        self.assertIsNone(job_queue.claim_token_for(job_id))
         outcome = UploadExecution(storage.worker_adapter).run(job)
         version = self.assert_keeper(job_id)
         self.assertEqual((outcome.job_id, outcome.status, str(outcome.archive_version_id)),
                          (job_id, "completed", str(version["id"])))
-        self.assertIsNone(storage._claim_token_for(job_id), "The caller's context is restored")
+        self.assertIsNone(job_queue.claim_token_for(job_id), "The caller's context is restored")
         self.assertEqual(self.provider.puts, 1)
 
     def test_committed_intent_send_snapshot_and_token_precede_provider_mutation(self):
@@ -503,7 +505,7 @@ class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
         job = self.queue()
         def cancel(stage, **kwargs):
             if stage == "acknowledged":
-                storage.cancel_jobs([job])
+                job_queue.signal_job_cancellation([job])
         self.provider.hook = cancel
         self.run_job(job)
         self.assertEqual(self.row(job)["status"], "cancelled")
@@ -813,7 +815,7 @@ class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
         def cancel(stage, **kwargs):
             if stage == "list" and self.provider.puts and not listings:
                 listings.append(1)
-                storage.cancel_jobs([job])
+                job_queue.signal_job_cancellation([job])
         self.provider.hook = cancel
         self.run_job(job)
         self.assertEqual(self.row(job)["status"], "cancelled")

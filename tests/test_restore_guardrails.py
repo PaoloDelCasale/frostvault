@@ -421,7 +421,7 @@ class GroupRestoreFixture(FrostVaultTestCase):
         super().setUp()
         # ``cancel_job_group`` raises process-wide cancel flags by Job id; keep
         # them out of later tests whose fresh catalogs reuse the same ids.
-        self.enterContext(patch("app.storage.cancelled_jobs", set()))
+        self.enterContext(patch("app.services.job_queue.cancelled_jobs", set()))
         _source, _version_id = _prepare_cloud_only_version(
             self.database, self.tmp_path,
             relative_path="photos/p00.jpg",

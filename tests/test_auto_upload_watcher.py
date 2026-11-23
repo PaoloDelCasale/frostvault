@@ -14,6 +14,7 @@ from unittest.mock import patch, AsyncMock
 from watchfiles import Change
 
 from app import storage
+from app.services import job_queue
 from app.catalog import ArchiveCatalog
 from app.services.operation_policies import OperationPolicy, set_policy
 from app.services import vault_relocation
@@ -197,11 +198,11 @@ class WatcherAutomaticUploadTests(WatcherCase):
                 vault_id=2, path="manual.jpg", action="upload",
                 requested_at=self.clock.isoformat(), group_id=str(uuid.uuid4()), is_directory=False,
             )
-            candidates = catalog.list_claimable_jobs(
+            candidates = job_queue.JobQueue(connection).list_claimable_jobs(
                 now=self.clock.isoformat(), restore_due_before=self.clock.isoformat(), limit=1,
             )
             self.assertEqual([row["id"] for row in candidates], manual)
-            self.assertIsNone(catalog.claim_job(
+            self.assertIsNone(job_queue.JobQueue(connection).claim_job(
                 job_id=automatic_id, claim_token=str(uuid.uuid4()), claimed_at=self.clock.isoformat(),
                 claim_expires_at=(self.clock + timedelta(minutes=5)).isoformat(),
                 now=self.clock.isoformat(), restore_due_before=self.clock.isoformat(),

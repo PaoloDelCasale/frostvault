@@ -52,10 +52,10 @@ def _fake_request() -> SimpleNamespace:
     return SimpleNamespace(cookies={}, headers={})
 
 
+from app.services import job_queue
 from app.storage import (
     OperationCancelled,
     apply_filesystem_changes,
-    cancel_jobs,
     cleanup_abandoned_restore_files,
     expected_cloud_key,
     object_key_to_path,
@@ -398,13 +398,12 @@ class StorageCleanupTests(FrostVaultTestCase):
         )
         for job_id, operation, message in operations:
             with self.subTest(operation=operation.__name__):
-                cancel_jobs([job_id])
+                job_queue.signal_job_cancellation([job_id])
                 try:
                     with self.assertRaisesRegex(OperationCancelled, message):
                         operation({"id": job_id})
                 finally:
-                    with storage.operation_process_lock:
-                        storage.cancelled_jobs.discard(job_id)
+                    job_queue.forget_job_cancellation(job_id)
 
 
     def test_bug_001_recover_requires_status_whitelist(self) -> None:
@@ -650,7 +649,7 @@ class StorageCleanupTests(FrostVaultTestCase):
                 connection = CancelGroupConnection()
                 with (
                     patch("app.routes.jobs.db", return_value=connection),
-                    patch("app.routes.jobs.cancel_jobs") as cancel_jobs_mock,
+                    patch("app.routes.jobs.job_queue.signal_job_cancellation") as cancel_jobs_mock,
                 ):
                     result = cancel_job_group("group-123", action, {"id": 2}, 7)
 
@@ -675,7 +674,7 @@ class StorageCleanupTests(FrostVaultTestCase):
         connection = CancelGroupConnection(automatic_cleanup=True)
         with (
             patch("app.routes.jobs.db", return_value=connection),
-            patch("app.routes.jobs.cancel_jobs"),
+            patch("app.routes.jobs.job_queue.signal_job_cancellation"),
             patch(
                 "app.routes.jobs.audit_event_store.record_audit_event"
             ) as record_audit_event,

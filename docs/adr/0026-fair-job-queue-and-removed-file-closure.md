@@ -23,7 +23,7 @@ may be written to S3: [ADR-0023](0023-new-upload-ingestion-proof.md),
 
 ### Scheduling
 
-1. **Candidates are windowed per Vault and per tier.** `ArchiveCatalog.list_claimable_jobs`
+1. **Candidates are windowed per Vault and per tier.** `JobQueue.list_claimable_jobs`
    takes the oldest runnable Jobs of *each Vault and scheduling tier* (a lateral
    window with `row_number()`), never one window over all Vaults, and applies
    the exclusion list before the cut. There is **no final global LIMIT** ordered
@@ -31,7 +31,7 @@ may be written to S3: [ADR-0023](0023-new-upload-ingestion-proof.md),
    Owner work. The bounded per-Vault/per-tier windows of every eligible Vault
    reach the turn selector. A flood of Owner operations in a Vault therefore
    cannot hide that Vault's own uploads from the candidate set.
-2. **Scheduling tiers** (`job_scheduler.job_priority`, mirrored in SQL):
+2. **Scheduling tiers** (`job_queue.job_priority`, mirrored in SQL):
    0 Owner operations (restore, free-space, rename, storage-class, cloud purge,
    Stop Protection purges), 1 uploads the Owner asked for, 2 everything the
    system admitted on its own (automatic uploads **and automatic free-space
