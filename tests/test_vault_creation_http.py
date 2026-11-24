@@ -70,35 +70,30 @@ class VaultCreationTests(VaultCreationHttpTestCase):
 
         created = self._create("My Archive")
         self.assertEqual(created.status_code, 201, created.text)
-        selected = self.client.post(
-            "/api/vaults/select",
-            json={"vault_id": created.json()["id"]},
-            headers={"X-CSRF-Token": self._csrf()},
-        )
-        self.assertEqual(selected.status_code, 200, selected.text)
 
         archive = self.client.get("/")
         self.assertEqual(archive.status_code, 200)
         self.assertIn('id="root"', archive.text)
 
-    def test_create_and_select_flow_opens_the_new_archive(self) -> None:
+    def test_a_new_vault_is_opened_by_its_id_not_through_the_session(self) -> None:
         self.sign_in()
         response = self._create("My Archive")
         self.assertEqual(response.status_code, 201, response.text)
+        vault_id = response.json()["id"]
 
-        selected = self.client.post(
-            "/api/vaults/select",
-            json={"vault_id": response.json()["id"]},
-            headers={"X-CSRF-Token": self._csrf()},
-        )
-        self.assertEqual(selected.status_code, 200, selected.text)
-        archive = self.client.get("/")
+        # The interface navigates to the new Vault's id; the Session keeps none.
+        self.assertEqual([item["name"] for item in self.client.get("/api/vaults").json()["items"]],
+                         ["My Archive"])
+        self.assertEqual(self.client.get(f"/api/vaults/{vault_id}/files").status_code, 200)
+        archive = self.client.get(f"/?vault_id={vault_id}")
         self.assertEqual(archive.status_code, 200)
         self.assertIn('id="root"', archive.text)
         me = self.client.get("/api/me")
         self.assertEqual(me.status_code, 200, me.text)
-        self.assertEqual(me.json()["vault"]["name"], "My Archive")
-        self.assertNotIn("slug", me.json()["vault"])
+        self.assertNotIn("vault", me.json())
+        with self.database.connect() as connection:
+            self.assertEqual(
+                connection.execute("SELECT vault_id FROM sessions").fetchall(), [{"vault_id": None}])
 
     def test_the_owner_can_create_a_vault(self) -> None:
         self.sign_in()
@@ -274,9 +269,6 @@ class VaultBucketCreationHttpTests(VaultCreationHttpTestCase):
         general = self.client.get("/api/general/vaults").json()["items"]
         self.assertEqual([(item["lifecycle"], item["bucket_provisioning"]["state"]) for item in general],
                          [("provisioning", "failed")])
-        selected = self.client.post("/api/vaults/select", json={"vault_id": body["id"]},
-                                    headers={"X-CSRF-Token": self._csrf()})
-        self.assertNotEqual(selected.status_code, 200, selected.text)
         status = self.client.get(f"/api/vaults/{body['id']}/bucket")
         self.assertEqual(status.json()["state"], "failed")
 

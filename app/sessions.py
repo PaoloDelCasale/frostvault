@@ -172,7 +172,6 @@ def resolve_session(connection: Any, raw_token: str | None) -> dict[str, Any] | 
     return {
         "id": row["id"],
         "owner": owner,
-        "vault_id": row["vault_id"],
         "csrf_token": row["csrf_token"],
         "auth_method": row["auth_method"],
         "reauth_at": row["reauth_at"],
@@ -268,29 +267,3 @@ def rotate_session(
         raise SessionTransitionError("Cannot rotate an inactive Session")
     return raw_token
 
-
-def set_session_vault(
-    connection: Any,
-    session_id: Any,
-    vault_id: int | None,
-    *,
-    expected_version: int | None = None,
-) -> dict[str, Any] | None:
-    """Select a Vault without overwriting a newer Session transition.
-
-    This internal optimistic lock protects concurrent selections and token
-    rotations. It is not a browser cache capability and is never exposed.
-    """
-    now = _now()
-    query = """
-        UPDATE sessions
-        SET vault_id=%s, transition_version=transition_version+1
-        WHERE id=%s AND revoked_at IS NULL
-          AND absolute_expires_at > %s AND idle_expires_at > %s
-    """
-    params: list[Any] = [vault_id, session_id, now, now]
-    if expected_version is not None:
-        query += " AND transition_version=%s"
-        params.append(expected_version)
-    query += " RETURNING id, vault_id, transition_version"
-    return connection.execute(query, tuple(params)).fetchone()

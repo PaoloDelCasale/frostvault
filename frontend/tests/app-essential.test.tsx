@@ -23,7 +23,7 @@ describe("Owner app routing and shell (#512)", () => {
     window.addEventListener("beforeunload", () => { reloads += 1; });
     configureApiClient({ fetch: vi.fn(async (input) => {
       const url = String(input); calls.push(url);
-      if (url.startsWith("/api/me")) return jsonResponse({ id: 1, display_name: "Owner", csrf_token: "csrf", auth_method: "local", locale: "en", locales: ["en","it"], vault: { ...vaults[0], delete_enabled: true, cloud_deletion_enabled: true } });
+      if (url.startsWith("/api/me")) return jsonResponse({ id: 1, display_name: "Owner", csrf_token: "csrf", auth_method: "local", locale: "en", locales: ["en","it"], stopped_vault: null });
       if (/^\/api\/vaults\/\d+\/duplicate-cleanup/.test(url)) return jsonResponse(defaultDuplicateCleanup);
       if (/^\/api\/vaults\/\d+\/mirror-cleanup/.test(url)) return jsonResponse(defaultMirrorCleanup);
       if (/^\/api\/vaults\/\d+\/minimum-storage/.test(url)) return jsonResponse(defaultMinimumStorage);
@@ -48,7 +48,7 @@ describe("Owner app routing and shell (#512)", () => {
       return jsonResponse({});
     }) });
   });
-  afterEach(resetApiClientForTests);
+  afterEach(() => { vi.unstubAllGlobals(); resetApiClientForTests(); });
   function show() { renderWithQueryClient(<I18nProvider><App /></I18nProvider>); }
 
   it.each(["/", "/system", "/problems", "/vaults/new", "/vaults/1/files", "/vaults/1/settings"])("shows upload activity in the header on %s", async (path) => {
@@ -152,6 +152,20 @@ describe("Owner app routing and shell (#512)", () => {
     expect(within(navigation).queryByRole("link", { name: "Files" })).not.toBeInTheDocument();
     expect(within(navigation).queryByRole("link", { name: "Settings" })).not.toBeInTheDocument();
     expect(calls.some((url) => url.includes("/select"))).toBe(false);
+  });
+
+  it.each([[null, 1], ["2", 2], ["99", 1]])("opens the Vault remembered in this browser (%s), else the first listed: the Session names none (#805)", async (remembered, opened) => {
+    const streams: string[] = [];
+    vi.stubGlobal("EventSource", class {
+      onerror = null;
+      constructor(url: string) { streams.push(url); }
+      addEventListener() {}
+      close() {}
+    });
+    if (remembered) localStorage.setItem("frostvault.home.1", remembered);
+    show();
+    await waitFor(() => expect(streams.at(-1)).toMatch(new RegExp(`^/api/vaults/${opened}/catalog/events`)));
+    expect(streams.every((url) => url.startsWith(`/api/vaults/${opened}/`))).toBe(true);
   });
 
   it("an invalid explicit Vault does not fall back to another Vault", async () => {

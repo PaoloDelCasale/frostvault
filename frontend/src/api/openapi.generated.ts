@@ -639,23 +639,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/vaults/select": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Select Vault */
-        post: operations["select_vault_api_vaults_select_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/vaults/{vault_id}/files": {
         parameters: {
             query?: never;
@@ -3120,7 +3103,6 @@ export interface components {
             locale: string;
             /** Locales */
             locales: string[];
-            vault: components["schemas"]["MeVault"] | null;
             stopped_vault: components["schemas"]["MeStoppedVault"] | null;
         };
         /** MeStoppedVault */
@@ -3143,18 +3125,6 @@ export interface components {
             root_released_at: string | null;
             /** Root Released */
             root_released: boolean;
-        };
-        /** MeVault */
-        MeVault: {
-            /** Id */
-            id: number;
-            /**
-             * Uuid
-             * Format: uuid
-             */
-            uuid: string;
-            /** Name */
-            name: string;
         };
         /** MetadataBackupReference */
         MetadataBackupReference: {
@@ -4985,18 +4955,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** VaultSelectResponse */
-        VaultSelectResponse: {
-            /** Message */
-            message: string;
-            /** Message Key */
-            message_key: string;
-        };
-        /** VaultSelection */
-        VaultSelection: {
-            /** Vault Id */
-            vault_id: number;
-        };
         /**
          * VaultSelfServiceCreate
          * @description Self-service vault creation payload (issues #7, #6, and #150).
@@ -6130,39 +6088,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BillingExportStatus"];
-                };
-            };
-        };
-    };
-    select_vault_api_vaults_select_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VaultSelection"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VaultSelectResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

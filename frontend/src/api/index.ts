@@ -36,7 +36,6 @@ export {
   fetchRecoveryKitStatus,
   downloadRecoveryKit,
   acknowledgeRecoveryKit,
-  selectVault,
   updateLocale,
 } from "./endpoints";
 export type {

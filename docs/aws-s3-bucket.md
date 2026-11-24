@@ -302,7 +302,7 @@ an application migration or preflight.
 
 **General → Retry failed uploads** selects all Vaults; the same action in
 **Vault settings** selects only that Vault. `POST /api/upload/retry-failed`
-is the global scope, never the Session's selected Vault;
+is the global scope;
 `POST /api/vaults/{vault_id}/upload/retry-failed` is one Vault. A repeat click safely returns zero when
 there is no newly eligible work. Existing failed attempts remain unchanged.
 

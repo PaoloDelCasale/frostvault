@@ -79,7 +79,7 @@ class RouteContractTests(unittest.TestCase):
 
 
 class CreationResponsesTests(VaultCreationHttpTestCase):
-    """Creation, bucket, Retention Lock, selection, pause and the inventory."""
+    """Creation, bucket, Retention Lock, pause and the inventory."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -117,10 +117,6 @@ class CreationResponsesTests(VaultCreationHttpTestCase):
         self.assertEqual(set(locked["retained"]), {
             "count", "bytes", "deletable_from", "deletable_until", "failed_count",
             "failed_attempts", "last_error", "last_attempt_at", "next_attempt_at"})
-
-        selected = self.answer("POST", "/api/vaults/select", json={"vault_id": vault_id})
-        self.assertEqual(set(selected), {"message", "message_key"})
-        self.assertEqual(selected["message_key"], "api.vault_selected")
 
         for action, paused in (("pause", True), ("resume", False)):
             answer = self.answer("POST", f"/api/vaults/{vault_id}/{action}")

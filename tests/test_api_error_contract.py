@@ -101,13 +101,21 @@ class SessionErrors(ApiErrorCase):
         missing = problem("api.protected_vault_not_found")
         self.check("GET", "/api/vaults/99/jobs", X, 404, missing)
         self.check("GET", "/api/vaults/2/jobs", X, 404, missing)
-        self.check("POST", "/api/vaults/select", {"vault_id": 99}, 404, missing)
-        self.check("POST", "/api/vaults/select", {"vault_id": 2}, 404, missing)
         with self.database.connect() as connection:
             connection.execute("UPDATE vaults SET lifecycle='stopping' WHERE id=1")
         self.check("GET", "/api/vaults/1/jobs", X, 404, missing)
         me = self.client.get("/api/me")
-        self.assertEqual((me.status_code, me.json()["vault"]), (200, None))
+        self.assertEqual((me.status_code, me.json()["stopped_vault"]["id"]), (200, 1))
+
+    def test_the_session_vault_is_gone(self) -> None:
+        # #805: the interface chooses the Vault it opens on; the Session holds none.
+        self.assertNotIn("/api/vaults/select", self.client.app.openapi()["paths"])
+        response = self.client.post("/api/vaults/select", json={"vault_id": 1})
+        self.assertEqual((response.status_code, response.json()), (404, {"detail": "Not Found"}))
+        self.assertNotIn("vault", self.client.get("/api/me").json())
+        with self.database.connect() as connection:
+            self.assertEqual(connection.execute("SELECT vault_id FROM sessions").fetchall(),
+                             [{"vault_id": None}])
 
     def test_sign_in_and_locale(self) -> None:
         self.check("PUT", "/api/locale", {"locale": "fr"}, 400, problem("api.unsupported_locale"))
@@ -501,16 +509,14 @@ class BrowseAddress(VaultAddressCase):
                     self.assertEqual(sum(stats.json()["states"].values()), 1)
             self.assertEqual(self.session_vault(), pinned)
 
-    def test_the_session_vault_is_still_written_by_me_alone(self) -> None:
-        # What the interface opens on never came from these routes: ``/api/me``
-        # names the first operational Vault and writes it into the Session.
+    def test_no_request_writes_the_session_vault(self) -> None:
+        # The interface chooses the Vault it opens on: ``/api/me`` names none.
         with self.database.connect() as connection:
             self.files_on_disk(connection)
         for _method, suffix, _body in self.OPERATIONS:
             self.assertEqual(self.client.get(f"/api/vaults/1/{suffix}").status_code, 200)
+        self.assertNotIn("vault", self.client.get("/api/me").json())
         self.assertIsNone(self.session_vault())
-        self.assertEqual(self.client.get("/api/me").json()["vault"]["id"], 1)
-        self.assertEqual(self.session_vault(), 1)
 
     def test_without_an_operational_vault_the_answer_is_the_path_one(self) -> None:
         # The Session fallback is gone with its 403 ``api.no_vault``.
@@ -645,13 +651,12 @@ class JobsAddress(VaultAddressCase):
                          [(self.job_id, "a.txt")])
         self.assertIsNone(history.json()["next_before_id"])
 
-    def test_the_session_vault_is_still_written_by_me_alone(self) -> None:
+    def test_no_request_writes_the_session_vault(self) -> None:
         for suffix in ("jobs", "catalog/revision", "catalog/events?subscribe=false"):
             self.assertEqual(self.client.get(f"/api/vaults/1/{suffix}").status_code, 200)
         self.assertEqual(self.client.post("/api/vaults/1/scan").status_code, 202)
+        self.assertNotIn("vault", self.client.get("/api/me").json())
         self.assertIsNone(self.session_vault())
-        self.assertEqual(self.client.get("/api/me").json()["vault"]["id"], 1)
-        self.assertEqual(self.session_vault(), 1)
 
     def test_without_an_operational_vault_the_answer_is_the_path_one(self) -> None:
         # The Session fallback is gone with its 403 ``api.no_vault``.

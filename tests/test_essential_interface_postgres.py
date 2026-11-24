@@ -39,7 +39,7 @@ class EssentialSearchPostgresTests(fixtures.ProtectionStateFixture):
         self.assertIsInstance(cold['estimate']['estimated_hours'], (int, float))
         self.assertFalse(hot['requires_restore'])
 
-    def test_http_config_scope_survives_another_clients_session_selection(self):
+    def test_http_config_scope_ignores_a_vault_stored_in_the_session(self):
         from app.services.operation_policies import get_policy
         seed_vault(self.connection, id=10, name='Second', source_root='/second')
         create_owner(self.connection)
@@ -49,17 +49,17 @@ class EssentialSearchPostgresTests(fixtures.ProtectionStateFixture):
         self.connection.execute('UPDATE sessions SET vault_id=9')
         self.connection.commit()
         csrf = client.get('/api/me').json()['csrf_token']
-        # This tab displays 10 while another tab's session is selected on 9.
+        # This tab displays 10; the Session still holds 9 from an older release.
         result = client.put('/api/vaults/10/operation-policy', headers={'X-CSRF-Token':csrf}, json={'local_release_after_days':180})
         self.assertEqual(result.status_code,200,result.text)
         self.assertEqual(get_policy(self.connection,10).local_release_after_days,180)
         self.assertIsNone(get_policy(self.connection,9).local_release_after_days)
-        self.assertEqual(client.get('/api/me').json()['vault']['id'],9)
+        self.assertNotIn('vault', client.get('/api/me').json())
         denied = client.put('/api/vaults/10/operation-policy',json={'local_release_after_days':None})
         self.assertEqual(denied.status_code,403)
         missing = client.get('/api/vaults/999/operation-policy')
         self.assertEqual(missing.status_code,404)
-        self.assertEqual(client.get('/api/me').json()['vault']['id'],9)
+        self.assertNotIn('vault', client.get('/api/me').json())
 
     def test_duplicate_paths_keep_vault_identity_filter_and_pagination(self):
         _, first_version = self.seed('same', local=False, archive=True, verified=True)
