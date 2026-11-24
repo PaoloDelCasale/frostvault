@@ -4185,6 +4185,7 @@
               "forbidden",
               "reauth_required",
               "not_found",
+              "method_not_allowed",
               "conflict",
               "invalid",
               "rate_limited",

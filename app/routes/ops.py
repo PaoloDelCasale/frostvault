@@ -6,13 +6,15 @@ import mimetypes
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import ConfigDict
+from starlette.routing import Match
 
 from ..api_models import ResponseModel, passthrough
 from ..config import settings
 from ..diagnostics import require_metrics_token
+from ..errors import DomainError, MethodNotAllowed, NotFound
 from ..services import health as health_service
 from ..services import metrics as metrics_service
 from ..services.vault_paths import safe_local_path
@@ -168,9 +170,30 @@ def _spa_dist_file_response(full_path: str) -> FileResponse | None:
     )
 
 
+def _api_router_error(request: Request) -> DomainError:
+    """The refusal of an address under /api/ that no route takes (#861).
+
+    405 when routes of the application match its path for other methods (the
+    router's own ``PARTIAL`` match, as Starlette answers), else 404. Only the
+    catch-alls below call it, so routed requests pay nothing for it.
+    """
+    allow: set[str] = set()
+    for route in request.app.router.routes:
+        if getattr(route, "endpoint", None) in (spa_fallback, unknown_route):
+            continue
+        match, _ = route.matches(request.scope)
+        if match is Match.PARTIAL:
+            allow.update(route.methods or ())
+    if allow:
+        return MethodNotAllowed("api.method_not_allowed", allow=sorted(allow))
+    return NotFound("api.not_found")
+
+
 @router.get("/{full_path:path}")
-def spa_fallback(full_path: str):
+def spa_fallback(full_path: str, request: Request):
     """SPA client-route fallback; never intercepts API, auth, or static assets."""
+    if full_path.startswith("api/"):
+        raise _api_router_error(request)
     head = full_path.split("/", 1)[0]
     if head in _SPA_FALLBACK_EXCLUDED_PREFIXES:
         raise HTTPException(status_code=404, detail="Not Found")
@@ -185,11 +208,13 @@ def spa_fallback(full_path: str):
     methods=["POST", "PUT", "PATCH", "DELETE"],
     include_in_schema=False,
 )
-def unknown_route(full_path: str):
+def unknown_route(full_path: str, request: Request):
     """Unknown or removed routes are Not Found for every method.
 
     Without this the GET-only SPA fallback answers 405 to a mutation on a
-    removed endpoint, which hides that the endpoint no longer exists.
+    removed endpoint, which hides that the endpoint no longer exists. Under
+    /api/ the answer is the API's own refusal, 405 for a known path.
     """
-    del full_path
+    if full_path.startswith("api/"):
+        raise _api_router_error(request)
     raise HTTPException(status_code=404, detail="Not Found")

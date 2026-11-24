@@ -1368,6 +1368,8 @@
   "api.invalid_session": "Sessione non valida",
   "api.reauth_required": "È richiesta una nuova autenticazione",
   "api.protected_vault_not_found": "Vault protetto non trovato",
+  "api.not_found": "L'indirizzo API non esiste",
+  "api.method_not_allowed": "L'indirizzo API non accetta questo metodo",
   "api.invalid_folder": "Cartella non valida",
   "api.unsupported_locale": "Lingua non supportata",
   "api.sign_in.emergency_network": "La password di emergenza non è accettata da questa rete",

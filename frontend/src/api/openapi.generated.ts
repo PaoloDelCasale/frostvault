@@ -1791,7 +1791,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "bad_request" | "unauthenticated" | "forbidden" | "reauth_required" | "not_found" | "conflict" | "invalid" | "rate_limited" | "failed" | "upstream_failed" | "unavailable";
+            code: "bad_request" | "unauthenticated" | "forbidden" | "reauth_required" | "not_found" | "method_not_allowed" | "conflict" | "invalid" | "rate_limited" | "failed" | "upstream_failed" | "unavailable";
             /** Message Key */
             message_key: string;
             /** Message Params */

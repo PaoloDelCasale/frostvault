@@ -1368,6 +1368,8 @@
   "api.invalid_session": "Invalid session",
   "api.reauth_required": "Reauthentication required",
   "api.protected_vault_not_found": "Protected Vault not found",
+  "api.not_found": "The API address does not exist",
+  "api.method_not_allowed": "The API address does not accept this method",
   "api.invalid_folder": "Invalid folder",
   "api.unsupported_locale": "Unsupported locale",
   "api.sign_in.emergency_network": "The emergency password is not accepted from this network",
