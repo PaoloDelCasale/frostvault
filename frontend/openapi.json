@@ -7327,8 +7327,7 @@
         "properties": {
           "group_id": {
             "type": "string",
-            "maxLength": 64,
-            "minLength": 1,
+            "format": "uuid",
             "title": "Group Id"
           },
           "action": {
@@ -9779,8 +9778,7 @@
         "properties": {
           "group_id": {
             "type": "string",
-            "maxLength": 64,
-            "minLength": 1,
+            "format": "uuid",
             "title": "Group Id"
           }
         },

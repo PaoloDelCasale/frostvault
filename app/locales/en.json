@@ -1237,7 +1237,6 @@
   "api.vault_pause.not_operational": "Only an operational Vault can be paused or resumed",
   "api.stop_protection.choose_disposition": "Choose keep or delete and provide a reason",
   "api.stop_protection.already_stopped": "Folder protection has already stopped",
-  "api.stop_protection.bucket_creating": "The Vault's bucket is still being created",
   "api.stop_protection.reconnect_first": "Reconnect must complete before deleting cloud content",
   "api.stop_protection.active_jobs": "Wait for active Jobs or cancel pending work first",
   "api.stop_protection.no_pending_deletion": "No pending cloud deletion",

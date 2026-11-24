@@ -1237,7 +1237,6 @@
   "api.vault_pause.not_operational": "Solo un Vault operativo può essere messo in pausa o ripreso",
   "api.stop_protection.choose_disposition": "Scegli se conservare o eliminare e indica un motivo",
   "api.stop_protection.already_stopped": "La protezione della cartella è già interrotta",
-  "api.stop_protection.bucket_creating": "Il bucket del Vault è ancora in creazione",
   "api.stop_protection.reconnect_first": "Il ricollegamento deve concludersi prima di eliminare il contenuto cloud",
   "api.stop_protection.active_jobs": "Attendi i lavori attivi o annulla prima il lavoro in sospeso",
   "api.stop_protection.no_pending_deletion": "Nessuna eliminazione cloud in sospeso",

@@ -2880,7 +2880,10 @@ export interface components {
         };
         /** JobCancelAction */
         JobCancelAction: {
-            /** Group Id */
+            /**
+             * Group Id
+             * Format: uuid
+             */
             group_id: string;
             /** Action */
             action: string;
@@ -3618,7 +3621,10 @@ export interface components {
         };
         /** RecoverApproveAction */
         RecoverApproveAction: {
-            /** Group Id */
+            /**
+             * Group Id
+             * Format: uuid
+             */
             group_id: string;
         };
         /** RecoverEstimateRequest */

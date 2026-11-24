@@ -8,7 +8,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, Path, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import MISSING, BaseModel, ConfigDict, Field, model_validator
+from pydantic import MISSING, AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from ..api_models import ResponseModel, passthrough
 from ..config import settings
@@ -92,12 +92,22 @@ class RecoverEstimateRequest(RecoverRequest):
     pass
 
 
+def _uuid_text(value: str) -> str:
+    """A Job group id as the client wrote it, once it reads as a UUID (#829)."""
+    uuid.UUID(value)
+    return value
+
+
+# Kept as written: the response echoes it; the services get ``str(uuid.UUID(...))``.
+GroupId = Annotated[str, AfterValidator(_uuid_text), Field(json_schema_extra={"format": "uuid"})]
+
+
 class RecoverApproveAction(BaseModel):
-    group_id: str = Field(min_length=1, max_length=64)
+    group_id: GroupId
 
 
 class GroupCancelAction(BaseModel):
-    group_id: str = Field(min_length=1, max_length=64)
+    group_id: GroupId
 
 
 class JobCancelAction(GroupCancelAction):
@@ -974,7 +984,7 @@ def cancel_job(
     user: dict[str, Any] = Depends(current_user),
     vault: dict[str, Any] = Depends(vault_in_path),
 ):
-    return cancel_job_group(action.group_id, action.action, vault, _actor(request))
+    return cancel_job_group(str(uuid.UUID(action.group_id)), action.action, vault, _actor(request))
 
 
 @router.post(
@@ -1016,7 +1026,7 @@ def approve_recover(
         # allow a late approval. Keep subsecond precision at the deadline.
         timestamp = datetime.now(timezone.utc).isoformat()
         job_ids = recovery_approval.approve(
-            connection, vault_id=vault["id"], group_id=action.group_id, now=timestamp,
+            connection, vault_id=vault["id"], group_id=str(uuid.UUID(action.group_id)), now=timestamp,
         )
     # Commit expiration even when the approval is refused.
     if not job_ids:

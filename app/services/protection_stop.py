@@ -100,11 +100,15 @@ def stop_protection(connection: Any, *, vault_id: int, actor: str,
                     cloud_disposition: str, confirmation: str, reason: str) -> dict[str, Any]:
     source_directories.lock_vault_root_allocation(connection)
     vault = cloud_deletion.lock_vault(connection, vault_id)
+    if vault["lifecycle"] in {"tombstone", "provisioning"}:
+        # Like every operation addressed to a Vault (#829): a Tombstone, and a
+        # Vault whose bucket is still being created, are not found.
+        raise NotFound("api.protected_vault_not_found")
     if confirmation != vault["name"]:
         raise cloud_deletion.ConfirmationRequired("api.confirmation_required")
     if cloud_disposition not in {"keep", "delete"} or not reason.strip():
         raise StopRefused("api.stop_protection.choose_disposition")
-    if vault["lifecycle"] in {"stopping", "tombstone"}:
+    if vault["lifecycle"] == "stopping":
         group_id = _stop_group(connection, vault_id)
         existing = "delete" if group_id else "keep"
         if existing == cloud_disposition:
@@ -122,9 +126,6 @@ def stop_protection(connection: Any, *, vault_id: int, actor: str,
             reconcile_one(connection, vault_id)
             return status(connection, vault_id)
         raise StopRefused("api.stop_protection.already_stopped")
-    if vault["lifecycle"] == "provisioning":
-        # Its bucket is still being created (#735): there is nothing to stop.
-        raise StopRefused("api.stop_protection.bucket_creating")
     if cloud_disposition == "delete" and vault["lifecycle"] != "active":
         raise StopRefused("api.stop_protection.reconnect_first")
     if has_pending(connection, vault_id) or _active_work(connection, vault_id):
