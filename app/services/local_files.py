@@ -134,7 +134,7 @@ def _require_linked_upload_digest(target: Mapping[str, Any]) -> str:
     return upload_digest
 
 
-def _local_stat_unchanged(path: Path, previous: os.stat_result) -> bool:
+def local_stat_unchanged(path: Path, previous: os.stat_result) -> bool:
     try:
         current = path.stat(follow_symlinks=False)
     except OSError:

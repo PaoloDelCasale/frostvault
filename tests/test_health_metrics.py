@@ -67,7 +67,7 @@ class HealthAndMetricsHttpTests(FrostVaultTestCase):
 
     def test_upload_health_is_informational_and_public_readiness_exposes_no_workload(self) -> None:
         from app.services import upload_pipeline, upload_remediation
-        coordinator = upload_pipeline._Pipeline(1)
+        coordinator = upload_pipeline.Pipeline(1)
         coordinator.journal_failed("private-intent", "private-fact-hash")
         with self.database.connect() as connection:
             connection.execute("DELETE FROM upload_remediation_sweep")

@@ -46,7 +46,7 @@ class ReceiptJournalTests(unittest.TestCase):
 class JournalAdmissionTests(unittest.TestCase):
     def setUp(self):
         from app.services.upload_execution import UploadExecution
-        from app.services.upload_pipeline import _Pipeline
+        from app.services.upload_pipeline import Pipeline
         from app.services.upload_snapshot import prepare_upload_snapshot
         from tests.upload_provenance_provider import VersionedProvider
 
@@ -70,7 +70,7 @@ class JournalAdmissionTests(unittest.TestCase):
             return result
         connection.execute.side_effect = query
         worker.s3_client.return_value = provider
-        coordinator = _Pipeline(4)
+        coordinator = Pipeline(4)
         coordinator.journal_failed("intent", "lost-fact")
         self.worker, self.provider, self.coordinator = worker, provider, coordinator
         self.execution = UploadExecution(worker)
@@ -140,7 +140,7 @@ class SinglePutPayloadTests(unittest.TestCase):
         from app import storage
         from app.services import upload_execution as execution
         from app.services.s3_upload import upload_file
-        from app.services.upload_pipeline import _Pipeline
+        from app.services.upload_pipeline import Pipeline
         from app.services.upload_snapshot import prepare_upload_snapshot
 
         temp = tempfile.TemporaryDirectory()
@@ -148,7 +148,7 @@ class SinglePutPayloadTests(unittest.TestCase):
         self.source = Path(temp.name) / "report.txt"
         self.source.write_bytes(b"snapshot A")
         self.storage, self.execution_module = storage, execution
-        self.pipeline = _Pipeline(4)
+        self.pipeline = Pipeline(4)
         self.events, self.puts, self.match = [], [], False
         self.put_error: BaseException | None = None
         self.prepare = prepare_upload_snapshot
@@ -352,7 +352,7 @@ class TargetCapabilityTests(unittest.TestCase):
         pinned = {"vault_id": 2, "vault_file_id": "file", "path": "file", "key": "key", "provider": "provider"}
         connection = MagicMock()
         with patch.object(provenance, "_target", return_value=(pinned, {})) as target:
-            with provenance._validated_target(connection, job, key="key", provider="provider", shared=True):
+            with provenance.validated_target(connection, job, key="key", provider="provider", shared=True):
                 provenance.require_target(connection, job, pinned, shared=True)
                 provenance.require_target(connection, job, pinned, shared=True)
                 self.assertEqual(target.call_count, 1)
@@ -370,7 +370,7 @@ class TargetCapabilityTests(unittest.TestCase):
         pinned = {"key": "key", "provider": "provider"}
         connection = MagicMock()
         with patch.object(provenance, "_target", return_value=(pinned, {})):
-            with provenance._validated_target(connection, job, key="key", provider="provider", shared=True):
+            with provenance.validated_target(connection, job, key="key", provider="provider", shared=True):
                 with self.assertRaisesRegex(RuntimeError, "upgrade"):
                     provenance.require_target(connection, job, pinned)
 
@@ -379,7 +379,7 @@ class TargetCapabilityTests(unittest.TestCase):
         pinned = {"key": "key", "provider": "provider"}
         with patch.object(provenance, "_target", return_value=(pinned, {})) as target:
             with self.assertRaises(RuntimeError):
-                with provenance._validated_target(connection, job, **pinned):
+                with provenance.validated_target(connection, job, **pinned):
                     raise RuntimeError("rollback")
             provenance.require_target(connection, job, pinned)
             self.assertEqual(target.call_count, 2)

@@ -20,7 +20,7 @@ from typing import Any, Protocol
 from psycopg.types.json import Jsonb
 
 from ..config import settings
-from ..i18n import (_localized_digits, format_bytes, format_datetime, format_money, has_message,
+from ..i18n import (localized_digits, format_bytes, format_datetime, format_money, has_message,
                     parse_message_params, translate)
 from .s3_preflight import remediation_match
 
@@ -96,7 +96,7 @@ def _localized_params(params: Mapping[str, Any], locale: str | None) -> dict[str
     # are stored raw and shown in the reader's locale.
     for raw, shown in (("count", "count_shown"), ("cap_files", "cap_files_shown")):
         if isinstance(localized.get(raw), int):
-            localized[shown] = _localized_digits(f"{localized[raw]:,}", locale)
+            localized[shown] = localized_digits(f"{localized[raw]:,}", locale)
     for raw, shown in (("byte_count", "bytes"), ("cap_bytes", "cap_size")):
         if raw in localized:
             localized[shown] = format_bytes(localized[raw], locale)

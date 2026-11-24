@@ -343,7 +343,7 @@ def _target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
 class _ValidatedTarget:
     """Transaction-local capability, never a caller-controlled bypass flag.
 
-    Only _validated_target can install one. It captures the actual locked row
+    Only validated_target can install one. It captures the actual locked row
     validation, one connection and one immutable Job identity. A nested check
     still compares the complete pin, including path epoch/root identity.
     No capability is stored on pooled connections or survives commit/rollback.
@@ -374,8 +374,8 @@ _validated: ContextVar[_ValidatedTarget | None] = ContextVar("upload_validated_t
 
 
 @contextmanager
-def _validated_target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
-                      shared: bool = False):
+def validated_target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
+                     shared: bool = False):
     pinned, vault = _target(connection, job, key=key, provider=provider, shared=shared)
     token = _validated.set(_ValidatedTarget(connection, job, pinned, shared, vault))
     try:
@@ -542,7 +542,7 @@ def load_attempt(connection: Any, attempt_id: str) -> UploadAttempt | None:
     return _attempt(row) if row else None
 
 
-_CONTRADICTED = """EXISTS (
+CONTRADICTED = """EXISTS (
     SELECT 1 FROM upload_attempts settled JOIN upload_receipts r ON r.attempt_id=settled.id
     WHERE settled.file_id=%(file)s AND settled.settled_at IS NOT NULL
       AND (settled.outcome<>'landed'
@@ -557,7 +557,7 @@ def outstanding(connection: Any, file_id: str) -> UploadAttempt | None:
     blocks too, even long after the settlement.
     """
     row = connection.execute(
-        f"""SELECT {_CONTRADICTED} AS contradicted, att.*
+        f"""SELECT {CONTRADICTED} AS contradicted, att.*
             FROM (SELECT 1) one LEFT JOIN (
                 SELECT {_ATTEMPT_COLUMNS} FROM {_ATTEMPT_FROM}
                 WHERE a.file_id=%(file)s AND a.settled_at IS NULL
@@ -593,7 +593,7 @@ def _close_abandoned(connection: Any, file_id: str, timestamp: Any) -> None:
     must reconcile before hashing a different content.
     """
     row = connection.execute(
-        f"""SELECT {_CONTRADICTED} AS contradicted, att.*
+        f"""SELECT {CONTRADICTED} AS contradicted, att.*
             FROM (SELECT 1) one LEFT JOIN (
                 SELECT s.id AS snapshot_id,
                        (SELECT a.id FROM upload_attempts a
@@ -650,7 +650,7 @@ def _open_attempt(connection: Any, job: dict[str, Any], admitted: AdmittedSnapsh
                   before: dict[str, Any], timestamp: Any) -> UploadAttempt:
     versions, markers = sorted(before["versions"]), sorted(before["markers"])
     current = connection.execute(
-        f"""SELECT {_CONTRADICTED} AS contradicted, att.*
+        f"""SELECT {CONTRADICTED} AS contradicted, att.*
             FROM (SELECT 1) one LEFT JOIN (
                 SELECT {_ATTEMPT_COLUMNS} FROM {_ATTEMPT_FROM}
                 WHERE a.file_id=%(file)s AND a.settled_at IS NULL
@@ -1062,7 +1062,7 @@ def reconcile(client: Any, attempt: UploadAttempt, saved: dict[str, Any] | None,
     return {**head, **(saved or {}), "VersionId": version}
 
 
-def _incomplete_uploads(client: Any, bucket: str, key: str) -> list[str]:
+def incomplete_uploads(client: Any, bucket: str, key: str) -> list[str]:
     """Exact-key incomplete multipart uploads; unconfirmed completeness fails closed."""
     lister = getattr(client, "list_multipart_uploads", None)
     if lister is None:
@@ -1086,8 +1086,8 @@ def _incomplete_uploads(client: Any, bucket: str, key: str) -> list[str]:
             kwargs.pop("UploadIdMarker")
 
 
-def _abort_owned_multiparts(client: Any, pinned: dict[str, Any], found: list[str],
-                            owned: Any, check_active: Any, on_aborted: Any) -> None:
+def abort_owned_multiparts(client: Any, pinned: dict[str, Any], found: list[str],
+                           owned: Any, check_active: Any, on_aborted: Any) -> None:
     """Abort exactly the UploadIds this intent journaled; never any other.
 
     An incomplete multipart for the key whose UploadId this intent did not journal
@@ -1123,13 +1123,13 @@ def _prove_absent(client: Any, pinned: dict[str, Any], before: dict[str, Any],
     active operation, and an intent receipt (even partial) is never ignored.
     """
     check_active()
-    found = _incomplete_uploads(client, pinned["bucket"], pinned["key"])
+    found = incomplete_uploads(client, pinned["bucket"], pinned["key"])
     owned = frozenset(owned_multiparts)
     if found and owned.intersection(found):
-        _abort_owned_multiparts(client, pinned, found, owned, check_active, on_multipart_aborted)
+        abort_owned_multiparts(client, pinned, found, owned, check_active, on_multipart_aborted)
         check_active()
         # Whatever the exact abort did not remove is not provably this intent's.
-        found = _incomplete_uploads(client, pinned["bucket"], pinned["key"])
+        found = incomplete_uploads(client, pinned["bucket"], pinned["key"])
     if found:
         raise UploadBlocked("ambiguous_send")
     check_active()
@@ -1201,7 +1201,7 @@ def describe(connection: Any, *, vault_id: int, path: str) -> dict[str, Any]:
         return empty
     file_id = row["id"]
     attempt = connection.execute(
-        f"""SELECT {_CONTRADICTED} AS contradicted,
+        f"""SELECT {CONTRADICTED} AS contradicted,
                    EXISTS (SELECT 1 FROM upload_attempts a WHERE a.file_id=%(file)s
                            AND a.settled_at IS NULL AND a.send_started_at IS NOT NULL) AS open_send""",
         {"file": file_id},

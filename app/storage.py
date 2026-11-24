@@ -106,7 +106,7 @@ from .services.problems import display_path, report_problem, resolve_stale_path_
 from .services.local_files import (
     hash_stable_regular_file,
     restore_claimed_local_copy,
-    _local_stat_unchanged,
+    local_stat_unchanged,
 )
 from .services import worker_errors as worker_error_store
 from .services import notifications as notification_service
@@ -123,9 +123,9 @@ from .services.shutdown import (
     WORKER_DRAIN_SECONDS, OperationCancelled, WorkerStopping, shutdown_state,
 )
 from .services import audit_events as audit_event_store
-from .services.restore_estimates import estimate_restore
+from .services.cost_estimates import estimate_restore
 from .services import job_queue
-from .services.job_admission import JobAdmission
+from .services.job_admission import JobAdmission, lock_vault
 from .services.local_copies import LocalCopies
 from .services.job_queue import (
     TERMINAL_JOB_STATUSES, JobLeaseLost, JobQueue, job_cancelled, job_priority,
@@ -3875,7 +3875,7 @@ def _upload_catalog_unit(
             # The private capability exists only inside this DB unit and still
             # compares every pin; nested prepare/send/publication checks need
             # not re-query the same fenced target. It is revoked before commit.
-            with provenance._validated_target(
+            with provenance.validated_target(
                 connection, job, key=_upload_key(job), provider="db-fence", shared=shared,
             ):
                 ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
@@ -4770,7 +4770,7 @@ def process_recover(job: dict[str, Any]) -> None:
             # observation, digest and recovered_at are published with one
             # compare-and-swap on it: a newer observation is never overwritten.
             ensure_job_active(job["id"], "Recovery claim was lost")
-            if not _local_stat_unchanged(temporary, recovered_stat):
+            if not local_stat_unchanged(temporary, recovered_stat):
                 raise RuntimeError("Recovered plaintext changed before publication")
             with db() as connection:
                 ensure_job_claim_owned_in_transaction(connection, job, "Recovery claim was lost")
@@ -6311,7 +6311,6 @@ def queue_vault_auto_uploads(vault: dict[str, Any], *, now: datetime | None = No
                 finally:
                     lock.relabel("auto_admission")
             with db() as connection:
-                from .services.job_admission import lock_vault
                 try:
                     lock_vault(connection, int(vault["id"]))
                 except LookupError:

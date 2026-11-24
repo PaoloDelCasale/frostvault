@@ -136,8 +136,8 @@ def stop_protection(connection: Any, *, vault_id: int, actor: str,
     group_id = None
     if cloud_disposition == "delete":
         # No local-data removal or exception to the Cloud-only gate is possible.
-        if cloud_deletion._selected_files(connection, vault_id=vault_id, paths=[],
-                                           is_directory=False, whole_vault=True):
+        if cloud_deletion.selected_files(connection, vault_id=vault_id, paths=[],
+                                          is_directory=False, whole_vault=True):
             scheduled = cloud_deletion.schedule_cloud_purge(
                 connection, vault_id=vault_id, paths=[], is_directory=False, whole_vault=True,
                 actor=actor, requested_at=at, confirmation=confirmation,

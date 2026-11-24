@@ -130,7 +130,7 @@ def translate(key: str, locale: str | None = None, **params: Any) -> str:
 _BYTE_UNITS = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
 
 
-def _localized_digits(text: str, locale: str | None) -> str:
+def localized_digits(text: str, locale: str | None) -> str:
     """Swap English separators for Italian ones (``1,234.5`` → ``1.234,5``)."""
     if normalize_locale(locale) == "it":
         return text.translate(str.maketrans({",": ".", ".": ","}))
@@ -148,7 +148,7 @@ def format_bytes(value: Any, locale: str | None = None) -> str:
         amount /= 1024
         index += 1
     digits = f"{amount:,.0f}" if index == 0 else f"{amount:,.1f}"
-    return f"{_localized_digits(digits, locale)} {_BYTE_UNITS[index]}"
+    return f"{localized_digits(digits, locale)} {_BYTE_UNITS[index]}"
 
 
 def format_money(value: Any, locale: str | None = None, currency: str = "EUR") -> str:
@@ -164,7 +164,7 @@ def format_money(value: Any, locale: str | None = None, currency: str = "EUR") -
         return "—"
     subcent = 0 < amount < Decimal("0.01")
     shown = Decimal("0.01") if subcent else amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    digits = _localized_digits(f"{abs(shown):,.2f}", locale)
+    digits = localized_digits(f"{abs(shown):,.2f}", locale)
     sign = "-" if shown < 0 else ""
     symbol = "€" if currency == "EUR" else None
     if normalize_locale(locale) == "it":

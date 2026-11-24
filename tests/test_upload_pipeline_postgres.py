@@ -37,7 +37,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         self.worker = worker_tests.UploadProvenanceWorkerCase(methodName="runTest")
         self.addCleanup(self.worker.doCleanups)
         self.worker.setUp()
-        self.pipeline = pipeline._Pipeline(4, pipeline._Limits(network_count=1))
+        self.pipeline = pipeline.Pipeline(4, pipeline._Limits(network_count=1))
         self.enterContext(patch.object(pipeline, "pipeline_for", return_value=self.pipeline))
         self.enterContext(patch.dict(pipeline._registry, {database.settings.database_dsn: self.pipeline}))
         self.addCleanup(storage.shutdown_state.reset)
@@ -163,7 +163,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
     def test_byte_backpressure_precedes_send_started_even_with_free_network_count(self):
         # Each tiny transfer reserves its payload plus bounded read chunks.
         # Enough bytes for one, even though four network count permits exist.
-        self.pipeline = pipeline._Pipeline(4, pipeline._Limits(
+        self.pipeline = pipeline.Pipeline(4, pipeline._Limits(
             network_count=4, network_bytes=2 * pipeline.ACCOUNTED_CHUNK + len(worker_tests.A)))
         with patch.object(pipeline, "pipeline_for", return_value=self.pipeline):
             first, second = self.queue("report.txt"), self.queue("second.txt")

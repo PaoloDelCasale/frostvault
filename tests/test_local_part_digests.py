@@ -91,7 +91,7 @@ class CatalogSnapshotExecutionTests(unittest.TestCase):
 
     def setUp(self) -> None:
         from app.services import upload_execution as execution
-        from app.services.upload_pipeline import _Pipeline
+        from app.services.upload_pipeline import Pipeline
 
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -99,7 +99,7 @@ class CatalogSnapshotExecutionTests(unittest.TestCase):
         self.source.write_bytes(BIG_A)
         os.utime(self.source, ns=(MTIME_NS, MTIME_NS))
         self.execution_module = execution
-        self.pipeline = _Pipeline(4)
+        self.pipeline = Pipeline(4)
         self.reads, self.sent = [], []
         self.bound = False
         self.fingerprint = self.recorded(BIG_A)

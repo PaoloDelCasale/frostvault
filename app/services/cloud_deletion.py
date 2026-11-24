@@ -52,32 +52,19 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from ..errors import DomainError
 from ..i18n import DEFAULT_LOCALE, translate
-from . import retention_lock, source_identity, source_layout, vault_locks, vault_relocation
+from . import retention_lock, source_identity, source_layout, vault_relocation
 from .vault_locks import lock_vaults_in_order
+from .vault_row_lock import CloudDeletionError, VaultNotFound, lock_vault
 from .audit_events import record_audit_event
 from .job_queue import OPEN_JOB_SQL, TERMINAL_JOB_STATUSES, open_job_sql
 from .vault_paths import vault_object_prefix
-from .vaults import VAULT_ROW_SQL
 from .component_health import load_vault_health
 from .directory_aggregates import mark_paths_dirty
 from .protection_states import (CURRENT_JOIN_SQL, PROTECTED_SQL, STATES, VISIBLE_SQL,
                                 masked_state_sql, observation_is_unconfirmed)
 
 DELETION_DELAY_SECONDS = 7 * 24 * 60 * 60
-
-
-class CloudDeletionError(DomainError, ValueError):
-    """The request no longer proves safe, deliberate deletion authority."""
-
-    code = "conflict"
-
-
-class VaultNotFound(CloudDeletionError):
-    """The Vault whose cloud content is asked about does not exist."""
-
-    code = "not_found"
 
 
 class ConfirmationRequired(CloudDeletionError):
@@ -181,15 +168,6 @@ def _aware(value: Any) -> datetime:
     if moment.tzinfo is None:
         raise CloudDeletionError("api.cloud_deletion.timezone_required")
     return moment
-
-
-def lock_vault(connection: Any, vault_id: int) -> dict[str, Any]:
-    row = vault_locks.lock_vault_view(
-        connection, vault_id, vault_locks.UPDATE, view_sql=VAULT_ROW_SQL,
-    )
-    if row is None:
-        raise VaultNotFound("api.vault_not_found")
-    return row
 
 
 def require_local_absence(vault: dict[str, Any], paths: list[str]) -> None:
@@ -312,8 +290,8 @@ def _require_paths(paths: list[str]) -> None:
         raise CloudDeletionError("api.cloud_deletion.invalid_paths")
 
 
-def _selected_files(connection: Any, *, vault_id: int, paths: list[str],
-                    is_directory: bool, whole_vault: bool = False) -> list[dict[str, Any]]:
+def selected_files(connection: Any, *, vault_id: int, paths: list[str],
+                   is_directory: bool, whole_vault: bool = False) -> list[dict[str, Any]]:
     """The files of a selection. A folder or the whole Vault covers what still
     has a copy somewhere; an exact path is always covered (and then validated)."""
     params: list[Any] = [vault_id]
@@ -622,7 +600,7 @@ def _resolve(connection: Any, vault: dict[str, Any], selection: _Selection, *,
              duplicates_only: bool) -> tuple[list[dict[str, Any]], DeletionPreview]:
     """The files a confirmation would schedule, and the preview describing them."""
     if selection.strict:
-        files = _selected_files(connection, vault_id=int(vault["id"]), paths=list(selection.files),
+        files = selected_files(connection, vault_id=int(vault["id"]), paths=list(selection.files),
                                 is_directory=False, whole_vault=selection.whole_vault)
         if not files:
             raise CloudDeletionError("api.cloud_deletion.none_selected")

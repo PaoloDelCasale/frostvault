@@ -1,9 +1,10 @@
-"""Restore cost and time estimates for Glacier workflows (issue #4)."""
+"""Restore tiers and times for Glacier workflows (issue #4).
+
+The restore estimate with list prices (``estimate_restore``) lives with the
+prices in ``cost_estimates`` (#858).
+"""
 
 from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Mapping
 
 
 DEFAULT_RESTORE_HOURS: dict[str, dict[str, float]] = {
@@ -12,18 +13,6 @@ DEFAULT_RESTORE_HOURS: dict[str, dict[str, float]] = {
 }
 
 SUPPORTED_RESTORE_TIERS = ("Expedited", "Standard", "Bulk")
-
-
-@dataclass(frozen=True)
-class RestoreEstimate:
-    size_bytes: int
-    storage_class: str
-    tier: str
-    days: int
-    estimated_cost_eur: float
-    estimated_hours: float
-    restore_object_irreversible: bool = True
-    pricing_note: str = "Estimate from AWS list prices; not an AWS Billing quote."
 
 
 def normalize_restore_tier(tier: str | None, *, storage_class: str) -> str:
@@ -37,36 +26,6 @@ def normalize_restore_tier(tier: str | None, *, storage_class: str) -> str:
             return next(iter(allowed))
         return "Bulk"
     return candidate
-
-
-def estimate_restore(
-    *,
-    size_bytes: int,
-    storage_class: str,
-    tier: str = "Bulk",
-    days: int = 3,
-    pricing: Mapping[str, Mapping[str, float]] | None = None,
-    hours: Mapping[str, Mapping[str, float]] | None = None,
-) -> RestoreEstimate:
-    class_key = (storage_class or "").upper()
-    if pricing is None:
-        from .cost_estimates import list_prices
-
-        pricing = list_prices().restore_rates
-    price_table = pricing
-    hour_table = hours or DEFAULT_RESTORE_HOURS
-    resolved_tier = normalize_restore_tier(tier, storage_class=class_key)
-    gib = max(0, int(size_bytes)) / (1024**3)
-    rate = float(price_table.get(class_key, {}).get(resolved_tier, 0.0))
-    estimated_hours = float(hour_table.get(class_key, {}).get(resolved_tier, 0.0))
-    return RestoreEstimate(
-        size_bytes=max(0, int(size_bytes)),
-        storage_class=class_key,
-        tier=resolved_tier,
-        days=max(1, int(days)),
-        estimated_cost_eur=round(gib * rate, 6),
-        estimated_hours=estimated_hours,
-    )
 
 
 def is_high_impact_restore(

@@ -47,7 +47,7 @@ class UploadFingerprintTests(unittest.TestCase):
 
     def setUp(self) -> None:
         from app.services import upload_execution as execution
-        from app.services.upload_pipeline import _Pipeline
+        from app.services.upload_pipeline import Pipeline
 
         source_devices.reset_for_tests(limit=3)
         self.addCleanup(source_devices.reset_for_tests)
@@ -56,7 +56,7 @@ class UploadFingerprintTests(unittest.TestCase):
         self.source = Path(temp.name) / "movie.mkv"
         self.write(BIG)
         self.execution_module = execution
-        self.pipeline = _Pipeline(4)
+        self.pipeline = Pipeline(4)
         self.sent: list[dict] = []
         self.events: list[str] = []
         self.bound = False
@@ -467,11 +467,11 @@ class DeviceRateTests(unittest.TestCase):
         now = time.monotonic()
         throughput.METER.record_devices(mono=now - 20, totals={"location:disk1": 0})
         throughput.METER.record_devices(mono=now, totals=source_devices.read_totals())
-        status = source_devices.status()
+        status = throughput.device_status()
         self.assertEqual(status["source_devices"], [
             {"device": "disk1", "reading": 0, "waiting": 0, "limit": 3, "bytes_per_second": 50}])
         with slots.reading("location:disk2"):
-            listed = {entry["device"]: entry for entry in source_devices.status()["source_devices"]}
+            listed = {entry["device"]: entry for entry in throughput.device_status()["source_devices"]}
             self.assertEqual(listed["disk2"]["bytes_per_second"], None)
             self.assertEqual(listed["disk2"]["reading"], 1)
 

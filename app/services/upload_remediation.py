@@ -88,7 +88,7 @@ SELECT f.id AS file_id, f.vault_id, f.path, f.path_since, f.held_version_id,
        EXISTS (SELECT 1 FROM archive_versions av WHERE av.file_id = f.id
                  AND av.id IS DISTINCT FROM f.current_version_id
                  AND av.id IS DISTINCT FROM f.replacing_version_id) AS superseded,
-       {provenance._CONTRADICTED} AS contradicted
+       {provenance.CONTRADICTED} AS contradicted
 FROM files f LEFT JOIN archive_versions cur ON cur.id = f.current_version_id
 WHERE f.id = %(file)s"""
 

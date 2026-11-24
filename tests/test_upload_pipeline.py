@@ -39,7 +39,7 @@ class UploadCapacityTests(unittest.TestCase):
         }
         for concurrency, (prepare, network, catalog, per_vault) in expected.items():
             with self.subTest(concurrency=concurrency):
-                coordinator = pipeline._Pipeline(concurrency)
+                coordinator = pipeline.Pipeline(concurrency)
                 self.assertEqual(coordinator.prepare.count, prepare)
                 # Two read chunks per reader: exactly ``prepare`` readers fit.
                 self.assertEqual(coordinator.prepare.byte_limit, prepare * 2 * ACCOUNTED_CHUNK)
@@ -56,22 +56,22 @@ class UploadCapacityTests(unittest.TestCase):
     def test_concurrency_above_32_is_clamped_to_32(self):
         for concurrency in (33, 64, 1000):
             with self.subTest(concurrency=concurrency):
-                coordinator = pipeline._Pipeline(concurrency)
+                coordinator = pipeline.Pipeline(concurrency)
                 self.assertEqual(
                     (coordinator.prepare.count, coordinator.network.count,
                      coordinator.catalog.count, coordinator._vault_count),
                     (8, 32, 32, 16))
-        coordinator = pipeline._Pipeline(0)
+        coordinator = pipeline.Pipeline(0)
         self.assertEqual((coordinator.prepare.count, coordinator.network.count), (1, 1))
 
     def test_explicit_limits_win_but_stay_capped_by_concurrency(self):
-        coordinator = pipeline._Pipeline(4, pipeline._Limits(network_count=1, catalog_per_vault=9))
+        coordinator = pipeline.Pipeline(4, pipeline._Limits(network_count=1, catalog_per_vault=9))
         self.assertEqual(coordinator.network.count, 1)
         self.assertEqual(coordinator._vault_count, 4)
         self.assertEqual(coordinator.prepare.count, 4)
 
     def test_eight_readers_hash_at_once_with_sixteen_claimed_jobs(self):
-        coordinator = pipeline._Pipeline(16)
+        coordinator = pipeline.Pipeline(16)
         with ExitStack() as stack:
             for _ in range(8):
                 stack.enter_context(coordinator.prepare.take(lambda: None, 2 * ACCOUNTED_CHUNK))
@@ -141,7 +141,7 @@ class UploadCapacityTests(unittest.TestCase):
     def test_oversized_layout_has_one_bounded_lane_without_blocking_tiny_sends(self):
         tiny = self.snapshot()
         snapshot = replace(tiny, size=100 * ACCOUNTED_CHUNK, part_size=64 * ACCOUNTED_CHUNK)
-        coordinator = pipeline._Pipeline(4)
+        coordinator = pipeline.Pipeline(4)
         waiting, entered = threading.Event(), threading.Event()
         def another_large():
             with coordinator.sending(snapshot, waiting.set):
@@ -163,7 +163,7 @@ class UploadCapacityTests(unittest.TestCase):
     def test_single_put_payload_is_reserved_before_the_read_then_takes_only_the_send_count(self):
         """#702: the buffer lane first (before the read), the count around the PUT."""
         tiny = self.snapshot()
-        coordinator = pipeline._Pipeline(4)
+        coordinator = pipeline.Pipeline(4)
         weight = tiny.size + 2 * ACCOUNTED_CHUNK
         with coordinator.small_payload(tiny.size, lambda: None):
             self.assertEqual((coordinator._buffers._count, coordinator._buffers._bytes), (1, weight))
@@ -185,7 +185,7 @@ class UploadCapacityTests(unittest.TestCase):
 
     def test_reserved_payload_still_waits_for_send_admission_and_byte_budget(self):
         tiny = self.snapshot()
-        coordinator = pipeline._Pipeline(4, pipeline._Limits(network_bytes=tiny.size + 2 * ACCOUNTED_CHUNK))
+        coordinator = pipeline.Pipeline(4, pipeline._Limits(network_bytes=tiny.size + 2 * ACCOUNTED_CHUNK))
         waiting, entered = threading.Event(), threading.Event()
         def second_payload():
             with coordinator.small_payload(tiny.size, waiting.set):
@@ -208,7 +208,7 @@ class UploadCapacityTests(unittest.TestCase):
     def test_wait_and_post_acquisition_faults_release_tickets_and_all_permits(self):
         for failure in (OperationCancelled("cancel"), WorkerStopping("shutdown"), BaseException("crash")):
             with self.subTest(failure=type(failure).__name__):
-                coordinator = pipeline._Pipeline(4)
+                coordinator = pipeline.Pipeline(4)
                 with self.assertRaises(type(failure)):
                     with coordinator.catalog_unit({"id": 1, "vault_id": 2}, lambda: None):
                         raise failure
@@ -223,7 +223,7 @@ class UploadCapacityTests(unittest.TestCase):
                         self.assertEqual((gate._count, gate._bytes, len(gate._waiting)), (0, 0, 0))
 
     def test_contended_vault_does_not_occupy_every_global_catalog_slot(self):
-        coordinator = pipeline._Pipeline(4)
+        coordinator = pipeline.Pipeline(4)
         waiting = threading.Event()
         def another_in_same_vault():
             with coordinator.catalog_unit({"id": 3, "vault_id": 2}, waiting.set):
@@ -240,7 +240,7 @@ class UploadCapacityTests(unittest.TestCase):
         self.assertEqual(coordinator._vaults, {})
 
     def test_journal_fault_is_fail_closed_for_send_not_for_recovery_or_catalog(self):
-        coordinator = pipeline._Pipeline(4)
+        coordinator = pipeline.Pipeline(4)
         coordinator.journal_failed("intent-a", "fact-a")
         with self.assertRaises(psycopg.OperationalError):
             with coordinator.sending(self.snapshot(), lambda: None):
@@ -258,7 +258,7 @@ class UploadCapacityTests(unittest.TestCase):
         self.assertEqual((coordinator.network._count, len(coordinator.network._waiting)), (0, 0))
 
     def test_binding_dies_with_attempt_and_never_gates_another_job(self):
-        coordinator = pipeline._Pipeline(4)
+        coordinator = pipeline.Pipeline(4)
         job = {"id": 1, "vault_id": 2}
         with pipeline.bind(coordinator, job, lambda: None):
             with pipeline.catalog_capacity(job):

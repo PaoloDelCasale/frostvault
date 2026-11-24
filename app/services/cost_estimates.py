@@ -13,7 +13,7 @@ import json
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .restore_estimates import DEFAULT_RESTORE_HOURS, normalize_restore_tier
 
@@ -162,4 +162,44 @@ def estimate_restore_cost(
             "restore_object_irreversible": True,
         },
         currency=prices.currency,
+    )
+
+
+@dataclass(frozen=True)
+class RestoreEstimate:
+    size_bytes: int
+    storage_class: str
+    tier: str
+    days: int
+    estimated_cost_eur: float
+    estimated_hours: float
+    restore_object_irreversible: bool = True
+    pricing_note: str = "Estimate from AWS list prices; not an AWS Billing quote."
+
+
+def estimate_restore(
+    *,
+    size_bytes: int,
+    storage_class: str,
+    tier: str = "Bulk",
+    days: int = 3,
+    pricing: Mapping[str, Mapping[str, float]] | None = None,
+    hours: Mapping[str, Mapping[str, float]] | None = None,
+) -> RestoreEstimate:
+    class_key = (storage_class or "").upper()
+    if pricing is None:
+        pricing = list_prices().restore_rates
+    price_table = pricing
+    hour_table = hours or DEFAULT_RESTORE_HOURS
+    resolved_tier = normalize_restore_tier(tier, storage_class=class_key)
+    gib = max(0, int(size_bytes)) / (1024**3)
+    rate = float(price_table.get(class_key, {}).get(resolved_tier, 0.0))
+    estimated_hours = float(hour_table.get(class_key, {}).get(resolved_tier, 0.0))
+    return RestoreEstimate(
+        size_bytes=max(0, int(size_bytes)),
+        storage_class=class_key,
+        tier=resolved_tier,
+        days=max(1, int(days)),
+        estimated_cost_eur=round(gib * rate, 6),
+        estimated_hours=estimated_hours,
     )

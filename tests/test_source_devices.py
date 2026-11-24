@@ -26,7 +26,7 @@ from unittest.mock import patch
 
 from app.config import Settings
 from tests.fixtures import override_settings
-from app.services import source_devices
+from app.services import source_devices, throughput
 from app.services.source_devices import (
     DeviceResolver, DeviceSlots, HotFiles, ServerPriority, interleave_by_device,
     parse_cpu_times, rotate_claims,
@@ -474,7 +474,7 @@ class ServerPriorityTests(unittest.TestCase):
         source_devices._priority.throttled = True
         self.assertTrue(source_devices.throttled())
         self.assertEqual(source_devices.slots().limit(), 1)
-        status = source_devices.status()
+        status = throughput.device_status()
         self.assertTrue(status["server_priority_throttled"])
         self.assertEqual(status["source_device_read_limit"], 1)
 

@@ -545,8 +545,8 @@ def stats(vault: dict[str, Any] = Depends(vault_in_path), request: Request = Non
     runtime["last_error_source_cause"] = source_error_cause(runtime.get("last_error_source"))
     # Installation-wide read scheduling (#713): server priority and the reads
     # in flight per Source Device.
-    from ..services import source_devices
-    runtime.update(source_devices.status())
+    from ..services import throughput
+    runtime.update(throughput.device_status())
     if unconfirmed.by_path:
         # Only named paths are unconfirmed (ADR-0042, #684): say how many and
         # where to look, instead of the generic incomplete-scan error.

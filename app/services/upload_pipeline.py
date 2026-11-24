@@ -167,7 +167,7 @@ class _Capacity:
                 self._wake_head()
 
 
-class _Pipeline:
+class Pipeline:
     def __init__(self, concurrency: int, limits: _Limits = _Limits()):
         concurrency = _clamp_concurrency(concurrency)
         limits = limits.resolve(concurrency)
@@ -284,8 +284,8 @@ class _Pipeline:
 # coordinator for a DSN also preserves a failed journal latch between attempts.
 # Disposable test databases have separate coordinators; no DSN is ever logged.
 _registry_lock = threading.Lock()
-_registry: dict[str, _Pipeline] = {}
-_current: ContextVar[tuple[_Pipeline, dict[str, Any], Callable[[], None]] | None] = ContextVar(
+_registry: dict[str, Pipeline] = {}
+_current: ContextVar[tuple[Pipeline, dict[str, Any], Callable[[], None]] | None] = ContextVar(
     "upload_stage_capacity", default=None)
 
 
@@ -307,17 +307,17 @@ def journal_status() -> dict[str, Any]:
     return {"held": bool(pending), "uncertain_facts": pending}
 
 
-def pipeline_for() -> _Pipeline:
+def pipeline_for() -> Pipeline:
     from .. import database
     with _registry_lock:
         dsn = database.settings.database_dsn
         if dsn not in _registry:
-            _registry[dsn] = _Pipeline(database.settings.operation_concurrency)
+            _registry[dsn] = Pipeline(database.settings.operation_concurrency)
         return _registry[dsn]
 
 
 @contextmanager
-def bind(pipeline: _Pipeline, job: dict[str, Any], check: Callable[[], None]) -> Iterator[None]:
+def bind(pipeline: Pipeline, job: dict[str, Any], check: Callable[[], None]) -> Iterator[None]:
     token = _current.set((pipeline, job, check))
     try:
         yield

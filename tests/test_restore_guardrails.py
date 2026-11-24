@@ -22,11 +22,8 @@ from unittest.mock import Mock, patch
 
 from app.routes.jobs import RecoverApproveAction, approve_recover
 from app.services.job_admission import InvalidAdmission, estimate_recovery, queue_jobs
-from app.services.cost_estimates import list_prices
-from app.services.restore_estimates import (
-    estimate_restore,
-    is_high_impact_restore,
-)
+from app.services.cost_estimates import estimate_restore, list_prices
+from app.services.restore_estimates import is_high_impact_restore
 from app.storage import process_jobs_once
 from tests.fixtures import Database, FrostVaultTestCase, override_settings
 from tests.test_recovery_verification import _add_cloud_only_version, _prepare_cloud_only_version

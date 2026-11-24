@@ -353,12 +353,12 @@ def reconcile(w: CopyWorker, job: dict[str, Any], attempt: Attempt, client: Any,
     if first != attempt.inventory:
         raise UploadBlocked("ambiguous_send")
     pinned = {"bucket": attempt.bucket, "key": attempt.destination_key}
-    found = provenance._incomplete_uploads(client, attempt.bucket, attempt.destination_key)
+    found = provenance.incomplete_uploads(client, attempt.bucket, attempt.destination_key)
     if found and set(owned).intersection(found):
-        provenance._abort_owned_multiparts(
+        provenance.abort_owned_multiparts(
             client, pinned, found, frozenset(owned), active,
             lambda upload_id: _close_multiparts(w.db, attempt.id, [upload_id]))
-        found = provenance._incomplete_uploads(client, attempt.bucket, attempt.destination_key)
+        found = provenance.incomplete_uploads(client, attempt.bucket, attempt.destination_key)
     if found:
         raise UploadBlocked("ambiguous_send")
     active()
