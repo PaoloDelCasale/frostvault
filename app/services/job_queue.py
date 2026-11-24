@@ -503,11 +503,7 @@ class JobQueue:
         statement sees pause's committed flag, even after stale candidate reads.
         Shared claims and held progress steps remain concurrent (ADR-0031).
         """
-        return self.connection.execute(
-            """SELECT v.id FROM vaults v
-               WHERE v.id=(SELECT vault_id FROM jobs WHERE id=%s)
-               FOR KEY SHARE SKIP LOCKED""", (job_id,),
-        ).fetchone() is not None
+        return vault_locks.lock_claim_vault(self.connection, job_id)
 
     def _lock_scheduler_turn(self, job_id: int, generation: int | None) -> bool:
         """Lock accounting before acquiring any Job locks.

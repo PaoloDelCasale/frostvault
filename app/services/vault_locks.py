@@ -73,6 +73,19 @@ def lock_job_vault(connection: Any, job_id: int, mode: VaultLockMode) -> None:
     )
 
 
+def lock_claim_vault(connection: Any, job_id: int) -> bool:
+    """A claim's shared fence on its Job's Vault: ``KEY SHARE``, ``SKIP LOCKED``.
+
+    False when the Vault is held by a conflicting lock (pause, a decision), so
+    the scheduler skips it instead of blocking (ADR-0031).
+    """
+    return connection.execute(
+        """SELECT v.id FROM vaults v
+               WHERE v.id=(SELECT vault_id FROM jobs WHERE id=%s)
+               FOR KEY SHARE SKIP LOCKED""", (job_id,),
+    ).fetchone() is not None
+
+
 def lock_vaults_in_order(connection: Any, vault_ids: Iterable[int]) -> None:
     """Take the Vault row lock(s) in ascending id order (the repo-wide order).
 
