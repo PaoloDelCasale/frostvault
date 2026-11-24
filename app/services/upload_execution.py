@@ -48,6 +48,7 @@ import psycopg
 
 from . import source_devices, upload_pipeline, upload_provenance as provenance
 from .database_retry import owned_connection
+from .local_copies import LocalCopies
 from .s3 import checksum_mode_unsupported
 from .snapshot_cleanup import RESUME_NEEDED_SQL
 from .upload_retry import classify_upload_failure
@@ -459,7 +460,7 @@ class UploadExecution:
             row = self._db(job, lambda catalog: current(catalog.connection), shared=True)
         if not same(row):
             def observe(catalog: Any) -> Any:
-                catalog.observe_local_copy(
+                LocalCopies(catalog.connection).observe_local_copy(
                     vault_id=int(job["vault_id"]), path=job["path"], file_type="regular",
                     size=observed.st_size, mtime_ns=observed.st_mtime_ns, observed_at=w.now_iso())
                 return current(catalog.connection)
@@ -601,7 +602,7 @@ class UploadExecution:
         held = run.extra.get("read_fingerprint")
         if held is None:
             return
-        run.extra["read_fingerprint_published"] = bool(catalog.publish_local_fingerprint(
+        run.extra["read_fingerprint_published"] = bool(LocalCopies(catalog.connection).publish_local_fingerprint(
             run.job["file_id"], generation=held["generation"], plaintext_sha256=held["digest"],
             size=held["size"], mtime_ns=held["mtime_ns"], parts=held["parts"]))
 
@@ -631,7 +632,7 @@ class UploadExecution:
         assert observed is not None and run.generation is not None
         # The scan verification must read it again (#766).
         source_devices.upload_fingerprints().discard(run.job["file_id"])
-        self._db(run.job, lambda catalog: catalog.retire_local_fingerprint(
+        self._db(run.job, lambda catalog: LocalCopies(catalog.connection).retire_local_fingerprint(
             run.job["file_id"], generation=run.generation, plaintext_sha256=digest,
             size=observed.st_size, mtime_ns=observed.st_mtime_ns))
 
@@ -668,12 +669,12 @@ class UploadExecution:
                 (job["file_id"], digest)).fetchone()
             if current is None:
                 return False
-            if not catalog.publish_local_fingerprint(
+            if not LocalCopies(connection).publish_local_fingerprint(
                     job["file_id"], generation=run.generation, plaintext_sha256=digest,
                     size=observed.st_size, mtime_ns=observed.st_mtime_ns, match_current=True,
                     parts=_local_parts(snapshot, observed)):
                 raise RuntimeError("Local file changed since fingerprinting")
-            catalog.clear_reconciliation_block(job["file_id"])
+            LocalCopies(connection).clear_reconciliation_block(job["file_id"])
             if not w.set_job_in_transaction(connection, job["id"], "completed",
                                              message_key="job.upload_verified",
                                              transferred_bytes=0, fenced_unit=True):
@@ -936,7 +937,8 @@ class UploadExecution:
                 catalog.abandon_replacement(
                     job["file_id"], archive_version_id=version.id, mismatch=True,
                     mismatch_sha256=digest, checked_at=w.now_iso())
-            catalog.block_reconciliation(job["file_id"], reason="proof_mismatch", at=w.now_iso())
+            LocalCopies(catalog.connection).block_reconciliation(
+                job["file_id"], reason="proof_mismatch", at=w.now_iso())
 
         self._db(job, mark)
 
@@ -973,7 +975,7 @@ class UploadExecution:
             run.extra["superseding"] = bool(row["superseding"])
             if run.snapshot is not None and run.generation is not None and run.observed is not None:
                 # Also the held fingerprint of the run's whole read (#766).
-                run.extra["read_fingerprint_published"] = bool(catalog.publish_local_fingerprint(
+                run.extra["read_fingerprint_published"] = bool(LocalCopies(connection).publish_local_fingerprint(
                     job["file_id"], generation=run.generation,
                     plaintext_sha256=run.snapshot.plaintext_sha256, size=run.observed.st_size,
                     mtime_ns=run.observed.st_mtime_ns, match_current=True,
@@ -985,7 +987,7 @@ class UploadExecution:
                     local_generation=run.generation, replacement_locked=True)
             elif str(row["current_version_id"]) != version.id:
                 raise provenance.UploadBlocked("target_superseded")
-            catalog.clear_reconciliation_block(job["file_id"])
+            LocalCopies(connection).clear_reconciliation_block(job["file_id"])
 
         self._db(job, publish)
         # The held fingerprint is the same digest of the same observation.
@@ -1062,7 +1064,7 @@ def _rearm(catalog: Any, job: dict[str, Any], attempt: provenance.UploadAttempt,
     provenance.record_no_write(connection, job, attempt, provenance.ABSENT_OPERATION, stamp)
     # The Job is now this file's ordinary upload of the same snapshot.
     connection.execute("UPDATE job_uploads SET reconcile_only=false WHERE job_id=%s", (job["id"],))
-    catalog.clear_reconciliation_block(job["file_id"])
+    LocalCopies(connection).clear_reconciliation_block(job["file_id"])
 
 
 def _local_parts(snapshot: UploadSnapshot, observed: os.stat_result) -> tuple[int, list[bytes]] | None:

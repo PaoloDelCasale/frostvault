@@ -1792,8 +1792,8 @@ class QueueRunner:
             # Same row as dirty_job_protection would read again.
             mark_path_dirty(connection, int(current["vault_id"]), current["path"])
             if remediation_reason == "file_removed" and current is not None:
-                from ..catalog import ArchiveCatalog
-                ArchiveCatalog(connection).mark_local_path_missing(
+                from .local_copies import LocalCopies
+                LocalCopies(connection).mark_local_path_missing(
                     vault_id=int(current["vault_id"]), path=current["path"], observed_at=timestamp,
                 )
         if updated and status in {"completed", "failed"}:
