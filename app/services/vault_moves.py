@@ -13,18 +13,16 @@ from collections import Counter
 from typing import Any
 
 from ..errors import Conflict
-from .cloud_deletion import lock_vault
+from .vault_row_lock import lock_vault
 from .cost_estimates import estimate_storage_month, list_prices
 from .lifecycle_policies import load_vault_plan
 from .lifecycle_profiles import ALLOWED_TARGETS
+from .minimum_storage import MINIMUM_DAYS
 from . import s3
 from .s3 import restore_header_state, storage_class_requires_restore
 from .s3_copy import S3_SINGLE_COPY_MAX_BYTES
 from .job_queue import open_job_sql
 from .vault_paths import vault_object_prefix
-
-MINIMUM_DAYS = {"STANDARD_IA": 30, "ONEZONE_IA": 30, "GLACIER_IR": 90,
-                "GLACIER": 90, "DEEP_ARCHIVE": 180}
 
 
 class MoveBlocked(Conflict, ValueError):

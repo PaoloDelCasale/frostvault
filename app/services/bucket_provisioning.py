@@ -32,7 +32,7 @@ from typing import Any, Mapping
 
 from botocore.exceptions import ClientError
 
-from .s3 import safe_error_code
+from .s3 import GONE_CODES, error_code, safe_error_code
 
 NAME_PREFIX = "frostvault-"
 _SUFFIX_ALPHABET = string.ascii_lowercase + string.digits
@@ -53,6 +53,11 @@ OWNERSHIP = "BucketOwnerEnforced"
 # default since September 2024, but FrostVault states it on every lifecycle it
 # writes instead of inheriting whatever an SDK or the account defaults to.
 TRANSITION_MINIMUM_OBJECT_SIZE = "all_storage_classes_128K"
+# The key read by the retention read probe; no object is ever written there.
+PROBE_KEY = ".frostvault-retention-probe"
+# Error codes that say a version is not locked at all.
+NOT_LOCKED_CODES = frozenset({"NoSuchObjectLockConfiguration",
+                              "ObjectLockConfigurationNotFoundError", "InvalidRequest"})
 
 
 @dataclass(frozen=True)
@@ -438,14 +443,29 @@ def _tags_check(client: Any, spec: BucketSpec) -> BucketCheck:
     )
 
 
+def probe_retention_read(client: Any, bucket: str) -> str | None:
+    """Whether FrostVault may read retentions in ``bucket``: None, or the refusal.
+
+    Reads the retention of a key that does not exist (``PROBE_KEY``): with
+    ``s3:GetObjectRetention`` S3 answers that it is absent, without it
+    ``AccessDenied``. Nothing is written. Returns the refused error code.
+    """
+    try:
+        client.get_object_retention(Bucket=bucket, Key=PROBE_KEY)
+    except ClientError as exc:
+        code = error_code(exc)
+        if code in GONE_CODES or code in NOT_LOCKED_CODES:
+            return None
+        return code or "Error"
+    return None
+
+
 def _retention_read_check(client: Any, spec: BucketSpec) -> BucketCheck:
     """A locked bucket needs ``s3:GetObjectRetention`` (#749).
 
     Without it a DELETE refused by the lock cannot be explained, so a Vault
     with a Retention Lock is not created until FrostVault can read one.
     """
-    from .retention_lock import probe_retention_read
-
     refused = probe_retention_read(client, spec.name)
     return BucketCheck(
         "bucket.retention_read", refused is None,

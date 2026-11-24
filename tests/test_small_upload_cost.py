@@ -318,7 +318,7 @@ class SmallUploadCostTests(worker_fixture.UploadWorkerCase):
         self.ready_gate()
         held: list[int] = []
         inside: list[str] = []
-        original = upload_pipeline._Pipeline.catalog_unit
+        original = upload_pipeline.Pipeline.catalog_unit
 
         @contextmanager
         def counted_unit(pipeline, job, check):
@@ -335,7 +335,7 @@ class SmallUploadCostTests(worker_fixture.UploadWorkerCase):
             if held:
                 inside.append(stage)
         self.provider.hook = hook
-        with patch.object(upload_pipeline._Pipeline, "catalog_unit", counted_unit):
+        with patch.object(upload_pipeline.Pipeline, "catalog_unit", counted_unit):
             self.upload()
             (self.source / "report.txt").write_bytes(worker_fixture.B)
             stat = (self.source / "report.txt").stat()

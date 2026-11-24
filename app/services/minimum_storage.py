@@ -1,7 +1,7 @@
 """Minimum Storage Duration and Class Entry of Archive Versions (#731).
 
 Some storage classes bill a version for a minimum number of days once it
-enters the class (``vault_moves.MINIMUM_DAYS``), whether or not it is deleted
+enters the class (``MINIMUM_DAYS``), whether or not it is deleted
 earlier. The count starts at the version's Class Entry, not at its upload:
 with a lifecycle transition a version enters DEEP_ARCHIVE days after it was
 written.
@@ -37,8 +37,10 @@ from typing import Any
 from ..errors import VaultNotFound
 from .cost_estimates import PriceList, list_prices
 from .lifecycle_profiles import ALLOWED_TARGETS, LifecycleProfile
-from .vault_moves import MINIMUM_DAYS
 
+# The minimum days each storage class bills a version once it enters the class.
+MINIMUM_DAYS = {"STANDARD_IA": 30, "ONEZONE_IA": 30, "GLACIER_IR": 90,
+                "GLACIER": 90, "DEEP_ARCHIVE": 180}
 # S3 lifecycle rules do not transition objects smaller than this by default.
 SMALL_OBJECT_BYTES = 128 * 1024
 # A lifecycle transition runs once a day: the estimate adds a day of margin.

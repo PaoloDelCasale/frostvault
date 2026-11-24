@@ -784,20 +784,6 @@ def reading(path: Any, check: Callable[[], None] | None = None) -> Iterator[None
         yield
 
 
-def status() -> dict[str, Any]:
-    """Installation-wide read scheduling state for ``GET /api/stats``."""
-    priority = server_priority().status()
-    from .throughput import METER
-    return {
-        "server_priority_enabled": priority["enabled"],
-        "server_priority_throttled": priority["throttled"],
-        "server_priority_throttled_since": priority["since"],
-        # Of a device with no known type; each device carries its own (#766).
-        "source_device_read_limit": slots().limit(),
-        "source_devices": slots().snapshot(METER.device_rates()),
-    }
-
-
 def reset_for_tests(*, limit: int | None = None, threshold: float | None = None,
                     sys_root: str | None = None, mdstat: str | None = None) -> None:
     """Fresh registry; explicit values replace the configured ones."""

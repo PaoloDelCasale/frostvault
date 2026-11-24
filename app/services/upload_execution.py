@@ -130,7 +130,7 @@ class _Version:
 class _Run:
     job: dict[str, Any]
     source: Path
-    pipeline: upload_pipeline._Pipeline
+    pipeline: upload_pipeline.Pipeline
     check_active: Callable[[], None]
     mode: str = "read_back"
     reconcile_only: bool = False
@@ -185,7 +185,7 @@ class UploadExecution:
 
     # -- orchestration -------------------------------------------------------
 
-    def _run_claimed(self, job: dict[str, Any], pipeline: upload_pipeline._Pipeline,
+    def _run_claimed(self, job: dict[str, Any], pipeline: upload_pipeline.Pipeline,
                      check: Callable[[], None]) -> UploadOutcome:
         w = self.worker
         # No separate lease read here: the first DB unit below (_load, or the
@@ -689,7 +689,7 @@ class UploadExecution:
 
     # -- the send --------------------------------------------------------------
 
-    def _refresh_journal_gate(self, pipeline: upload_pipeline._Pipeline) -> None:
+    def _refresh_journal_gate(self, pipeline: upload_pipeline.Pipeline) -> None:
         # Recovery facts bypass nonurgent catalog capacity, just like their
         # original appends. No publication/cleanup/Job authority is granted.
         pending = pipeline.journal_probe_pending()

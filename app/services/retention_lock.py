@@ -55,6 +55,7 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
+from .bucket_provisioning import NOT_LOCKED_CODES, PROBE_KEY, probe_retention_read
 from .job_queue import open_job_sql
 from .s3 import GONE_CODES, TRANSIENT_CODES, error_code, version_already_gone
 
@@ -85,12 +86,6 @@ CLAIM_SECONDS = 15 * 60
 # the past still explains a refusal, and a deferral lasts at least an hour.
 SKEW = timedelta(minutes=5)
 MIN_DEFERRAL = timedelta(seconds=POLL_SECONDS)
-# The key read by the permission probe; no object is ever written there.
-PROBE_KEY = ".frostvault-retention-probe"
-
-# Error codes that say a version is not locked at all.
-_NOT_LOCKED = frozenset({"NoSuchObjectLockConfiguration", "ObjectLockConfigurationNotFoundError",
-                         "InvalidRequest"})
 # What S3 answers to a DELETE of a locked version without the bypass.
 _LOCK_REFUSALS = frozenset({"AccessDenied"})
 
@@ -146,7 +141,7 @@ def observed_until(client: Any, *, bucket: str, key: str, version_id: str) -> da
         response = client.get_object_retention(Bucket=bucket, Key=key, VersionId=version_id)
     except ClientError as exc:
         code = error_code(exc)
-        if code in _NOT_LOCKED:
+        if code in NOT_LOCKED_CODES:
             return None
         if code in GONE_CODES:
             raise VersionGone(key) from None
@@ -187,23 +182,6 @@ def refused_until(client: Any, *, bucket: str, key: str, version_id: str, code: 
     if code not in _LOCK_REFUSALS:
         return None
     return locked_until(client, bucket=bucket, key=key, version_id=version_id, now=now)
-
-
-def probe_retention_read(client: Any, bucket: str) -> str | None:
-    """Whether FrostVault may read retentions in ``bucket``: None, or the refusal.
-
-    Reads the retention of a key that does not exist (``PROBE_KEY``): with
-    ``s3:GetObjectRetention`` S3 answers that it is absent, without it
-    ``AccessDenied``. Nothing is written. Returns the refused error code.
-    """
-    try:
-        client.get_object_retention(Bucket=bucket, Key=PROBE_KEY)
-    except ClientError as exc:
-        code = error_code(exc)
-        if code in GONE_CODES or code in _NOT_LOCKED:
-            return None
-        return code or "Error"
-    return None
 
 
 def summarize(rows: Iterable[dict[str, Any]], *, days: int | None, at: datetime,

@@ -41,6 +41,7 @@ import threading
 import time
 from typing import Any, Callable
 
+from . import source_devices
 from .runtime_status import runtime_status, status_lock
 
 SAMPLE_SECONDS = 2
@@ -460,17 +461,28 @@ def sample(connect: Callable[[], Any], *, meter: "ThroughputMeter | None" = None
     for vault_id, read in read_back.items():
         scans[vault_id] = (*scans.get(vault_id, ()), "read_back", read)
     if held_back is None:
-        from .source_devices import throttled_if_started
-        held_back = throttled_if_started()
+        held_back = source_devices.throttled_if_started()
     mono = time.monotonic() if mono is None else mono
     meter.record(mono=mono, wall=now.timestamp(),
                  cut=cut, uploads=uploads, verification=verification, scans=scans,
                  held_back=held_back)
-    from .source_devices import read_totals
-    meter.record_devices(mono=mono, totals=read_totals())
+    meter.record_devices(mono=mono, totals=source_devices.read_totals())
 
 
 METER = ThroughputMeter()
+
+
+def device_status() -> dict[str, Any]:
+    """Installation-wide read scheduling state for ``GET /api/stats``."""
+    priority = source_devices.server_priority().status()
+    return {
+        "server_priority_enabled": priority["enabled"],
+        "server_priority_throttled": priority["throttled"],
+        "server_priority_throttled_since": priority["since"],
+        # Of a device with no known type; each device carries its own (#766).
+        "source_device_read_limit": source_devices.slots().limit(),
+        "source_devices": source_devices.slots().snapshot(METER.device_rates()),
+    }
 
 
 async def sampler_loop(connect: Callable[[], Any]) -> None:
