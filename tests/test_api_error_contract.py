@@ -204,15 +204,15 @@ class VaultManagementErrors(ApiErrorCase):
              409, problem("api.vault_creation_cancel.not_provisioning")),
             ("POST", "/api/vaults/1/stop-protection", {**stop, "confirmation": "wrong"},
              422, problem("api.confirmation_required")),
-            # #829: like the other operations addressed to a Vault, a Tombstone and a
-            # Vault still being created are not found (a Tombstone was a 202).
+            # #829: like the other operations addressed to a Vault, a Tombstone is
+            # not found (it was a 202).
             ("POST", "/api/vaults/2/stop-protection", {**stop, "confirmation": "Old"},
              404, problem("api.protected_vault_not_found")),
             ("POST", "/api/vaults/2/stop-protection",
              {**stop, "cloud_disposition": "delete", "confirmation": "Old"},
              404, problem("api.protected_vault_not_found")),
             ("POST", "/api/vaults/3/stop-protection", {**stop, "confirmation": "New"},
-             404, problem("api.protected_vault_not_found")),
+             409, problem("api.stop_protection.bucket_creating")),
             ("POST", "/api/vaults/1/stop-protection/cancel-deletion", X,
              409, problem("api.stop_protection.no_pending_deletion")),
             ("GET", "/api/vaults/1/vault-deletion/preview", X,

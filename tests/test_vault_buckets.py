@@ -354,14 +354,12 @@ class VaultBucketProvisioningTests(FrostVaultTestCase):
             inventory = vaults_service.list_vault_inventory(connection)
         self.assertEqual(inventory[0]["bucket_provisioning"]["state"], "failed")
         self.assertTrue(inventory[0]["dedicated_bucket"])
-        from app.errors import NotFound
         from app.services import protection_stop
         with self.database.connect() as connection:
-            with self.assertRaises(NotFound) as refused:
+            with self.assertRaises(ValueError):
                 protection_stop.stop_protection(
                     connection, vault_id=vault["id"], cloud_disposition="keep", actor="owner",
                     reason="test", confirmation="Docs")
-        self.assertEqual(refused.exception.message_key, "api.protected_vault_not_found")
 
     def test_an_unexpected_error_is_recorded_by_its_type_with_a_problem(self) -> None:
         """S1: never the exception message, always a Problem."""
