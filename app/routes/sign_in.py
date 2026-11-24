@@ -15,7 +15,7 @@ from ..config import settings
 from ..services.audit_events import audit_log
 from ..i18n import available_locales, catalog as locale_catalog, normalize_locale, translate
 from ..database import db
-from ..errors import BadRequest, Conflict, Forbidden, NotFound, RateLimited, Unauthenticated
+from ..errors import BadRequest, Forbidden, NotFound, RateLimited, Unauthenticated
 from ..emergency_password import (
     REAUTHENTICATION,
     SIGN_IN,
@@ -36,9 +36,7 @@ from ..sessions import (
     resolve_session,
     revoke_session,
     rotate_session,
-    set_session_vault,
 )
-from ..services.vaults import VAULT_ROW_SQL
 from .deps import (
     _OPERATIONAL_VAULT,
     _api_message,
@@ -92,13 +90,6 @@ class ReauthResponse(ResponseModel):
 type AuthMethod = str | None
 
 
-class MeVault(ResponseModel):
-    model_config = ConfigDict(extra="forbid")
-    id: int
-    uuid: UUID
-    name: str
-
-
 class MeStoppedVault(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
@@ -118,7 +109,6 @@ class MeResponse(ResponseModel):
     auth_method: AuthMethod
     locale: str
     locales: list[str]
-    vault: MeVault | None
     stopped_vault: MeStoppedVault | None
 
 
@@ -427,88 +417,36 @@ def oidc_callback(
     return redirect
 
 
-def _session_vault(request: Request) -> dict[str, Any] | None:
-    """The Vault the interface opens on: the Session's, else the first operational one.
-
-    It addresses no operation (ADR-0056). A Vault chosen here because the
-    Session named none, or one no longer operational, is written into the
-    Session.
-    """
-    session = request.state.session
-    requested_id = session.get("vault_id")
-    with db() as connection:
-        vault = None
-        if requested_id:
-            vault = connection.execute(
-                f"{VAULT_ROW_SQL} WHERE v.id=%s AND {_OPERATIONAL_VAULT}",
-                (requested_id,),
-            ).fetchone()
-        if not vault:
-            vault = connection.execute(
-                f"""
-                {VAULT_ROW_SQL} WHERE {_OPERATIONAL_VAULT}
-                ORDER BY v.name
-                LIMIT 1
-                """
-            ).fetchone()
-        if not vault:
-            return None
-        if session.get("vault_id") != vault["id"]:
-            updated = set_session_vault(
-                connection,
-                session["id"],
-                vault["id"],
-                expected_version=session["transition_version"],
-            )
-            if not updated:
-                # A concurrent logout, OIDC rotation, expiry, or Vault choice
-                # won after current_user resolved this request. Do not let this
-                # older process overwrite the newer persisted transition.
-                raise Conflict("api.session_changed")
-            session.update(updated)
-    return vault
-
-
 @session_router.get("/api/me", response_model=passthrough(MeResponse))
 def me(request: Request, response: Response, user: dict[str, Any] = Depends(current_user)):
     csrf_token = request.state.session["csrf_token"]
     _set_csrf_cookie(response, csrf_token)
-    vault = _session_vault(request)
-    vault_block = None
+    # The interface chooses the Vault it opens on (ADR-0056); a stopped one is
+    # reported only while no Vault is operational.
+    with db() as connection:
+        stopped_vault = connection.execute(
+            f"""
+            SELECT id, uuid, name, lifecycle, root_released_at
+            FROM vaults
+            WHERE lifecycle IN ('stopping', 'tombstone')
+              AND NOT EXISTS (SELECT 1 FROM vaults v WHERE {_OPERATIONAL_VAULT})
+            ORDER BY lifecycle <> 'stopping', root_released_at DESC, lower(name)
+            LIMIT 1
+            """
+        ).fetchone()
     stopped_vault_block = None
-    if vault is not None:
-        vault_block = {
-            "id": vault["id"],
-            "uuid": str(vault["uuid"]),
-            "name": vault["name"],
+    if stopped_vault:
+        stopped_vault_block = {
+            **stopped_vault,
+            "uuid": str(stopped_vault["uuid"]),
+            "root_released": stopped_vault["root_released_at"] is not None,
         }
-    else:
-        selected_id = request.state.session.get("vault_id")
-        with db() as connection:
-            stopped_vault = connection.execute(
-                """
-                SELECT id, uuid, name, lifecycle, root_released_at
-                FROM vaults
-                WHERE lifecycle IN ('stopping', 'tombstone')
-                ORDER BY id IS DISTINCT FROM %s,
-                         lifecycle <> 'stopping', root_released_at DESC, lower(name)
-                LIMIT 1
-                """,
-                (selected_id,),
-            ).fetchone()
-        if stopped_vault:
-            stopped_vault_block = {
-                **stopped_vault,
-                "uuid": str(stopped_vault["uuid"]),
-                "root_released": stopped_vault["root_released_at"] is not None,
-            }
     return {
         **user,
         "csrf_token": csrf_token,
         "auth_method": request.state.session.get("auth_method"),
         "locale": _request_locale(request),
         "locales": list(available_locales()),
-        "vault": vault_block,
         "stopped_vault": stopped_vault_block,
     }
 

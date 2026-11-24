@@ -358,7 +358,8 @@ _Avoid_: Email, Login, Account
 
 **Session**:
 An expiring, revocable credential that represents the authenticated Owner on one
-device.
+device. It names no Vault: the interface opens on the Vault of its route, else
+the one remembered in the browser, else the first listed.
 _Avoid_: Cookie, Token, Login
 
 **Emergency Password**:

@@ -1,6 +1,6 @@
 # Bind browser requests and confirmations to explicit Vault identity
 
-Status: accepted.
+Status: accepted; narrowed by ADR-0056: every Vault operation takes its Vault from the path, and the Session holds no Vault (#805), so "Unscoped legacy API consumers still use Session selection" no longer applies.
 
 Decision #365 D1–D17, implemented by #430, replaces the administrative/access shell with protected-folder navigation and General. A global search result carries its Vault identity, and browser actions, Details, recovery and folder settings send an immutable `vault_id` query scope rather than changing the shared Session selection before making a request; otherwise another tab or an out-of-order response could redirect a confirmed action to a different Vault.
 

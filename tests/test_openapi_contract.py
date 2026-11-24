@@ -166,8 +166,10 @@ class OpenApiResponseContractTests(unittest.TestCase):
                 self.assertEqual(answer["content"]["application/json"]["schema"],
                                  {"$ref": f"#/components/schemas/{name}"})
                 self.assertIs(schemas[name]["additionalProperties"], False)
-        # Both blocks are always in the answer, null when there is none.
-        self.assertLessEqual({"vault", "stopped_vault"}, set(schemas["MeResponse"]["required"]))
+        # The stopped Vault is always in the answer, null when there is none;
+        # the Session names no Vault to open (#805).
+        self.assertIn("stopped_vault", schemas["MeResponse"]["required"])
+        self.assertNotIn("vault", schemas["MeResponse"]["properties"])
         self.assertEqual(set(schemas["MeStoppedVault"]["required"]),
                          set(schemas["MeStoppedVault"]["properties"]))
 

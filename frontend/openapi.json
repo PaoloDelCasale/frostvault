@@ -1339,44 +1339,6 @@
         }
       }
     },
-    "/api/vaults/select": {
-      "post": {
-        "summary": "Select Vault",
-        "operationId": "select_vault_api_vaults_select_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VaultSelection"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VaultSelectResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/vaults/{vault_id}/files": {
       "get": {
         "summary": "List Files",
@@ -8159,16 +8121,6 @@
             "type": "array",
             "title": "Locales"
           },
-          "vault": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MeVault"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "stopped_vault": {
             "anyOf": [
               {
@@ -8190,7 +8142,6 @@
           "auth_method",
           "locale",
           "locales",
-          "vault",
           "stopped_vault"
         ],
         "title": "MeResponse"
@@ -8246,31 +8197,6 @@
           "root_released"
         ],
         "title": "MeStoppedVault"
-      },
-      "MeVault": {
-        "properties": {
-          "id": {
-            "type": "integer",
-            "title": "Id"
-          },
-          "uuid": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Uuid"
-          },
-          "name": {
-            "type": "string",
-            "title": "Name"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "id",
-          "uuid",
-          "name"
-        ],
-        "title": "MeVault"
       },
       "MetadataBackupReference": {
         "properties": {
@@ -13753,38 +13679,6 @@
         "additionalProperties": true,
         "type": "object",
         "title": "VaultRuntimeStatus"
-      },
-      "VaultSelectResponse": {
-        "properties": {
-          "message": {
-            "type": "string",
-            "title": "Message"
-          },
-          "message_key": {
-            "type": "string",
-            "title": "Message Key"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "message",
-          "message_key"
-        ],
-        "title": "VaultSelectResponse"
-      },
-      "VaultSelection": {
-        "properties": {
-          "vault_id": {
-            "type": "integer",
-            "title": "Vault Id"
-          }
-        },
-        "type": "object",
-        "required": [
-          "vault_id"
-        ],
-        "title": "VaultSelection"
       },
       "VaultSelfServiceCreate": {
         "properties": {

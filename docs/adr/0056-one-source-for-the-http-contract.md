@@ -1,8 +1,9 @@
 # One source for the HTTP contract and one address for a Vault
 
 Status: accepted by the Owner on 2026-11-23 (issue #805, epic #788).
-Implemented: all four steps under "Migration" are done (step 4 completed on
-2026-11-24). The Context below describes the code before the migration.
+Implemented: all five steps under "Migration" are done (steps 4 and 5
+completed on 2026-11-24). The Context below describes the code before the
+migration.
 
 ## Context
 
@@ -183,9 +184,17 @@ checks the table against the code and corrects it if a route was missed.
   `/api/cloud-deletion`.
 - When the last route has moved, `current_vault` and the `?vault_id=`
   parameter are deleted. The Session's Vault stops being an address for any
-  operation. It still tells `/api/me` which Vault the UI opens on, written by
-  `POST /api/vaults/select`; whether that remains is settled in the last
-  addressing pull request, with the Owner if the visible behaviour changes.
+  operation.
+- **The Session holds no Vault** (the Owner's decision of 2026-11-24, step 5).
+  The interface opens on the Vault of its route, else the one remembered in
+  the browser, else the first listed. `POST /api/vaults/select` and the
+  `vault` field of `GET /api/me` are removed; `/api/me` no longer writes the
+  first operational Vault into the Session, and the catalog event stream
+  neither reads it nor sends `current_vault_id` or `vault_switched` in its
+  error frames. `stopped_vault` stays, reported only while no Vault is
+  operational, in the order once used for a Session without a Vault:
+  Stopping first, then the latest root release, then the name. The
+  `sessions.vault_id` column stays in the schema, unwritten and unread.
 
 `StorageEstimateRequest.vault_id` is not an address: it selects what to
 estimate, as an alternative to `size_bytes`. It stays.
@@ -233,6 +242,11 @@ notes. Sizes exclude the generated `openapi.json` and TypeScript.
    it, `ApiErrorResponse` is a Pydantic model in `app/routes/deps.py`, the
    module that declares the documented refusals, and FastAPI's own
    `app.openapi()` writes the document.
+5. **No Vault in the Session.** `POST /api/vaults/select`, the `vault` field
+   of `GET /api/me`, the Session write in `/api/me` and the Session read of
+   the catalog event stream are removed, with `selectVault` in the frontend.
+   `/api/me` reads the Vaults with one statement instead of one to three plus
+   a Session write.
 
 Pydantic writes JSON Schema differently from the hand-written file (titles,
 `anyOf` for nullable fields). Each schema pull request shows the diff of
@@ -286,3 +300,5 @@ callers see did not change, apart from the mismatches it lists.
 - A request without a Vault no longer falls back to the Session's Vault or to
   the first operational one: the 403 `api.no_vault` and 409
   `api.session_changed` answers of these routes go away with the fallback.
+- A browser with no Vault in its route or memory opens the first Vault
+  listed, no longer the one another browser of the same Session last chose.

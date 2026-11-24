@@ -29,8 +29,6 @@ import type {
   SourceVolumeInventoryResponse,
   UploadActivityResponse,
   VaultCreateResponse,
-  VaultSelectResponse,
-  VaultSelection,
   VaultSelfServiceCreate,
   VaultsResponse,
 } from "./types";
@@ -101,15 +99,6 @@ export function createVault(
   payload: VaultSelfServiceCreate,
 ): Promise<VaultCreateResponse> {
   return apiRequest<VaultCreateResponse>("/api/vaults", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function selectVault(
-  payload: VaultSelection,
-): Promise<VaultSelectResponse> {
-  return apiRequest<VaultSelectResponse>("/api/vaults/select", {
     method: "POST",
     body: JSON.stringify(payload),
   });

@@ -23,13 +23,11 @@ from ..services import billed_cost as billed_cost_service
 from ..services import vault_buckets as vault_buckets_service
 from ..services.bucket_provisioning import RetentionLock
 from ..services.vaults import create_vault, list_vault_inventory
-from ..sessions import set_session_vault
 from ..services.runtime_status import runtime_status, scan_lock_for_vault, status_lock
 from ..storage import now_iso, scan_vault, s3_client
 from .deps import (
     _OPERATIONAL_VAULT,
     _actor,
-    _api_message,
     _request_locale,
     current_user,
     require_recent_reauth,
@@ -41,10 +39,6 @@ router = APIRouter()
 # Registered after the Job routes: two routers keep the historical registration
 # order, and with it the order of the OpenAPI paths.
 inventory_router = APIRouter()
-
-
-class VaultSelection(BaseModel):
-    vault_id: int
 
 
 class VaultSelfServiceCreate(BaseModel):
@@ -938,39 +932,6 @@ def billing_export_status(_: dict[str, Any] = Depends(current_user)):
     """The billing export's status and every known bucket's Billed Cost (#738)."""
     with db() as connection:
         return billed_cost_service.installation_view(connection)
-
-
-class VaultSelectResponse(ResponseModel):
-    model_config = ConfigDict(extra="forbid")
-    message: str
-    message_key: str
-
-
-@router.post("/api/vaults/select", response_model=passthrough(VaultSelectResponse))
-def select_vault(
-    action: VaultSelection,
-    request: Request,
-    user: dict[str, Any] = Depends(current_user),
-):
-    with db() as connection:
-        allowed = connection.execute(
-            f"SELECT 1 FROM vaults v WHERE v.id=%s AND {_OPERATIONAL_VAULT}",
-            (action.vault_id,),
-        ).fetchone()
-        if not allowed:
-            raise NotFound("api.protected_vault_not_found")
-        updated = set_session_vault(
-            connection,
-            request.state.session["id"],
-            action.vault_id,
-            expected_version=request.state.session["transition_version"],
-        )
-    if not updated:
-        # The row transition is conditional on the Session snapshot observed by
-        # current_user, so another process cannot be silently overwritten.
-        raise Conflict("api.session_changed")
-    request.state.session.update(updated)
-    return {**_api_message(request, "api.vault_selected")}
 
 
 class SourceVolumeInventoryItem(ResponseModel):

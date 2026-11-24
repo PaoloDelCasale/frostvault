@@ -419,7 +419,7 @@ describe("useCatalogEvents", () => {
   });
 
   it.each([
-    "vault_switched", "vault_access_revoked", "session_revoked",
+    "vault_access_revoked", "session_revoked",
     "session_expired", "session_version_mismatch",
   ])("refreshes the online document on a durable %s event", async (error) => {
     const client = createQueryClient();
@@ -499,7 +499,7 @@ describe("useCatalogEvents", () => {
       }),
     } as MessageEvent<string>);
     listeners.get("error")?.({
-      data: JSON.stringify({ error: "vault_switched", vault_id: 1 }),
+      data: JSON.stringify({ error: "vault_access_revoked", vault_id: 1 }),
     } as MessageEvent<string>);
 
     expect(onHello).toHaveBeenCalledWith({ vault_id: 1, revision: 2 });
@@ -510,7 +510,7 @@ describe("useCatalogEvents", () => {
       has_gap: false,
     });
     expect(onError).toHaveBeenCalledWith({
-      error: "vault_switched",
+      error: "vault_access_revoked",
       vault_id: 1,
     });
     handle.close();

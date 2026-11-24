@@ -22,7 +22,7 @@ describe("catalog event request budget", () => {
     const calls: string[] = [];
     configureApiClient({ fetch: vi.fn(async (input) => {
       const url = String(input); calls.push(url);
-      if (url.startsWith("/api/me")) return jsonResponse({ id: 1, display_name: "Owner", csrf_token: "csrf", auth_method: "local", locale: "en", locales: ["en", "it"], vault: { id: 1, name: "Photos" } });
+      if (url.startsWith("/api/me")) return jsonResponse({ id: 1, display_name: "Owner", csrf_token: "csrf", auth_method: "local", locale: "en", locales: ["en", "it"], stopped_vault: null });
       if (url.startsWith("/api/vaults/1/files")) return jsonResponse({ items: [], total: 0 });
       if (url.startsWith("/api/vaults")) return jsonResponse({ items: [{ id: 1, name: "Photos", uuid: "photos" }] });
       if (url.startsWith("/api/i18n/catalog")) return jsonResponse({ locale: "en", locales: ["en", "it"], messages: loadCatalog() });

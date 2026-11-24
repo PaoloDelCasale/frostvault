@@ -51,7 +51,6 @@ describe("plaintext Vault creation", () => {
           bucket: bucketFails ? bucket("failed", "S3 refused s3:CreateBucket (AccessDenied)") : bucket("ready") }, 201));
       if (url === "/api/vaults/42/bucket/retry" && init?.method === "POST") return Promise.resolve(json(retryReady
         ? bucket("ready") : { ...bucket("failed", "S3 refused s3:PutBucketVersioning (AccessDenied)"), stage: "created", attempts: 2 }));
-      if (url === "/api/vaults/select") return Promise.resolve(json({ vault_id: 42 }));
       return Promise.reject(new Error(`Unexpected request ${url}`));
     });
   }
@@ -61,7 +60,7 @@ describe("plaintext Vault creation", () => {
     return JSON.parse(String(call![1].body)) as unknown;
   }
 
-  it("creates and selects immediately, with no encryption choice or custody/export step", async () => {
+  it("creates and opens immediately, with no encryption choice or custody/export step", async () => {
     requests();
     const user = userEvent.setup();
     renderPage();
@@ -121,7 +120,6 @@ describe("plaintext Vault creation", () => {
     expect(panel).toHaveTextContent("frostvault-photos-a1b2c3d4: S3 refused s3:CreateBucket (AccessDenied)");
     expect(panel).toHaveTextContent(itCatalog["vault_bucket.stage_reserved"]);
     expect(navigate).not.toHaveBeenCalled();
-    expect(fetchMock.mock.calls.some(([url]) => url === "/api/vaults/select")).toBe(false);
 
     await user.click(screen.getByRole("button", { name: itCatalog["ui.vault_create.bucket_retry"] }));
     await waitFor(() => expect(screen.getByTestId("vault-create-bucket-failed")).toHaveTextContent("PutBucketVersioning"));
@@ -206,7 +204,6 @@ describe("a Vault whose bucket is not active yet (#735)", () => {
       if (url === "/api/vaults/42/bucket") return Promise.resolve(json(polled));
       if (url === "/api/vaults/42/creation/cancel" && method === "POST") return Promise.resolve(json({
         vault_id: 42, vault_name: "Photos", bucket: "frostvault-photos-a1b2c3d4", region: "eu-west-1", bucket_left: cancel }));
-      if (url === "/api/vaults/select") return Promise.resolve(json({ vault_id: 42 }));
       return Promise.reject(new Error(`Unexpected request ${url}`));
     });
   }

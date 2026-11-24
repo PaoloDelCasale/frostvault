@@ -169,7 +169,7 @@ describe("request cadence (#800)", () => {
     vi.stubGlobal("EventSource", class { onerror = null; addEventListener() {} close() {} });
     window.history.replaceState({}, "", "/vaults/1/files");
     const calls = record({
-      "/api/me": { id: 1, display_name: "Owner", csrf_token: "csrf", auth_method: "local", locale: "en", locales: ["en", "it"], vault: { id: 1, name: "Photos" } },
+      "/api/me": { id: 1, display_name: "Owner", csrf_token: "csrf", auth_method: "local", locale: "en", locales: ["en", "it"], stopped_vault: null },
       "/api/vaults": { items: [{ id: 1, name: "Photos", uuid: "photos" }] },
       "/api/general": { vaults: [], open_problem_count: 0, month: "2026-11", monthly_estimate: 0, previous_month_delta: null, currency: "EUR" },
       "/api/general/vaults": { items: [] },

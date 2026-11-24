@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Iterator
+from unittest.mock import patch
 
 import psycopg
 
@@ -14,7 +16,6 @@ from app.sessions import (
     revoke_session,
     rotate_session,
     session_actor,
-    set_session_vault,
 )
 from tests.fixtures import FrostVaultTestCase, bump_session_version, create_owner, seed_vault
 
@@ -169,37 +170,19 @@ class SessionStoreTests(FrostVaultTestCase):
         self.assertIsNotNone(rotated)
         self.assertEqual(rotated["id"], session_id)
 
-    def test_stale_selection_cannot_overwrite_a_newer_transition(self) -> None:
+    def test_a_revoked_session_cannot_be_rotated_back(self) -> None:
         token = self._new_session()
         with self._connect() as connection:
             original = resolve_session(connection, token)
-            selected = set_session_vault(
-                connection, original["id"], None,
-                expected_version=original["transition_version"],
-            )
-            self.assertIsNotNone(selected)
-            # Even an A -> B -> A choice must not recreate old authority.
-            self.assertIsNone(set_session_vault(
-                connection, original["id"], None,
-                expected_version=original["transition_version"],
-            ))
             rotated_token = rotate_session(connection, original["id"], reauthenticated=True)
-            self.assertIsNone(set_session_vault(
-                connection, original["id"], None,
-                expected_version=selected["transition_version"],
-            ))
             current = resolve_session(connection, rotated_token)
             self.assertIsNotNone(current["reauth_at"])
             self.assertTrue(revoke_session(connection, original["id"]))
             self.assertFalse(revoke_session(connection, original["id"]))
-            self.assertIsNone(set_session_vault(
-                connection, original["id"], None,
-                expected_version=current["transition_version"],
-            ))
             with self.assertRaises(SessionTransitionError):
                 rotate_session(connection, original["id"])
 
-    def test_expiry_cannot_be_undone_by_selection_or_rotation(self) -> None:
+    def test_expiry_cannot_be_undone_by_rotation(self) -> None:
         token = self._new_session()
         with self._connect() as connection:
             session = resolve_session(connection, token)
@@ -207,10 +190,6 @@ class SessionStoreTests(FrostVaultTestCase):
                 "UPDATE sessions SET idle_expires_at=%s WHERE id=%s",
                 (_past(), session["id"]),
             )
-            self.assertIsNone(set_session_vault(
-                connection, session["id"], None,
-                expected_version=session["transition_version"],
-            ))
             with self.assertRaises(SessionTransitionError):
                 rotate_session(connection, session["id"])
             self.assertIsNone(resolve_session(connection, token))
@@ -223,17 +202,64 @@ class SessionStoreTests(FrostVaultTestCase):
             ).fetchone()["transition_version"]
             self.assertEqual(second_version, first_version)
 
-    def test_selected_vault_persists_across_resolves(self) -> None:
+    def test_a_session_names_no_vault(self) -> None:
+        # ``sessions.vault_id`` stays in the schema, unwritten and unread: a value
+        # left by an older release is not part of the resolved Session.
         with self._connect() as connection:
             create_owner(connection)
             vault_id = seed_vault(connection)["id"]
             token = create_session(connection, auth_method="local")
-            session = resolve_session(connection, token)
-            set_session_vault(connection, session["id"], vault_id)
+            self.assertIsNone(connection.execute("SELECT vault_id FROM sessions").fetchone()["vault_id"])
+            connection.execute("UPDATE sessions SET vault_id=%s", (vault_id,))
 
         with self._connect() as connection:
             resolved = resolve_session(connection, token)
-        self.assertEqual(resolved["vault_id"], vault_id)
+        self.assertNotIn("vault_id", resolved)
+
+
+@contextmanager
+def session_statements() -> Iterator[list[str]]:
+    """The text of every statement that names the ``sessions`` table, in order."""
+    seen: list[str] = []
+    execute = psycopg.Cursor.execute
+
+    def recording_execute(cursor: Any, query: Any, *args: Any, **kwargs: Any) -> Any:
+        text = " ".join(str(query).split())
+        if "sessions" in text:
+            seen.append(text)
+        return execute(cursor, query, *args, **kwargs)
+
+    with patch.object(psycopg.Cursor, "execute", recording_execute):
+        yield seen
+
+
+class SessionVaultColumnTests(FrostVaultTestCase):
+    """``sessions.vault_id`` stays in the schema; no request writes or names it (#805)."""
+
+    owner = {"password": "correct horse battery staple"}
+
+    def test_a_whole_session_never_names_the_vault_column(self) -> None:
+        with self.database.connect() as connection:
+            seed_vault(connection, id=1, name="Docs")
+            seed_vault(connection, id=2, name="Archive", source_root="/sources/managed/archive")
+        client = self.http_client()
+        with session_statements() as statements:
+            signed_in = self.sign_in(client, password=self.owner["password"])
+            headers = signed_in.csrf_headers
+            for url in ("/api/me", "/api/vaults", "/api/vaults/2/catalog/revision",
+                        "/api/vaults/1/catalog/events?subscribe=false"):
+                self.assertEqual(client.get(url).status_code, 200, url)
+            self.assertEqual(client.put("/api/locale", json={"locale": "it"},
+                                        headers=headers).status_code, 200)
+            self.assertEqual(client.post("/api/reauth", json={"password": self.owner["password"]},
+                                         headers=headers).status_code, 200)
+            self.assertEqual(client.post("/api/logout", headers=headers).status_code, 200)
+        verbs = {statement.split()[0] for statement in statements}
+        self.assertTrue({"INSERT", "SELECT", "UPDATE"} <= verbs, statements)
+        self.assertEqual([statement for statement in statements if "vault_id" in statement], [])
+        with self.database.connect() as connection:
+            self.assertEqual(connection.execute("SELECT vault_id FROM sessions").fetchall(),
+                             [{"vault_id": None}])
 
 
 if __name__ == "__main__":

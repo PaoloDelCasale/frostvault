@@ -624,8 +624,6 @@ async def catalog_events_stream(
             resume_after=resume_after,
             subscribe=subscribe,
             is_disconnected=request.is_disconnected,
-            # The path names the Vault: the Session's selection is not consulted.
-            explicit_vault=True,
         ):
             yield chunk
 

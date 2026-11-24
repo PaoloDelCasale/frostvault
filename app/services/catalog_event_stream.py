@@ -55,7 +55,6 @@ StreamErrorCode = Literal[
     "session_expired",
     "session_version_mismatch",
     "vault_access_revoked",
-    "vault_switched",
 ]
 
 
@@ -65,7 +64,6 @@ class StreamTickSnapshot:
 
     ok: bool
     error: StreamErrorCode | None = None
-    session_vault_id: int | None = None
     signal: dict[str, Any] | None = None
     # Observability for tests/operators — not part of the wire contract.
     statement_count: int = 0
@@ -162,7 +160,6 @@ def stream_tick_snapshot(
     after_revision: int,
     max_events: int = MAX_CATCHUP_EVENTS,
     now: datetime | None = None,
-    explicit_vault: bool = False,
 ) -> StreamTickSnapshot:
     """Authorize the stream and observe the journal on **one** short connection.
 
@@ -179,8 +176,7 @@ def stream_tick_snapshot(
         statements[0] += 1
         row = connection.execute(
             """
-            SELECT s.vault_id AS session_vault_id,
-                   s.revoked_at AS revoked_at,
+            SELECT s.revoked_at AS revoked_at,
                    s.idle_expires_at AS idle_expires_at,
                    s.absolute_expires_at AS absolute_expires_at,
                    s.session_version AS session_session_version,
@@ -224,25 +220,11 @@ def stream_tick_snapshot(
                 statement_count=statements[0],
             )
 
-        session_vault_id = (
-            int(row["session_vault_id"])
-            if row["session_vault_id"] is not None
-            else None
-        )
-        if not explicit_vault and (session_vault_id is None or session_vault_id != vault_id):
-            return StreamTickSnapshot(
-                ok=False,
-                error="vault_switched",
-                session_vault_id=session_vault_id,
-                statement_count=statements[0],
-            )
-
         # The subscribed Vault must still be operational (fail closed).
         if not int(row["vault_available"] or 0):
             return StreamTickSnapshot(
                 ok=False,
                 error="vault_access_revoked",
-                session_vault_id=session_vault_id,
                 statement_count=statements[0],
             )
 
@@ -255,7 +237,6 @@ def stream_tick_snapshot(
         )
         return StreamTickSnapshot(
             ok=True,
-            session_vault_id=session_vault_id,
             signal=signal,
             statement_count=statements[0],
             events_read=events_read,
@@ -283,10 +264,8 @@ def coalesced_catchup_signal(
 DisconnectProbe = Callable[[], Awaitable[bool]]
 
 
-def _error_frame(code: StreamErrorCode, vault_id: int, **extra: Any) -> str:
-    payload: dict[str, Any] = {"error": code, "vault_id": vault_id}
-    payload.update(extra)
-    return catalog_event_sse_frame("error", payload)
+def _error_frame(code: StreamErrorCode, vault_id: int) -> str:
+    return catalog_event_sse_frame("error", {"error": code, "vault_id": vault_id})
 
 
 async def iter_catalog_event_sse(
@@ -299,7 +278,6 @@ async def iter_catalog_event_sse(
     durable_poll_seconds: float = DURABLE_POLL_SECONDS,
     use_hub: bool = True,
     max_events: int = MAX_CATCHUP_EVENTS,
-    explicit_vault: bool = False,
 ) -> AsyncIterator[str]:
     """Yield SSE frames for one authorized catalog subscription.
 
@@ -319,17 +297,12 @@ async def iter_catalog_event_sse(
             vault_id=vault_id,
             after_revision=resume_after,
             max_events=max_events,
-            explicit_vault=explicit_vault,
         )
         if shutdown_state.requested:
             return
         if not initial.ok:
             code = initial.error or "session_revoked"
-            yield _error_frame(
-                code,
-                vault_id,
-                current_vault_id=initial.session_vault_id,
-            )
+            yield _error_frame(code, vault_id)
             return
 
         hello_revision = int((initial.signal or {}).get("revision") or 0)
@@ -395,17 +368,12 @@ async def iter_catalog_event_sse(
                 vault_id=vault_id,
                 after_revision=last_seen,
                 max_events=max_events,
-                explicit_vault=explicit_vault,
             )
             if shutdown_state.requested:
                 break
             if not tick.ok:
                 code = tick.error or "session_revoked"
-                yield _error_frame(
-                    code,
-                    vault_id,
-                    current_vault_id=tick.session_vault_id,
-                )
+                yield _error_frame(code, vault_id)
                 break
 
             signal = tick.signal or {

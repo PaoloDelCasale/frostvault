@@ -69,7 +69,7 @@ class CloudDeletionHttpTests(fixtures.CloudDeletionFixture):
         self.assertTrue(kept.json()["root_released"])
         self.assertTrue(self.client.get("/api/vaults/2/stop-protection").json()["stopped"])
         me = self.client.get("/api/me").json()
-        self.assertIsNone(me["vault"])
+        self.assertNotIn("vault", me)
         self.assertEqual(me["stopped_vault"]["id"],2)
 
     def test_stopped_folder_deletion_can_be_cancelled_without_selected_operational_vault(self):

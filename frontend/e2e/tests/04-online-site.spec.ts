@@ -2,34 +2,26 @@ import { expect, test } from "@playwright/test";
 
 import { applySession, vaultFilesPath } from "../helpers/auth";
 
-test("another client's Session selection cannot redirect this browser's pinned Vault",  async ({ page, context }) => {
+test("the Session names no Vault: each page keeps the Vault of its own route (#805)", async ({ page, context }) => {
   const credentials = await applySession(context);
-  await page.goto(vaultFilesPath(credentials.vaults.primary.id));
-  await expect(page.getByTestId("file-browser")).toBeVisible();
   const me = await (await page.request.get("/api/me")).json();
-  const vaults = await (await page.request.get("/api/vaults")).json();
-  const other = vaults.items.find((vault: { id: number; name: string }) => vault.id !== credentials.vaults.primary.id);
-  if (!other) throw new Error("This test requires the two seeded Vaults");
-  const select = (vaultId: number) => page.request.post("/api/vaults/select", {
-    headers: { "X-CSRF-Token": me.csrf_token }, data: { vault_id: vaultId },
+  expect(me).not.toHaveProperty("vault");
+  const removed = await page.request.post("/api/vaults/select", {
+    headers: { "X-CSRF-Token": me.csrf_token }, data: { vault_id: credentials.vaults.secondary.id },
   });
-  try {
-    const response = await select(other.id);
-    expect(response.ok()).toBe(true);
-    // The sidebar is collapsed on phones, so read the link without requiring visibility.
-    const files = page.locator('aside nav a[href$="/files"]');
-    // The Overview belongs to no Vault: its sidebar names none (#677).
-    await page.goto("/");
-    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-    await expect(files).toHaveCount(0);
-    // This browser's Vault page keeps its own Vault after a reload.
-    await page.goto(vaultFilesPath(credentials.vaults.primary.id));
-    await expect(files).toHaveAttribute("href", vaultFilesPath(credentials.vaults.primary.id));
+  expect(removed.status()).toBe(404);
+  // The sidebar is collapsed on phones, so read the link without requiring visibility.
+  const files = page.locator('aside nav a[href$="/files"]');
+  // The Overview belongs to no Vault: its sidebar names none (#677).
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await expect(files).toHaveCount(0);
+  // A Vault page keeps its own Vault after a reload.
+  for (const vault of [credentials.vaults.secondary, credentials.vaults.primary]) {
+    await page.goto(vaultFilesPath(vault.id));
+    await expect(files).toHaveAttribute("href", vaultFilesPath(vault.id));
     await page.reload();
-    await expect(files).toHaveAttribute("href", vaultFilesPath(credentials.vaults.primary.id));
-  } finally {
-    const response = await select(me.vault.id);
-    expect(response.ok()).toBe(true);
+    await expect(files).toHaveAttribute("href", vaultFilesPath(vault.id));
   }
 });
 

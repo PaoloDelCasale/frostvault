@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { apiQueryKeys, readOnMount, ApiError, browseSourceVolume, createVault, fetchGeneralSourceVolumes, selectVault, vaultApi, type VaultBucketStatus, type VaultCreationCancelled, type VaultCreationMode } from "@/api";
+import { apiQueryKeys, readOnMount, ApiError, browseSourceVolume, createVault, fetchGeneralSourceVolumes, vaultApi, type VaultBucketStatus, type VaultCreationCancelled, type VaultCreationMode } from "@/api";
 
 import { AccountPreferencesMenu } from "@/components/AccountPreferencesMenu";
 import { FormField, FormInput, FormSelect } from "@/components/FormField";
@@ -76,11 +76,11 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
     if (pendingVault === null) return;
     let stopped = false;
     const timer = window.setInterval(() => {
-      void vaultApi(pendingVault).bucket().then(async (state) => {
+      void vaultApi(pendingVault).bucket().then((state) => {
         if (stopped) return;
         if (state.state === "ready") {
           stopped = true;
-          await openVault(state.vault_id);
+          openVault(state.vault_id);
         } else setPending(state);
       }).catch(() => undefined);
     }, BUCKET_POLL_MS);
@@ -100,8 +100,7 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
       : (err instanceof Error && err.message) || t("ui.vault_create.failed");
   }
 
-  async function openVault(vaultId: number) {
-    await selectVault({ vault_id: vaultId });
+  function openVault(vaultId: number) {
     navigateTo(`/?vault_id=${vaultId}`, onNavigate);
   }
 
@@ -111,7 +110,7 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
     setSubmitting(true);
     try {
       const state = await vaultApi(pending.vault_id).retryBucket();
-      if (state.state === "ready") await openVault(state.vault_id);
+      if (state.state === "ready") openVault(state.vault_id);
       else setPending(state);
     } catch (err) {
       setError(failureText(err));
@@ -150,7 +149,7 @@ export function VaultCreatePage({ displayName, onNavigate, embedded = false }: V
       const vault = await createVault(payload);
       // Active only once its bucket is created and verified; otherwise the
       // Vault is saved and FrostVault keeps retrying in the background.
-      if (vault.lifecycle === "active") await openVault(vault.id);
+      if (vault.lifecycle === "active") openVault(vault.id);
       else {
         setPendingName(vault.name);
         setPending(vault.bucket);

@@ -23,7 +23,7 @@ from app.services.catalog_event_stream import (
     stream_tick_snapshot,
 )
 from app.services.catalog_events import CatalogEventStore, record_catalog_revision
-from app.sessions import revoke_session, set_session_vault
+from app.sessions import revoke_session
 from app.storage import apply_filesystem_changes
 from tests.fixtures import FrostVaultTestCase, http_client, seed_vault, sign_in
 from tests import catalog_event_probe
@@ -118,30 +118,12 @@ class CatalogEventsHttpTests(FrostVaultTestCase):
         self.client = http_client(follow_redirects=False)
         self.addCleanup(self.client.close)
 
-        self.owner_token = self._owner_session(vault_id=1)
+        self.owner_token = self._owner_session()
         self.owner_session_id = self._session_id_for_user(1)
 
-    def _owner_session(self, *, vault_id: int | None) -> str:
-        """A Session of the Owner on ``vault_id``; ``self.client`` stays anonymous."""
-        raw_token = sign_in(self.http_client(), self.database, auth_method="local").token
-        with self.database.connect() as connection:
-            session = connection.execute(
-                """
-                SELECT id, transition_version
-                FROM sessions
-                WHERE revoked_at IS NULL
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-            ).fetchone()
-            if vault_id is not None:
-                set_session_vault(
-                    connection,
-                    session["id"],
-                    vault_id,
-                    expected_version=session["transition_version"],
-                )
-        return raw_token
+    def _owner_session(self) -> str:
+        """A Session of the Owner; ``self.client`` stays anonymous."""
+        return sign_in(self.http_client(), self.database, auth_method="local").token
 
     def _session_id_for_user(self, user_id: int) -> str:
         with self.database.connect() as connection:
@@ -414,7 +396,8 @@ class CatalogEventsHttpTests(FrostVaultTestCase):
         events = asyncio.run(exercise())
         errors = [event for event in events if event.get("event") == "error"]
         self.assertTrue(errors, msg=events)
-        self.assertEqual(json.loads(errors[-1]["data"])["error"], "session_revoked")
+        # The frame names the error and the stream's Vault, nothing else.
+        self.assertEqual(json.loads(errors[-1]["data"]), {"error": "session_revoked", "vault_id": 1})
         self.assertEqual(catalog_event_hub.subscriber_count(1), 0)
 
     def test_full_app_finite_streaming_response_headers_and_body(self) -> None:
@@ -711,7 +694,7 @@ class CatalogEventsHttpTests(FrostVaultTestCase):
         events = asyncio.run(self._consume_until_error(expire))
         errors = [event for event in events if event.get("event") == "error"]
         self.assertTrue(errors, msg=events)
-        self.assertEqual(json.loads(errors[-1]["data"])["error"], "session_expired")
+        self.assertEqual(json.loads(errors[-1]["data"]), {"error": "session_expired", "vault_id": 1})
 
     def test_absolute_expiry_closes_live_stream(self) -> None:
         def expire() -> None:

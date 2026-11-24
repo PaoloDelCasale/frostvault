@@ -196,7 +196,6 @@ def _seed(paths: dict[str, Path]) -> dict:
                           s3_key="system/backups/e2e-seed.bak.enc", s3_bucket="e2e-system-bucket")
 
         owner_token = create_session(connection, auth_method="local")
-        connection.execute("UPDATE sessions SET vault_id=%s", (primary_id,))
 
         credentials = {
             "password": PASSWORD,

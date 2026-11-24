@@ -27,7 +27,7 @@ export type UseCatalogEventsOptions = {
   queryClient: QueryClient;
   enabled?: boolean;
   explicitVault?: boolean;
-  /** Refresh the document when another tab changes this Session's Vault/auth. */
+  /** Refresh the document when the Session ends or the Vault is no longer operational. */
   onSessionChanged?: () => void;
   createSource?: CatalogEventSourceFactory;
   fetchRevision?: typeof fetchCatalogRevision;
@@ -213,7 +213,6 @@ export function useCatalogEvents({
           },
           onError: (error) => {
             if (
-              error.error === "vault_switched" ||
               error.error === "vault_access_revoked" ||
               error.error === "session_revoked" ||
               error.error === "session_expired" ||

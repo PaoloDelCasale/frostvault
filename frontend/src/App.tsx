@@ -64,9 +64,10 @@ export default function App() {
   let remembered = 0;
   try { remembered = Number(localStorage.getItem(rememberedKey(me?.id ?? 0))); } catch { /* Storage is optional. */ }
   const requested = route.name === "files" || route.name === "settings" ? route.vaultId : undefined;
-  // The routed Vault, else the last one used: the sidebar's File/Settings target.
+  // The routed Vault, else the one remembered in this browser, else the first listed:
+  // the sidebar's File/Settings target. The Session holds no Vault (#805).
   const current = requested !== undefined ? vaults.find((vault) => vault.id === requested)
-    : vaults.find((vault) => vault.id === remembered) ?? vaults.find((vault) => vault.id === me?.vault?.id) ?? vaults[0];
+    : vaults.find((vault) => vault.id === remembered) ?? vaults[0];
   useEffect(() => {
     if (!me || !current || requested === undefined) return;
     try { localStorage.setItem(rememberedKey(me.id), String(current.id)); } catch { /* Storage is optional. */ }

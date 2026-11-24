@@ -10,7 +10,6 @@ import {
   fetchMe,
   fetchNotifications,
   fetchVaults,
-  selectVault,
   markNotificationRead,
   markAllNotificationsRead,
 } from "./endpoints";
@@ -327,15 +326,11 @@ describe("foundation endpoint helpers", () => {
     ).toBe("estimate-csrf");
   });
 
-  it("vault creation and selection have no encryption or custody contract", async () => {
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ id: 3, uuid: "u", name: "Docs" }, 201))
-      .mockResolvedValueOnce(jsonResponse({ vault_id: 3 }));
+  it("vault creation has no encryption or custody contract", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 3, uuid: "u", name: "Docs" }, 201));
     await expect(createVault({ name: "Docs" })).resolves.toMatchObject({ id: 3 });
-    await expect(selectVault({ vault_id: 3 })).resolves.toEqual({ vault_id: 3 });
     expect(fetchMock.mock.calls.map((call) => [call[0], (call[1] as RequestInit).method])).toEqual([
       ["/api/vaults", "POST"],
-      ["/api/vaults/select", "POST"],
     ]);
   });
 });
