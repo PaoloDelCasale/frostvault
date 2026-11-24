@@ -7,7 +7,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..api_models import response_model
+from ..api_models import passthrough
 from ..config import settings
 from ..services.audit_events import audit_log
 from ..database import db
@@ -16,9 +16,9 @@ from ..services import watch_plan
 from ..services.excluded_folders import excluded_folders
 from ..services import vault_exclusions
 from ..services.directory_aggregates import request_vault_rebuild
+from ..services import operation_policies
 from ..services.operation_policies import (
     AUTO_UPLOAD_EXCLUSIONS,
-    OperationPolicy,
     get_policy,
     lock_vault_policy,
     preview_glob_rules,
@@ -34,6 +34,8 @@ from .deps import (
     vault_in_path,
     normalize_directory,
 )
+# Shared with the storage estimate (ADR-0056).
+from .storage_plan import StorageEstimateResponse
 
 
 router = APIRouter()
@@ -79,7 +81,86 @@ class GlobPreviewRequest(BaseModel):
     exclude_globs: list[str] = Field(default_factory=list)
 
 
-@router.get("/api/vaults/{vault_id}/operation-policy", response_model=response_model("OperationPolicy"))
+# -- Response models (ADR-0056) -------------------------------------------------
+#
+# A route's answer is declared with ``passthrough(Model)``: production neither
+# validates nor filters with it, the tests' HTTP client does. Every model here is
+# closed: the route or one service function builds its keys.
+
+UploadVerification = Literal["s3_checksum", "read_back"]
+
+
+class OperationPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    auto_upload: bool
+    local_release_after_days: Literal[90, 180, 365, 730] | None
+    stability_seconds: int
+    include_globs: list[str]
+    exclude_globs: list[str]
+    upload_verification: UploadVerification | None = Field(description="Override for new upload admissions; null inherits deployment default.")
+    global_upload_verification: UploadVerification
+    effective_upload_verification: UploadVerification
+    fixed_exclude_globs: list[str] = Field(description="Fixed noise exclusions applied to every Vault; read only.")
+
+
+class GlobPreviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    included: list[str]
+    excluded: list[str]
+
+
+class ExcludedFolder(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    path: str
+    rule: str
+
+
+class DiskListingEntry(BaseModel):
+    """An entry read from disk inside an Excluded Folder: not catalogued, not protected."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    path: str
+    type: Literal["file", "directory"]
+    size: int | None
+    modified_at: str
+
+
+class ExcludedFolderListing(BaseModel):
+    """One Vault level read from disk (#754): Excluded Folders of a catalogued level, or the entries of an Excluded Folder."""
+
+    model_config = ConfigDict(extra="forbid")
+    directory: str
+    excluded_by: str | None = Field(description="The folder rule that covers this directory; null outside an Excluded Folder.")
+    folders: list[ExcludedFolder]
+    entries: list[DiskListingEntry]
+    total_entries: int
+    truncated: bool
+
+
+class VaultItemExclusionStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    is_directory: bool
+    own_rule: str | None = Field(description="path/** for a folder, the exact path for a file; null when the path holds glob characters.")
+    own_rule_present: bool
+    excluded: bool
+    rules: list[str] = Field(description="Other exclude globs that exclude the item.")
+    fixed: list[str] = Field(description="Fixed noise exclusions that match the item.")
+    not_included: bool = Field(description="The include globs do not match the item.")
+
+
+class VaultInclusionPreview(VaultItemExclusionStatus):
+    includable: bool
+    folder_rule: bool = Field(description="Removing the rule makes the Vault look inside the folder again with a full scan.")
+    files: int | None
+    bytes: int | None
+    complete: bool | None = Field(description="False when the disk walk stopped at its time budget: the counts are a minimum.")
+    estimate: StorageEstimateResponse | None
+
+
+@router.get("/api/vaults/{vault_id}/operation-policy", response_model=passthrough(OperationPolicy))
 def own_vault_operation_policy(vault: dict[str, Any] = Depends(vault_in_path)):
     with db() as connection:
         policy = get_policy(connection, vault["id"])
@@ -107,7 +188,7 @@ def _save_operation_policy(
     *,
     event: str = "vault_operation_policy_updated",
     **audit_fields: Any,
-) -> OperationPolicy:
+) -> operation_policies.OperationPolicy:
     """Apply ``change(stored_policy) -> new_policy`` atomically and audit it.
 
     Every save of a Vault policy goes through here: the read, the change and the
@@ -141,13 +222,13 @@ def _save_operation_policy(
     return stored
 
 
-def _operation_policy_response(policy: OperationPolicy) -> dict[str, Any]:
+def _operation_policy_response(policy: operation_policies.OperationPolicy) -> dict[str, Any]:
     return {**policy.as_dict(), "global_upload_verification": settings.upload_verification,
             "effective_upload_verification": policy.effective_upload_verification(),
             "fixed_exclude_globs": list(AUTO_UPLOAD_EXCLUSIONS)}
 
 
-@router.put("/api/vaults/{vault_id}/operation-policy", response_model=response_model("OperationPolicy"))
+@router.put("/api/vaults/{vault_id}/operation-policy", response_model=passthrough(OperationPolicy))
 def update_vault_operation_policy(
     action: OperationPolicyUpdate,
     request: Request,
@@ -156,13 +237,13 @@ def update_vault_operation_policy(
 ):
     update = action.model_dump(exclude_unset=True)
 
-    def change(before: OperationPolicy) -> OperationPolicy:
-        return OperationPolicy(**{**before.as_dict(), **update})
+    def change(before: operation_policies.OperationPolicy) -> operation_policies.OperationPolicy:
+        return operation_policies.OperationPolicy(**{**before.as_dict(), **update})
 
     return _operation_policy_response(_save_operation_policy(vault, request, change))
 
 
-@router.post("/api/vaults/{vault_id}/operation-policy/globs", response_model=response_model("OperationPolicy"))
+@router.post("/api/vaults/{vault_id}/operation-policy/globs", response_model=passthrough(OperationPolicy))
 def edit_vault_operation_glob(
     action: OperationPolicyGlobEdit,
     request: Request,
@@ -174,7 +255,7 @@ def edit_vault_operation_glob(
     longer there is refused with 409, so a stale view cannot replace the list.
     """
 
-    def change(before: OperationPolicy) -> OperationPolicy:
+    def change(before: operation_policies.OperationPolicy) -> operation_policies.OperationPolicy:
         return vault_exclusions.edit_glob(before, action.field, action.action, action.glob)
 
     stored = _save_operation_policy(
@@ -190,7 +271,7 @@ def _vault_item_path(path: str) -> str:
 
 @router.get(
     "/api/vaults/{vault_id}/excluded-folders",
-    response_model=response_model("ExcludedFolderListing"),
+    response_model=passthrough(ExcludedFolderListing),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def vault_excluded_folders(
@@ -208,7 +289,7 @@ def vault_excluded_folders(
     return vault_exclusions.directory_listing(vault, policy, directory)
 
 
-def _item_exclusion(policy: OperationPolicy, path: str, is_directory: bool) -> dict[str, Any]:
+def _item_exclusion(policy: operation_policies.OperationPolicy, path: str, is_directory: bool) -> dict[str, Any]:
     rule = vault_exclusions.own_rule(path, is_directory=is_directory)
     present = rule is not None and rule in policy.exclude_globs
     reasons = vault_exclusions.exclusion_reasons(policy, path, is_directory=is_directory)
@@ -226,7 +307,7 @@ def _item_exclusion(policy: OperationPolicy, path: str, is_directory: bool) -> d
 
 @router.get(
     "/api/vaults/{vault_id}/exclusions/item",
-    response_model=response_model("VaultItemExclusionStatus"),
+    response_model=passthrough(VaultItemExclusionStatus),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def vault_item_exclusion(
@@ -243,7 +324,7 @@ def vault_item_exclusion(
 
 @router.get(
     "/api/vaults/{vault_id}/exclusions/inclusion-preview",
-    response_model=response_model("VaultInclusionPreview"),
+    response_model=passthrough(VaultInclusionPreview),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def vault_inclusion_preview(
@@ -285,7 +366,7 @@ def vault_inclusion_preview(
 
 @router.post(
     "/api/vaults/{vault_id}/exclusions/exclude",
-    response_model=response_model("OperationPolicy"),
+    response_model=passthrough(OperationPolicy),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def exclude_vault_item(
@@ -306,7 +387,7 @@ def exclude_vault_item(
         # A rule without "/" matches the name in every folder: not this item only.
         raise Invalid("api.policy.root_file_rule")
 
-    def change(before: OperationPolicy) -> OperationPolicy:
+    def change(before: operation_policies.OperationPolicy) -> operation_policies.OperationPolicy:
         return vault_exclusions.edit_glob(before, "exclude_globs", "add", rule)
 
     stored = _save_operation_policy(
@@ -318,7 +399,7 @@ def exclude_vault_item(
 
 @router.post(
     "/api/vaults/{vault_id}/exclusions/include",
-    response_model=response_model("OperationPolicy"),
+    response_model=passthrough(OperationPolicy),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def include_vault_item(
@@ -336,7 +417,7 @@ def include_vault_item(
     if rule is None:
         raise Conflict("api.policy.no_own_rule")
 
-    def change(before: OperationPolicy) -> OperationPolicy:
+    def change(before: operation_policies.OperationPolicy) -> operation_policies.OperationPolicy:
         return vault_exclusions.edit_glob(before, "exclude_globs", "remove", rule)
 
     stored = _save_operation_policy(
@@ -346,7 +427,7 @@ def include_vault_item(
     return _operation_policy_response(stored)
 
 
-@router.post("/api/vaults/{vault_id}/operation-policy/preview-globs", response_model=response_model("GlobPreviewResponse"))
+@router.post("/api/vaults/{vault_id}/operation-policy/preview-globs", response_model=passthrough(GlobPreviewResponse))
 def preview_vault_operation_globs(
     action: GlobPreviewRequest,
     vault: dict[str, Any] = Depends(vault_in_path),

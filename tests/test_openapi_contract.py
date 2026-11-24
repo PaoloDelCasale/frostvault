@@ -190,6 +190,24 @@ class OpenApiResponseContractTests(unittest.TestCase):
         self.assertIs(schemas["ArchiveVersionItem"]["additionalProperties"], False)
         self.assertNotIn("FileOperationResponse", documented_schemas())
 
+    def test_vault_settings_answers_are_documented_from_their_models(self) -> None:
+        from app.routes import policy, storage_plan
+        document = app.openapi()
+        schemas = document["components"]["schemas"]
+        for route in (*policy.router.routes, *storage_plan.router.routes):
+            name = fixtures._response_contract(route).__name__
+            [method] = [verb.lower() for verb in route.methods]
+            with self.subTest(path=route.path, method=method):
+                answer = document["paths"][route.path][method]["responses"]["200"]
+                self.assertEqual(answer["content"]["application/json"]["schema"],
+                                 {"$ref": f"#/components/schemas/{name}"})
+                self.assertIs(schemas[name]["additionalProperties"], False)
+                self.assertNotIn(name, documented_schemas())
+        # The inclusion preview prices the folder with the storage estimate's model.
+        self.assertEqual(schemas["VaultInclusionPreview"]["properties"]["estimate"]["anyOf"][0],
+                         {"$ref": "#/components/schemas/StorageEstimateResponse"})
+        self.assertEqual(list(documented_schemas()), ["ApiErrorResponse"])
+
     def test_admin_vault_schema_is_a_closed_non_secret_contract(self) -> None:
         vault = app.openapi()["components"]["schemas"]["GeneralVault"]
         self.assertFalse(vault["additionalProperties"])
