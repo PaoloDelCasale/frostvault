@@ -5,7 +5,7 @@ import { translate } from "@/i18n/translate";
 import { AppShell } from "@/layout/AppShell";
 import { loadCatalog } from "./vault-settings-harness";
 
-const vaults = [{ id: 1, name: "First", uuid: "first" }, { id: 2, name: "Second", uuid: "second" }];
+const vaults = [{ id: 1, name: "First", uuid: "first", paused: false, lifecycle: "active" as const }, { id: 2, name: "Second", uuid: "second", paused: false, lifecycle: "active" as const }];
 
 describe.each(["en", "it"] as const)("shell navigation %s", (locale) => {
   const catalog = loadCatalog(locale); const t = (key: string, params?: Record<string, unknown>) => translate(catalog, key, params, locale);

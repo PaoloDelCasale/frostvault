@@ -4230,10 +4230,169 @@
           }
         ]
       },
-      "BillingExportStatus": {
-        "type": "object",
+      "BilledCategories": {
+        "properties": {
+          "storage": {
+            "type": "number",
+            "title": "Storage"
+          },
+          "requests": {
+            "type": "number",
+            "title": "Requests"
+          },
+          "transitions": {
+            "type": "number",
+            "title": "Transitions"
+          },
+          "retrievals": {
+            "type": "number",
+            "title": "Retrievals"
+          },
+          "data_transfer": {
+            "type": "number",
+            "title": "Data Transfer"
+          },
+          "other": {
+            "type": "number",
+            "title": "Other"
+          },
+          "credits": {
+            "type": "number",
+            "title": "Credits",
+            "description": "Credits, refunds and discounts of the bucket (negative)."
+          }
+        },
         "additionalProperties": false,
-        "description": "The AWS Data Exports (CUR 2.0) billing export and every known bucket's Billed Cost (#738). Never a Cost Explorer figure.",
+        "type": "object",
+        "required": [
+          "storage",
+          "requests",
+          "transitions",
+          "retrievals",
+          "data_transfer",
+          "other",
+          "credits"
+        ],
+        "title": "BilledCategories",
+        "description": "Billed amounts by category, in the billing currency; every category is present."
+      },
+      "BilledInstallationBucket": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "system",
+              "shared"
+            ],
+            "title": "Role"
+          },
+          "bucket": {
+            "type": "string",
+            "title": "Bucket"
+          },
+          "total": {
+            "type": "number",
+            "title": "Total"
+          },
+          "categories": {
+            "$ref": "#/components/schemas/BilledCategories"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "role",
+          "bucket",
+          "total",
+          "categories"
+        ],
+        "title": "BilledInstallationBucket"
+      },
+      "BilledVaultBucket": {
+        "properties": {
+          "vault_id": {
+            "type": "integer",
+            "title": "Vault Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "bucket": {
+            "type": "string",
+            "title": "Bucket"
+          },
+          "total": {
+            "type": "number",
+            "title": "Total"
+          },
+          "categories": {
+            "$ref": "#/components/schemas/BilledCategories"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "vault_id",
+          "name",
+          "bucket",
+          "total",
+          "categories"
+        ],
+        "title": "BilledVaultBucket"
+      },
+      "BillingExportPeriod": {
+        "properties": {
+          "period": {
+            "type": "string",
+            "title": "Period",
+            "description": "YYYY-MM"
+          },
+          "total": {
+            "type": "number",
+            "title": "Total",
+            "description": "Every row of the period: Vaults and installation."
+          },
+          "vaults_total": {
+            "type": "number",
+            "title": "Vaults Total",
+            "description": "The Vault rows only: FrostVault's Vault Buckets, not the whole AWS bill."
+          },
+          "vaults": {
+            "items": {
+              "$ref": "#/components/schemas/BilledVaultBucket"
+            },
+            "type": "array",
+            "title": "Vaults"
+          },
+          "installation": {
+            "items": {
+              "$ref": "#/components/schemas/BilledInstallationBucket"
+            },
+            "type": "array",
+            "title": "Installation",
+            "description": "The System Bucket and shared buckets of older Vaults: not attributed to one Vault."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "period",
+          "total",
+          "vaults_total",
+          "vaults",
+          "installation"
+        ],
+        "title": "BillingExportPeriod"
+      },
+      "BillingExportStatus": {
         "properties": {
           "state": {
             "type": "string",
@@ -4245,265 +4404,157 @@
               "ok",
               "error"
             ],
+            "title": "State",
             "description": "unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code)."
           },
           "bucket": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Bucket",
             "description": "The System Bucket the export is delivered to."
           },
           "prefix": {
             "type": "string",
+            "title": "Prefix",
             "description": "The S3 path prefix of the export in the System Bucket."
           },
           "checked_at": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked At"
           },
           "next_check_at": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Check At"
           },
           "read_at": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Read At",
             "description": "When FrostVault last read the export (only when ok)."
           },
           "exported_at": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Exported At",
             "description": "When AWS delivered the newest manifest that was read."
           },
           "data_through": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Data Through",
             "description": "The newest usage end in the export, never after exported_at."
           },
           "currency": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Currency",
             "description": "The billing currency (ISO 4217)."
           },
           "stale": {
             "type": "boolean",
+            "title": "Stale",
             "description": "ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd."
           },
           "error_code": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "s3_unreachable",
+                  "s3_throttled",
+                  "s3_server_error",
+                  "credentials",
+                  "access_denied",
+                  "s3_refused",
+                  "parquet",
+                  "missing_column",
+                  "not_gzip_csv",
+                  "short_row",
+                  "cost_not_number",
+                  "currency_missing",
+                  "mixed_currencies",
+                  "manifest_invalid",
+                  "manifest_too_large",
+                  "manifest_foreign_bucket",
+                  "manifest_outside_folder",
+                  "no_data_files",
+                  "internal"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ],
-            "enum": [
-              "s3_unreachable",
-              "s3_throttled",
-              "s3_server_error",
-              "credentials",
-              "access_denied",
-              "s3_refused",
-              "parquet",
-              "missing_column",
-              "not_gzip_csv",
-              "short_row",
-              "cost_not_number",
-              "currency_missing",
-              "mixed_currencies",
-              "manifest_invalid",
-              "manifest_too_large",
-              "manifest_foreign_bucket",
-              "manifest_outside_folder",
-              "no_data_files",
-              "internal",
-              null
-            ],
+            "title": "Error Code",
             "description": "Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day."
           },
           "error_detail": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Error Detail",
             "description": "An S3 action and AWS error code, column or currency names: never a provider message."
           },
           "periods": {
-            "type": "array",
-            "description": "Billing periods read, newest first; empty unless state is ok.",
             "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "period": {
-                  "type": "string",
-                  "description": "YYYY-MM"
-                },
-                "total": {
-                  "type": "number",
-                  "description": "Every row of the period: Vaults and installation."
-                },
-                "vaults_total": {
-                  "type": "number",
-                  "description": "The Vault rows only: FrostVault's Vault Buckets, not the whole AWS bill."
-                },
-                "vaults": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                      "vault_id": {
-                        "type": "number"
-                      },
-                      "name": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
-                      },
-                      "bucket": {
-                        "type": "string"
-                      },
-                      "total": {
-                        "type": "number"
-                      },
-                      "categories": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "description": "Billed amounts by category, in the billing currency; every category is present.",
-                        "properties": {
-                          "storage": {
-                            "type": "number"
-                          },
-                          "requests": {
-                            "type": "number"
-                          },
-                          "transitions": {
-                            "type": "number"
-                          },
-                          "retrievals": {
-                            "type": "number"
-                          },
-                          "data_transfer": {
-                            "type": "number"
-                          },
-                          "other": {
-                            "type": "number"
-                          },
-                          "credits": {
-                            "type": "number",
-                            "description": "Credits, refunds and discounts of the bucket (negative)."
-                          }
-                        },
-                        "required": [
-                          "storage",
-                          "requests",
-                          "transitions",
-                          "retrievals",
-                          "data_transfer",
-                          "other",
-                          "credits"
-                        ]
-                      }
-                    },
-                    "required": [
-                      "vault_id",
-                      "name",
-                      "bucket",
-                      "total",
-                      "categories"
-                    ]
-                  }
-                },
-                "installation": {
-                  "type": "array",
-                  "description": "The System Bucket and shared buckets of older Vaults: not attributed to one Vault.",
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                      "role": {
-                        "type": "string",
-                        "enum": [
-                          "system",
-                          "shared"
-                        ]
-                      },
-                      "bucket": {
-                        "type": "string"
-                      },
-                      "total": {
-                        "type": "number"
-                      },
-                      "categories": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "description": "Billed amounts by category, in the billing currency; every category is present.",
-                        "properties": {
-                          "storage": {
-                            "type": "number"
-                          },
-                          "requests": {
-                            "type": "number"
-                          },
-                          "transitions": {
-                            "type": "number"
-                          },
-                          "retrievals": {
-                            "type": "number"
-                          },
-                          "data_transfer": {
-                            "type": "number"
-                          },
-                          "other": {
-                            "type": "number"
-                          },
-                          "credits": {
-                            "type": "number",
-                            "description": "Credits, refunds and discounts of the bucket (negative)."
-                          }
-                        },
-                        "required": [
-                          "storage",
-                          "requests",
-                          "transitions",
-                          "retrievals",
-                          "data_transfer",
-                          "other",
-                          "credits"
-                        ]
-                      }
-                    },
-                    "required": [
-                      "role",
-                      "bucket",
-                      "total",
-                      "categories"
-                    ]
-                  }
-                }
-              },
-              "required": [
-                "period",
-                "total",
-                "vaults_total",
-                "vaults",
-                "installation"
-              ]
-            }
+              "$ref": "#/components/schemas/BillingExportPeriod"
+            },
+            "type": "array",
+            "title": "Periods",
+            "description": "Billing periods read, newest first; empty unless state is ok."
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "state",
           "bucket",
@@ -4518,7 +4569,9 @@
           "error_code",
           "error_detail",
           "periods"
-        ]
+        ],
+        "title": "BillingExportStatus",
+        "description": "The AWS Data Exports (CUR 2.0) billing export and every known bucket's Billed Cost (#738). Never a Cost Explorer figure."
       },
       "BulkUploadAdmissionActivity": {
         "properties": {
@@ -4662,6 +4715,224 @@
           "changed"
         ],
         "type": "object"
+      },
+      "CleanupAmount": {
+        "properties": {
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "count",
+          "bytes"
+        ],
+        "title": "CleanupAmount"
+      },
+      "CleanupLastOutcome": {
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "scheduled",
+              "none",
+              "capped",
+              "skipped"
+            ],
+            "title": "Outcome"
+          },
+          "at": {
+            "type": "string",
+            "title": "At"
+          },
+          "file_count": {
+            "type": "integer",
+            "title": "File Count"
+          },
+          "byte_count": {
+            "type": "integer",
+            "title": "Byte Count"
+          },
+          "group_id": {
+            "type": "string",
+            "title": "Group Id"
+          },
+          "run_after": {
+            "type": "string",
+            "title": "Run After"
+          },
+          "waiting_count": {
+            "type": "integer",
+            "title": "Waiting Count"
+          },
+          "waiting_bytes": {
+            "type": "integer",
+            "title": "Waiting Bytes"
+          },
+          "unseen_count": {
+            "type": "integer",
+            "title": "Unseen Count"
+          },
+          "held_count": {
+            "type": "integer",
+            "title": "Held Count"
+          },
+          "held_bytes": {
+            "type": "integer",
+            "title": "Held Bytes"
+          },
+          "minimum_count": {
+            "type": "integer",
+            "title": "Minimum Count"
+          },
+          "minimum_bytes": {
+            "type": "integer",
+            "title": "Minimum Bytes"
+          },
+          "minimum_cost": {
+            "type": "number",
+            "title": "Minimum Cost"
+          },
+          "savings_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Savings From"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "outcome",
+          "at"
+        ],
+        "title": "CleanupLastOutcome"
+      },
+      "CleanupPendingGroup": {
+        "properties": {
+          "group_id": {
+            "type": "string",
+            "title": "Group Id"
+          },
+          "file_count": {
+            "type": "integer",
+            "title": "File Count"
+          },
+          "byte_count": {
+            "type": "integer",
+            "title": "Byte Count"
+          },
+          "run_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run After"
+          },
+          "cancellable": {
+            "type": "boolean",
+            "title": "Cancellable"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "group_id",
+          "file_count",
+          "byte_count",
+          "run_after",
+          "cancellable"
+        ],
+        "title": "CleanupPendingGroup"
+      },
+      "CleanupTotals": {
+        "properties": {
+          "deleted_count": {
+            "type": "integer",
+            "title": "Deleted Count"
+          },
+          "deleted_bytes": {
+            "type": "integer",
+            "title": "Deleted Bytes"
+          },
+          "last_deleted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Deleted At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "deleted_count",
+          "deleted_bytes",
+          "last_deleted_at"
+        ],
+        "title": "CleanupTotals"
+      },
+      "CleanupWaiting": {
+        "properties": {
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes"
+          },
+          "first_eligible_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Eligible At"
+          },
+          "earliest_deletion_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Earliest Deletion At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "count",
+          "bytes",
+          "first_eligible_at",
+          "earliest_deletion_at"
+        ],
+        "title": "CleanupWaiting"
       },
       "CloudDeletionListing": {
         "properties": {
@@ -5038,6 +5309,316 @@
         ],
         "title": "CloudPurgeRequest"
       },
+      "CloudUsageDay": {
+        "properties": {
+          "day": {
+            "type": "string",
+            "title": "Day"
+          },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes"
+          },
+          "overhead_bytes": {
+            "type": "integer",
+            "title": "Overhead Bytes"
+          },
+          "object_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "day",
+          "bytes",
+          "overhead_bytes",
+          "object_count"
+        ],
+        "title": "CloudUsageDay"
+      },
+      "CloudUsageEstimate": {
+        "properties": {
+          "versions": {
+            "type": "integer",
+            "title": "Versions"
+          },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes"
+          },
+          "monthly_cost": {
+            "type": "number",
+            "title": "Monthly Cost"
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "pricing_effective_at": {
+            "type": "string",
+            "title": "Pricing Effective At"
+          },
+          "by_storage_class": {
+            "items": {
+              "$ref": "#/components/schemas/CloudUsageEstimateClass"
+            },
+            "type": "array",
+            "title": "By Storage Class"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "versions",
+          "bytes",
+          "monthly_cost",
+          "currency",
+          "region",
+          "pricing_effective_at",
+          "by_storage_class"
+        ],
+        "title": "CloudUsageEstimate",
+        "description": "The catalog's versions not known to be missing, by class, with a Cost Estimate from AWS list prices."
+      },
+      "CloudUsageEstimateClass": {
+        "properties": {
+          "storage_class": {
+            "type": "string",
+            "title": "Storage Class"
+          },
+          "versions": {
+            "type": "integer",
+            "title": "Versions"
+          },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes"
+          },
+          "monthly_cost": {
+            "type": "number",
+            "title": "Monthly Cost"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "storage_class",
+          "versions",
+          "bytes",
+          "monthly_cost"
+        ],
+        "title": "CloudUsageEstimateClass"
+      },
+      "CloudUsageMeasured": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "available",
+              "pending",
+              "no_data",
+              "access_denied",
+              "failed",
+              "shared_bucket",
+              "provisioning"
+            ],
+            "title": "Status",
+            "description": "available: a data point is saved. pending: not read yet. no_data, access_denied, failed: the last read's outcome, with nothing saved. shared_bucket: an older Vault on a shared bucket, never read. provisioning: the Vault Bucket is being created."
+          },
+          "last_read": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CloudUsageRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_read_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Read After",
+            "description": "When the Vault Bucket is read again: 24 hours after an ok read, 6 hours after any other outcome."
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/CloudUsageDay"
+            },
+            "type": "array",
+            "title": "History",
+            "description": "Saved daily totals, newest first."
+          },
+          "day": {
+            "type": "string",
+            "title": "Day",
+            "description": "UTC day of the newest data point."
+          },
+          "read_at": {
+            "type": "string",
+            "title": "Read At"
+          },
+          "object_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Count"
+          },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes"
+          },
+          "overhead_bytes": {
+            "type": "integer",
+            "title": "Overhead Bytes"
+          },
+          "by_storage_class": {
+            "items": {
+              "$ref": "#/components/schemas/CloudUsageMeasuredClass"
+            },
+            "type": "array",
+            "title": "By Storage Class"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "CloudUsageMeasured",
+        "description": "Daily S3 storage metrics read from CloudWatch GetMetricStatistics (#737)."
+      },
+      "CloudUsageMeasuredClass": {
+        "properties": {
+          "storage_class": {
+            "type": "string",
+            "title": "Storage Class"
+          },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes",
+            "description": "The objects' own bytes in this class."
+          },
+          "overhead_bytes": {
+            "type": "integer",
+            "title": "Overhead Bytes",
+            "description": "Bytes AWS bills on top of the objects of this class."
+          },
+          "overhead": {
+            "items": {
+              "$ref": "#/components/schemas/CloudUsageOverhead"
+            },
+            "type": "array",
+            "title": "Overhead"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "storage_class",
+          "bytes",
+          "overhead_bytes",
+          "overhead"
+        ],
+        "title": "CloudUsageMeasuredClass"
+      },
+      "CloudUsageOverhead": {
+        "properties": {
+          "storage_type": {
+            "type": "string",
+            "title": "Storage Type",
+            "description": "The CloudWatch StorageType dimension value."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "object_overhead",
+              "size_overhead",
+              "staging"
+            ],
+            "title": "Kind"
+          },
+          "billed_as": {
+            "type": "string",
+            "title": "Billed As",
+            "description": "The storage class whose price AWS applies to these bytes."
+          },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "storage_type",
+          "kind",
+          "billed_as",
+          "bytes"
+        ],
+        "title": "CloudUsageOverhead"
+      },
+      "CloudUsageRead": {
+        "properties": {
+          "attempted_at": {
+            "type": "string",
+            "title": "Attempted At"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "no_data",
+              "access_denied",
+              "failed"
+            ],
+            "title": "Outcome"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "attempted_at",
+          "outcome",
+          "error_code"
+        ],
+        "title": "CloudUsageRead"
+      },
       "DirectoryListItem": {
         "properties": {
           "last_known_states": {
@@ -5135,104 +5716,57 @@
         "description": "Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed."
       },
       "DuplicateCleanupStatus": {
-        "type": "object",
-        "additionalProperties": false,
         "properties": {
           "enabled": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Enabled"
           },
           "grace_days": {
-            "type": "number"
+            "type": "integer",
+            "title": "Grace Days"
           },
           "cap_files": {
-            "type": "number"
+            "type": "integer",
+            "title": "Cap Files"
           },
           "cap_bytes": {
-            "type": "number"
+            "type": "integer",
+            "title": "Cap Bytes"
           },
           "grace_days_min": {
-            "type": "number"
+            "type": "integer",
+            "title": "Grace Days Min"
           },
           "grace_days_max": {
-            "type": "number"
+            "type": "integer",
+            "title": "Grace Days Max"
           },
           "last_run_at": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run At"
           },
           "next_run_at": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run At"
           },
           "last_outcome": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "outcome": {
-                    "type": "string",
-                    "enum": [
-                      "scheduled",
-                      "none",
-                      "capped",
-                      "skipped"
-                    ]
-                  },
-                  "at": {
-                    "type": "string"
-                  },
-                  "file_count": {
-                    "type": "number"
-                  },
-                  "byte_count": {
-                    "type": "number"
-                  },
-                  "group_id": {
-                    "type": "string"
-                  },
-                  "run_after": {
-                    "type": "string"
-                  },
-                  "waiting_count": {
-                    "type": "number"
-                  },
-                  "waiting_bytes": {
-                    "type": "number"
-                  },
-                  "unseen_count": {
-                    "type": "number"
-                  },
-                  "held_count": {
-                    "type": "number"
-                  },
-                  "held_bytes": {
-                    "type": "number"
-                  },
-                  "minimum_count": {
-                    "type": "number"
-                  },
-                  "minimum_bytes": {
-                    "type": "number"
-                  },
-                  "minimum_cost": {
-                    "type": "number"
-                  },
-                  "savings_from": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  }
-                },
-                "required": [
-                  "outcome",
-                  "at"
-                ]
+                "$ref": "#/components/schemas/CleanupLastOutcome"
               },
               {
                 "type": "null"
@@ -5240,56 +5774,16 @@
             ]
           },
           "pending": {
-            "type": "array",
             "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "group_id": {
-                  "type": "string"
-                },
-                "file_count": {
-                  "type": "number"
-                },
-                "byte_count": {
-                  "type": "number"
-                },
-                "run_after": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "cancellable": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "group_id",
-                "file_count",
-                "byte_count",
-                "run_after",
-                "cancellable"
-              ]
-            }
+              "$ref": "#/components/schemas/CleanupPendingGroup"
+            },
+            "type": "array",
+            "title": "Pending"
           },
           "current": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "count": {
-                    "type": "number"
-                  },
-                  "bytes": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "count",
-                  "bytes"
-                ]
+                "$ref": "#/components/schemas/CleanupAmount"
               },
               {
                 "type": "null"
@@ -5299,34 +5793,7 @@
           "waiting": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "count": {
-                    "type": "number"
-                  },
-                  "bytes": {
-                    "type": "number"
-                  },
-                  "first_eligible_at": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "earliest_deletion_at": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  }
-                },
-                "required": [
-                  "count",
-                  "bytes",
-                  "first_eligible_at",
-                  "earliest_deletion_at"
-                ]
+                "$ref": "#/components/schemas/CleanupWaiting"
               },
               {
                 "type": "null"
@@ -5336,20 +5803,7 @@
           "ready": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "count": {
-                    "type": "number"
-                  },
-                  "bytes": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "count",
-                  "bytes"
-                ]
+                "$ref": "#/components/schemas/CleanupAmount"
               },
               {
                 "type": "null"
@@ -5359,20 +5813,7 @@
           "unseen": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "count": {
-                    "type": "number"
-                  },
-                  "bytes": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "count",
-                  "bytes"
-                ]
+                "$ref": "#/components/schemas/CleanupAmount"
               },
               {
                 "type": "null"
@@ -5382,27 +5823,7 @@
           "totals": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "deleted_count": {
-                    "type": "number"
-                  },
-                  "deleted_bytes": {
-                    "type": "number"
-                  },
-                  "last_deleted_at": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  }
-                },
-                "required": [
-                  "deleted_count",
-                  "deleted_bytes",
-                  "last_deleted_at"
-                ]
+                "$ref": "#/components/schemas/CleanupTotals"
               },
               {
                 "type": "null"
@@ -5411,25 +5832,13 @@
           },
           "beyond_minimum": {
             "type": "boolean",
+            "title": "Beyond Minimum",
             "description": "Schedule only duplicates beyond their Minimum Storage Duration (#731)."
           },
           "held": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "count": {
-                    "type": "number"
-                  },
-                  "bytes": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "count",
-                  "bytes"
-                ]
+                "$ref": "#/components/schemas/CleanupAmount"
               },
               {
                 "type": "null"
@@ -5458,6 +5867,8 @@
             ]
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "enabled",
           "grace_days",
@@ -5476,8 +5887,10 @@
           "totals",
           "beyond_minimum",
           "held",
-          "minimum_storage"
-        ]
+          "minimum_storage",
+          "retention_lock"
+        ],
+        "title": "DuplicateCleanupStatus"
       },
       "DuplicateCleanupUpdate": {
         "properties": {
@@ -6015,48 +6428,170 @@
         ],
         "title": "GeneralOverviewVault"
       },
-      "GeneralVaultReconnectResponse": {
-        "additionalProperties": true,
+      "GeneralVault": {
         "properties": {
-          "full_scan_required": {
-            "type": "boolean"
+          "id": {
+            "type": "integer",
+            "title": "Id"
           },
-          "reconnect_state": {
-            "enum": [
-              "scan_required",
-              "ready"
-            ],
-            "type": "string"
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
           },
           "source_root": {
-            "type": "string"
+            "type": "string",
+            "title": "Source Root"
           },
-          "vault_id": {
-            "type": "number"
+          "s3_bucket": {
+            "type": "string",
+            "title": "S3 Bucket"
+          },
+          "s3_region": {
+            "type": "string",
+            "title": "S3 Region"
+          },
+          "s3_prefix": {
+            "type": "string",
+            "title": "S3 Prefix"
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "provisioning",
+              "active",
+              "reconnect_required",
+              "stopping",
+              "tombstone"
+            ],
+            "title": "Lifecycle"
+          },
+          "paused": {
+            "type": "boolean",
+            "title": "Paused"
+          },
+          "root_released_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Root Released At"
+          },
+          "dedicated_bucket": {
+            "type": "boolean",
+            "title": "Dedicated Bucket"
+          },
+          "retention_lock_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retention Lock Days"
+          },
+          "vault_deletion_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "running",
+                  "failed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vault Deletion Status"
+          },
+          "bucket_provisioning": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VaultBucketStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "uuid",
+          "name",
+          "source_root",
+          "s3_bucket",
+          "s3_region",
+          "s3_prefix",
+          "lifecycle",
+          "paused",
+          "root_released_at",
+          "dedicated_bucket",
+          "retention_lock_days",
+          "vault_deletion_status",
+          "bucket_provisioning"
+        ],
+        "title": "GeneralVault"
+      },
+      "GeneralVaultReconnectResponse": {
+        "properties": {
+          "vault_id": {
+            "type": "integer",
+            "title": "Vault Id"
+          },
+          "source_root": {
+            "type": "string",
+            "title": "Source Root"
+          },
+          "reconnect_state": {
+            "type": "string",
+            "const": "reconnect_required",
+            "title": "Reconnect State"
+          },
+          "full_scan_required": {
+            "type": "boolean",
+            "title": "Full Scan Required"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "vault_id",
           "source_root",
           "reconnect_state",
           "full_scan_required"
         ],
-        "type": "object"
+        "title": "GeneralVaultReconnectResponse"
       },
       "GeneralVaultsResponse": {
-        "additionalProperties": true,
         "properties": {
           "items": {
             "items": {
               "$ref": "#/components/schemas/GeneralVault"
             },
-            "type": "array"
+            "type": "array",
+            "title": "Items"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "items"
         ],
-        "type": "object"
+        "title": "GeneralVaultsResponse"
       },
       "GlobPreviewRequest": {
         "properties": {
@@ -7142,127 +7677,247 @@
         ],
         "title": "MetadataRestoreNotice"
       },
-      "MinimumStorageSummary": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "Minimum Storage Duration of a Vault's versions (#731): a Cost Estimate from AWS list prices.",
+      "MinimumStorageClass": {
         "properties": {
-          "vault_id": {
-            "type": "number"
+          "storage_class": {
+            "type": "string",
+            "title": "Storage Class"
           },
-          "by_storage_class": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "storage_class": {
-                  "type": "string"
-                },
-                "minimum_days": {
-                  "type": "number"
-                },
-                "within": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "count": {
-                      "type": "number"
-                    },
-                    "bytes": {
-                      "type": "number"
-                    }
-                  },
-                  "required": [
-                    "count",
-                    "bytes"
-                  ],
-                  "description": "Versions still within the Minimum Storage Duration."
-                },
-                "beyond": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "count": {
-                      "type": "number"
-                    },
-                    "bytes": {
-                      "type": "number"
-                    }
-                  },
-                  "required": [
-                    "count",
-                    "bytes"
-                  ],
-                  "description": "Versions beyond it, or in a class without one."
-                },
-                "remaining_cost": {
-                  "type": "number"
-                },
-                "estimated_count": {
-                  "type": "number"
-                }
-              },
-              "required": [
-                "storage_class",
-                "minimum_days",
-                "within",
-                "beyond",
-                "remaining_cost",
-                "estimated_count"
-              ]
-            }
+          "minimum_days": {
+            "type": "integer",
+            "title": "Minimum Days"
+          },
+          "within": {
+            "$ref": "#/components/schemas/MinimumStorageVersions",
+            "description": "Versions still within the Minimum Storage Duration."
+          },
+          "beyond": {
+            "$ref": "#/components/schemas/MinimumStorageVersions",
+            "description": "Versions beyond it, or in a class without one."
           },
           "remaining_cost": {
-            "type": "number"
-          },
-          "releases": {
-            "type": "array",
-            "description": "Month by month (YYYY-MM, UTC), the versions whose Minimum Storage Duration ends.",
-            "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "month": {
-                  "type": "string"
-                },
-                "count": {
-                  "type": "number"
-                },
-                "bytes": {
-                  "type": "number"
-                }
-              },
-              "required": [
-                "month",
-                "count",
-                "bytes"
-              ]
-            }
+            "type": "number",
+            "title": "Remaining Cost"
           },
           "estimated_count": {
+            "type": "integer",
+            "title": "Estimated Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "storage_class",
+          "minimum_days",
+          "within",
+          "beyond",
+          "remaining_cost",
+          "estimated_count"
+        ],
+        "title": "MinimumStorageClass"
+      },
+      "MinimumStorageDeletion": {
+        "properties": {
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes"
+          },
+          "remaining_cost": {
             "type": "number",
+            "title": "Remaining Cost"
+          },
+          "savings_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Savings From",
+            "description": "When the last Minimum Storage Duration of these files ends: deleting from then saves."
+          },
+          "estimated_count": {
+            "type": "integer",
+            "title": "Estimated Count",
+            "description": "How many of them have an estimated Class Entry."
+          },
+          "by_storage_class": {
+            "items": {
+              "$ref": "#/components/schemas/MinimumStorageDeletionClass"
+            },
+            "type": "array",
+            "title": "By Storage Class"
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency"
+          },
+          "pricing_effective_at": {
+            "type": "string",
+            "title": "Pricing Effective At"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "disclaimer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disclaimer"
+          },
+          "evaluated_at": {
+            "type": "string",
+            "title": "Evaluated At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "count",
+          "bytes",
+          "remaining_cost",
+          "savings_from",
+          "estimated_count",
+          "by_storage_class",
+          "currency",
+          "pricing_effective_at",
+          "region",
+          "disclaimer",
+          "evaluated_at"
+        ],
+        "title": "MinimumStorageDeletion",
+        "description": "Files of a deletion still within their Minimum Storage Duration when it executes, and what deleting them then still bills: a Cost Estimate from AWS list prices (#731)."
+      },
+      "MinimumStorageDeletionClass": {
+        "properties": {
+          "storage_class": {
+            "type": "string",
+            "title": "Storage Class"
+          },
+          "minimum_days": {
+            "type": "integer",
+            "title": "Minimum Days"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes"
+          },
+          "remaining_cost": {
+            "type": "number",
+            "title": "Remaining Cost"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "storage_class",
+          "minimum_days",
+          "count",
+          "bytes",
+          "remaining_cost"
+        ],
+        "title": "MinimumStorageDeletionClass"
+      },
+      "MinimumStorageRelease": {
+        "properties": {
+          "month": {
+            "type": "string",
+            "title": "Month"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "month",
+          "count",
+          "bytes"
+        ],
+        "title": "MinimumStorageRelease"
+      },
+      "MinimumStorageSummary": {
+        "properties": {
+          "vault_id": {
+            "type": "integer",
+            "title": "Vault Id"
+          },
+          "by_storage_class": {
+            "items": {
+              "$ref": "#/components/schemas/MinimumStorageClass"
+            },
+            "type": "array",
+            "title": "By Storage Class"
+          },
+          "remaining_cost": {
+            "type": "number",
+            "title": "Remaining Cost"
+          },
+          "releases": {
+            "items": {
+              "$ref": "#/components/schemas/MinimumStorageRelease"
+            },
+            "type": "array",
+            "title": "Releases",
+            "description": "Month by month (YYYY-MM, UTC), the versions whose Minimum Storage Duration ends."
+          },
+          "estimated_count": {
+            "type": "integer",
+            "title": "Estimated Count",
             "description": "Versions with a minimum whose Class Entry is estimated from the Storage Plan."
           },
           "currency": {
-            "type": "string"
+            "type": "string",
+            "title": "Currency"
           },
           "pricing_effective_at": {
-            "type": "string"
+            "type": "string",
+            "title": "Pricing Effective At"
           },
           "region": {
-            "type": "string"
+            "type": "string",
+            "title": "Region"
           },
           "disclaimer": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disclaimer"
           },
           "evaluated_at": {
-            "type": "string"
+            "type": "string",
+            "title": "Evaluated At"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "vault_id",
           "by_storage_class",
@@ -7272,206 +7927,100 @@
           "currency",
           "pricing_effective_at",
           "region",
+          "disclaimer",
           "evaluated_at"
-        ]
+        ],
+        "title": "MinimumStorageSummary",
+        "description": "Minimum Storage Duration of a Vault's versions (#731): a Cost Estimate from AWS list prices."
+      },
+      "MinimumStorageVersions": {
+        "properties": {
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "count",
+          "bytes"
+        ],
+        "title": "MinimumStorageVersions"
       },
       "MirrorCleanupStatus": {
-        "type": "object",
-        "additionalProperties": false,
         "properties": {
           "enabled": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Enabled"
           },
           "grace_days": {
-            "type": "number"
+            "type": "integer",
+            "title": "Grace Days"
           },
           "cap_files": {
-            "type": "number"
+            "type": "integer",
+            "title": "Cap Files"
           },
           "cap_bytes": {
-            "type": "number"
-          },
-          "folders": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
+            "type": "integer",
+            "title": "Cap Bytes"
           },
           "grace_days_min": {
-            "type": "number"
+            "type": "integer",
+            "title": "Grace Days Min"
           },
           "grace_days_max": {
-            "type": "number"
+            "type": "integer",
+            "title": "Grace Days Max"
           },
           "last_run_at": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run At"
           },
           "next_run_at": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run At"
           },
           "last_outcome": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "outcome": {
-                    "type": "string",
-                    "enum": [
-                      "scheduled",
-                      "none",
-                      "capped",
-                      "skipped"
-                    ]
-                  },
-                  "at": {
-                    "type": "string"
-                  },
-                  "file_count": {
-                    "type": "number"
-                  },
-                  "byte_count": {
-                    "type": "number"
-                  },
-                  "group_id": {
-                    "type": "string"
-                  },
-                  "run_after": {
-                    "type": "string"
-                  },
-                  "waiting_count": {
-                    "type": "number"
-                  },
-                  "waiting_bytes": {
-                    "type": "number"
-                  },
-                  "unseen_count": {
-                    "type": "number"
-                  },
-                  "held_count": {
-                    "type": "number"
-                  },
-                  "held_bytes": {
-                    "type": "number"
-                  },
-                  "minimum_count": {
-                    "type": "number"
-                  },
-                  "minimum_bytes": {
-                    "type": "number"
-                  },
-                  "minimum_cost": {
-                    "type": "number"
-                  },
-                  "savings_from": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  }
-                },
-                "required": [
-                  "outcome",
-                  "at"
-                ]
+                "$ref": "#/components/schemas/CleanupLastOutcome"
               },
               {
                 "type": "null"
               }
             ]
           },
-          "cloud_life": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "days_after_disappearance": {
-                "type": "number"
-              },
-              "storage_class": {
-                "type": "string"
-              },
-              "class_from_day": {
-                "type": "number"
-              },
-              "minimum_days": {
-                "type": "number"
-              },
-              "minimum_until_day": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "beyond_minimum": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "days_after_disappearance",
-              "storage_class",
-              "class_from_day",
-              "minimum_days",
-              "minimum_until_day",
-              "beyond_minimum"
-            ]
-          },
           "pending": {
-            "type": "array",
             "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "group_id": {
-                  "type": "string"
-                },
-                "file_count": {
-                  "type": "number"
-                },
-                "byte_count": {
-                  "type": "number"
-                },
-                "run_after": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "cancellable": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "group_id",
-                "file_count",
-                "byte_count",
-                "run_after",
-                "cancellable"
-              ]
-            }
+              "$ref": "#/components/schemas/CleanupPendingGroup"
+            },
+            "type": "array",
+            "title": "Pending"
           },
           "current": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "count": {
-                    "type": "number"
-                  },
-                  "bytes": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "count",
-                  "bytes"
-                ]
+                "$ref": "#/components/schemas/CleanupAmount"
               },
               {
                 "type": "null"
@@ -7481,34 +8030,7 @@
           "waiting": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "count": {
-                    "type": "number"
-                  },
-                  "bytes": {
-                    "type": "number"
-                  },
-                  "first_eligible_at": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "earliest_deletion_at": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  }
-                },
-                "required": [
-                  "count",
-                  "bytes",
-                  "first_eligible_at",
-                  "earliest_deletion_at"
-                ]
+                "$ref": "#/components/schemas/CleanupWaiting"
               },
               {
                 "type": "null"
@@ -7518,20 +8040,7 @@
           "ready": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "count": {
-                    "type": "number"
-                  },
-                  "bytes": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "count",
-                  "bytes"
-                ]
+                "$ref": "#/components/schemas/CleanupAmount"
               },
               {
                 "type": "null"
@@ -7541,20 +8050,7 @@
           "unseen": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "count": {
-                    "type": "number"
-                  },
-                  "bytes": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "count",
-                  "bytes"
-                ]
+                "$ref": "#/components/schemas/CleanupAmount"
               },
               {
                 "type": "null"
@@ -7564,27 +8060,7 @@
           "totals": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "deleted_count": {
-                    "type": "number"
-                  },
-                  "deleted_bytes": {
-                    "type": "number"
-                  },
-                  "last_deleted_at": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  }
-                },
-                "required": [
-                  "deleted_count",
-                  "deleted_bytes",
-                  "last_deleted_at"
-                ]
+                "$ref": "#/components/schemas/CleanupTotals"
               },
               {
                 "type": "null"
@@ -7593,25 +8069,13 @@
           },
           "beyond_minimum": {
             "type": "boolean",
+            "title": "Beyond Minimum",
             "description": "Schedule only duplicates beyond their Minimum Storage Duration (#731)."
           },
           "held": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "count": {
-                    "type": "number"
-                  },
-                  "bytes": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "count",
-                  "bytes"
-                ]
+                "$ref": "#/components/schemas/CleanupAmount"
               },
               {
                 "type": "null"
@@ -7638,20 +8102,30 @@
                 "type": "null"
               }
             ]
+          },
+          "folders": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Folders"
+          },
+          "cloud_life": {
+            "$ref": "#/components/schemas/MirrorCloudLife"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "enabled",
           "grace_days",
           "cap_files",
           "cap_bytes",
-          "folders",
           "grace_days_min",
           "grace_days_max",
           "last_run_at",
           "next_run_at",
           "last_outcome",
-          "cloud_life",
           "pending",
           "current",
           "waiting",
@@ -7660,8 +8134,12 @@
           "totals",
           "beyond_minimum",
           "held",
-          "minimum_storage"
-        ]
+          "minimum_storage",
+          "retention_lock",
+          "folders",
+          "cloud_life"
+        ],
+        "title": "MirrorCleanupStatus"
       },
       "MirrorCleanupUpdate": {
         "properties": {
@@ -7746,6 +8224,52 @@
         "type": "object",
         "title": "MirrorCleanupUpdate",
         "description": "Mirror Cleanup settings of one Vault (#771); omitted fields keep their value."
+      },
+      "MirrorCloudLife": {
+        "properties": {
+          "days_after_disappearance": {
+            "type": "integer",
+            "title": "Days After Disappearance"
+          },
+          "storage_class": {
+            "type": "string",
+            "title": "Storage Class"
+          },
+          "class_from_day": {
+            "type": "integer",
+            "title": "Class From Day"
+          },
+          "minimum_days": {
+            "type": "integer",
+            "title": "Minimum Days"
+          },
+          "minimum_until_day": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimum Until Day"
+          },
+          "beyond_minimum": {
+            "type": "boolean",
+            "title": "Beyond Minimum"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "days_after_disappearance",
+          "storage_class",
+          "class_from_day",
+          "minimum_days",
+          "minimum_until_day",
+          "beyond_minimum"
+        ],
+        "title": "MirrorCloudLife"
       },
       "NotificationItem": {
         "properties": {
@@ -8506,93 +9030,188 @@
         ],
         "title": "RecoverySelectionItem"
       },
-      "RetentionLockStatus": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "A Vault's Governance Retention Lock, fixed at creation (#736), and the superseded versions it holds back until their RetainUntilDate.",
+      "RetainedVersions": {
         "properties": {
-          "vault_id": {
-            "type": "number"
+          "count": {
+            "type": "integer",
+            "title": "Count"
           },
+          "bytes": {
+            "type": "integer",
+            "title": "Bytes"
+          },
+          "deletable_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deletable From"
+          },
+          "deletable_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deletable Until"
+          },
+          "failed_count": {
+            "type": "integer",
+            "title": "Failed Count",
+            "description": "Retained Versions whose last deletion failed (#749)."
+          },
+          "failed_attempts": {
+            "type": "integer",
+            "title": "Failed Attempts",
+            "description": "The most consecutive failed deletions of one of them."
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error",
+            "description": "The S3 error code of the most recent failure."
+          },
+          "last_attempt_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Attempt At"
+          },
+          "next_attempt_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "count",
+          "bytes",
+          "deletable_from",
+          "deletable_until",
+          "failed_count",
+          "failed_attempts",
+          "last_error",
+          "last_attempt_at",
+          "next_attempt_at"
+        ],
+        "title": "RetainedVersions"
+      },
+      "RetentionLockPreview": {
+        "properties": {
           "days": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "type": "integer",
+            "title": "Days"
           },
           "mode": {
-            "type": [
-              "string",
-              "null"
+            "type": "string",
+            "const": "GOVERNANCE",
+            "title": "Mode"
+          },
+          "locked_count": {
+            "type": "integer",
+            "title": "Locked Count"
+          },
+          "locked_bytes": {
+            "type": "integer",
+            "title": "Locked Bytes"
+          },
+          "locked_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "enum": [
-              "GOVERNANCE",
-              null
-            ]
+            "title": "Locked From",
+            "description": "When the first of them can be deleted."
+          },
+          "locked_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked Until",
+            "description": "When the last of them can be deleted."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "days",
+          "mode",
+          "locked_count",
+          "locked_bytes",
+          "locked_from",
+          "locked_until"
+        ],
+        "title": "RetentionLockPreview",
+        "description": "Files of a deletion a Governance Retention Lock still holds when it executes (#736). Dates are estimates: each version's creation plus the bucket default days. They are deleted from that date, never earlier."
+      },
+      "RetentionLockStatus": {
+        "properties": {
+          "vault_id": {
+            "type": "integer",
+            "title": "Vault Id"
+          },
+          "days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "GOVERNANCE"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
           },
           "retained": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "count": {
-                    "type": "number"
-                  },
-                  "bytes": {
-                    "type": "number"
-                  },
-                  "deletable_from": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "deletable_until": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "failed_count": {
-                    "type": "number",
-                    "description": "Retained Versions whose last deletion failed (#749)."
-                  },
-                  "failed_attempts": {
-                    "type": "number",
-                    "description": "The most consecutive failed deletions of one of them."
-                  },
-                  "last_error": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "description": "The S3 error code of the most recent failure."
-                  },
-                  "last_attempt_at": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "next_attempt_at": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  }
-                },
-                "required": [
-                  "count",
-                  "bytes",
-                  "deletable_from",
-                  "deletable_until",
-                  "failed_count",
-                  "failed_attempts",
-                  "last_error",
-                  "last_attempt_at",
-                  "next_attempt_at"
-                ]
+                "$ref": "#/components/schemas/RetainedVersions"
               },
               {
                 "type": "null"
@@ -8600,12 +9219,16 @@
             ]
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "vault_id",
           "days",
           "mode",
           "retained"
-        ]
+        ],
+        "title": "RetentionLockStatus",
+        "description": "A Vault's Governance Retention Lock, fixed at creation (#736), and the superseded versions it holds back until their RetainUntilDate."
       },
       "RetryFailedUploadsResponse": {
         "type": "object",
@@ -8737,42 +9360,166 @@
         "title": "SourceDeviceReads"
       },
       "SourceDirectoryBrowseResponse": {
-        "additionalProperties": true,
         "properties": {
+          "volume_alias": {
+            "type": "string",
+            "title": "Volume Alias"
+          },
+          "relative_path": {
+            "type": "string",
+            "title": "Relative Path"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/SourceDirectoryEntry"
             },
-            "type": "array"
-          },
-          "relative_path": {
-            "type": "string"
-          },
-          "volume_alias": {
-            "type": "string"
+            "type": "array",
+            "title": "Items"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "volume_alias",
           "relative_path",
           "items"
         ],
-        "type": "object"
+        "title": "SourceDirectoryBrowseResponse"
+      },
+      "SourceDirectoryEntry": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "relative_path": {
+            "type": "string",
+            "title": "Relative Path"
+          },
+          "navigable": {
+            "type": "boolean",
+            "title": "Navigable"
+          },
+          "selectable": {
+            "type": "boolean",
+            "title": "Selectable"
+          },
+          "occupation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceDirectoryOccupation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "relative_path",
+          "navigable",
+          "selectable",
+          "occupation"
+        ],
+        "title": "SourceDirectoryEntry"
+      },
+      "SourceDirectoryOccupation": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "vault",
+            "title": "Kind"
+          },
+          "vault_name": {
+            "type": "string",
+            "title": "Vault Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "vault_name"
+        ],
+        "title": "SourceDirectoryOccupation"
+      },
+      "SourceVolumeInventoryItem": {
+        "properties": {
+          "alias": {
+            "type": "string",
+            "title": "Alias"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "access": {
+            "type": "string",
+            "title": "Access"
+          },
+          "health": {
+            "type": "string",
+            "title": "Health"
+          },
+          "vault_count": {
+            "type": "integer",
+            "title": "Vault Count"
+          },
+          "diagnostic": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diagnostic"
+          },
+          "diagnostic_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diagnostic Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "alias",
+          "path",
+          "access",
+          "health",
+          "vault_count",
+          "diagnostic",
+          "diagnostic_code"
+        ],
+        "title": "SourceVolumeInventoryItem"
       },
       "SourceVolumeInventoryResponse": {
-        "additionalProperties": true,
         "properties": {
           "items": {
             "items": {
               "$ref": "#/components/schemas/SourceVolumeInventoryItem"
             },
-            "type": "array"
+            "type": "array",
+            "title": "Items"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "items"
         ],
-        "type": "object"
+        "title": "SourceVolumeInventoryResponse"
       },
       "StatsResponse": {
         "properties": {
@@ -8861,6 +9608,37 @@
         ],
         "title": "StatsSourceVolume"
       },
+      "StopProtectionJob": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "pending_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Until"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "pending_until"
+        ],
+        "title": "StopProtectionJob"
+      },
       "StopProtectionRequest": {
         "properties": {
           "cloud_disposition": {
@@ -8891,72 +9669,71 @@
         "title": "StopProtectionRequest"
       },
       "StopProtectionStatus": {
-        "type": "object",
-        "additionalProperties": false,
         "properties": {
           "vault_id": {
-            "type": "number"
+            "type": "integer",
+            "title": "Vault Id"
           },
           "vault_name": {
-            "type": "string"
+            "type": "string",
+            "title": "Vault Name"
           },
           "stopped": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Stopped"
           },
           "root_released": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Root Released"
           },
           "cloud_disposition": {
             "type": "string",
             "enum": [
               "keep",
               "delete"
-            ]
+            ],
+            "title": "Cloud Disposition"
           },
           "group_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Id"
           },
           "cancellable": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Cancellable"
           },
           "pending_until": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Until"
           },
           "local_files_blocking_cloud_delete": {
-            "type": "number"
+            "type": "integer",
+            "title": "Local Files Blocking Cloud Delete"
           },
           "jobs": {
-            "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "number"
-                },
-                "status": {
-                  "type": "string"
-                },
-                "pending_until": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                }
-              },
-              "required": [
-                "id",
-                "status",
-                "pending_until"
-              ]
-            }
+              "$ref": "#/components/schemas/StopProtectionJob"
+            },
+            "type": "array",
+            "title": "Jobs"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "vault_id",
           "vault_name",
@@ -8966,9 +9743,10 @@
           "group_id",
           "cancellable",
           "pending_until",
-          "jobs",
-          "local_files_blocking_cloud_delete"
-        ]
+          "local_files_blocking_cloud_delete",
+          "jobs"
+        ],
+        "title": "StopProtectionStatus"
       },
       "StorageEstimateRequest": {
         "properties": {
@@ -9595,9 +10373,6 @@
         "title": "ValidationError"
       },
       "VaultBilledCost": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "A Vault's Billed Cost from the billing export (#738), a block of its cloud usage next to the Cost Estimate (#737).",
         "properties": {
           "state": {
             "type": "string",
@@ -9609,170 +10384,170 @@
               "ok",
               "error"
             ],
+            "title": "State",
             "description": "unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code)."
           },
           "bucket": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Bucket",
             "description": "The System Bucket the export is delivered to."
           },
           "prefix": {
             "type": "string",
+            "title": "Prefix",
             "description": "The S3 path prefix of the export in the System Bucket."
           },
           "checked_at": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked At"
           },
           "next_check_at": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Check At"
           },
           "read_at": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Read At",
             "description": "When FrostVault last read the export (only when ok)."
           },
           "exported_at": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Exported At",
             "description": "When AWS delivered the newest manifest that was read."
           },
           "data_through": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Data Through",
             "description": "The newest usage end in the export, never after exported_at."
           },
           "currency": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Currency",
             "description": "The billing currency (ISO 4217)."
           },
           "stale": {
             "type": "boolean",
+            "title": "Stale",
             "description": "ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd."
           },
           "error_code": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "s3_unreachable",
+                  "s3_throttled",
+                  "s3_server_error",
+                  "credentials",
+                  "access_denied",
+                  "s3_refused",
+                  "parquet",
+                  "missing_column",
+                  "not_gzip_csv",
+                  "short_row",
+                  "cost_not_number",
+                  "currency_missing",
+                  "mixed_currencies",
+                  "manifest_invalid",
+                  "manifest_too_large",
+                  "manifest_foreign_bucket",
+                  "manifest_outside_folder",
+                  "no_data_files",
+                  "internal"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ],
-            "enum": [
-              "s3_unreachable",
-              "s3_throttled",
-              "s3_server_error",
-              "credentials",
-              "access_denied",
-              "s3_refused",
-              "parquet",
-              "missing_column",
-              "not_gzip_csv",
-              "short_row",
-              "cost_not_number",
-              "currency_missing",
-              "mixed_currencies",
-              "manifest_invalid",
-              "manifest_too_large",
-              "manifest_foreign_bucket",
-              "manifest_outside_folder",
-              "no_data_files",
-              "internal",
-              null
-            ],
+            "title": "Error Code",
             "description": "Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day."
           },
           "error_detail": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Error Detail",
             "description": "An S3 action and AWS error code, column or currency names: never a provider message."
           },
           "vault_id": {
-            "type": "number"
+            "type": "integer",
+            "title": "Vault Id"
           },
           "vault_bucket": {
-            "type": "string"
+            "type": "string",
+            "title": "Vault Bucket"
           },
           "shared": {
             "type": "boolean",
+            "title": "Shared",
             "description": "The Vault is in a shared bucket: it has no Billed Cost of its own and periods is empty; the bucket is an installation row of GET /api/billing-export."
           },
           "periods": {
-            "type": "array",
-            "description": "Newest first; empty unless state is ok, and for a shared bucket.",
             "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "period": {
-                  "type": "string",
-                  "description": "YYYY-MM"
-                },
-                "total": {
-                  "type": "number"
-                },
-                "categories": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "description": "Billed amounts by category, in the billing currency; every category is present.",
-                  "properties": {
-                    "storage": {
-                      "type": "number"
-                    },
-                    "requests": {
-                      "type": "number"
-                    },
-                    "transitions": {
-                      "type": "number"
-                    },
-                    "retrievals": {
-                      "type": "number"
-                    },
-                    "data_transfer": {
-                      "type": "number"
-                    },
-                    "other": {
-                      "type": "number"
-                    },
-                    "credits": {
-                      "type": "number",
-                      "description": "Credits, refunds and discounts of the bucket (negative)."
-                    }
-                  },
-                  "required": [
-                    "storage",
-                    "requests",
-                    "transitions",
-                    "retrievals",
-                    "data_transfer",
-                    "other",
-                    "credits"
-                  ]
-                }
-              },
-              "required": [
-                "period",
-                "total",
-                "categories"
-              ]
-            }
+              "$ref": "#/components/schemas/VaultBilledPeriod"
+            },
+            "type": "array",
+            "title": "Periods",
+            "description": "Newest first; empty unless state is ok, and for a shared bucket."
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "state",
           "bucket",
@@ -9790,24 +10565,51 @@
           "vault_bucket",
           "shared",
           "periods"
-        ]
+        ],
+        "title": "VaultBilledCost",
+        "description": "A Vault's Billed Cost from the billing export (#738), a block of its cloud usage next to the Cost Estimate (#737)."
+      },
+      "VaultBilledPeriod": {
+        "properties": {
+          "period": {
+            "type": "string",
+            "title": "Period",
+            "description": "YYYY-MM"
+          },
+          "total": {
+            "type": "number",
+            "title": "Total"
+          },
+          "categories": {
+            "$ref": "#/components/schemas/BilledCategories"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "period",
+          "total",
+          "categories"
+        ],
+        "title": "VaultBilledPeriod"
       },
       "VaultBucketStatus": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation: creating, failed, or settling (verified, active at active_at, 15 minutes after the verification).",
         "properties": {
           "vault_id": {
-            "type": "number"
+            "type": "integer",
+            "title": "Vault Id"
           },
           "bucket": {
-            "type": "string"
+            "type": "string",
+            "title": "Bucket"
           },
           "region": {
-            "type": "string"
+            "type": "string",
+            "title": "Region"
           },
           "dedicated": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Dedicated"
           },
           "state": {
             "type": "string",
@@ -9816,57 +10618,90 @@
               "failed",
               "settling",
               "ready"
-            ]
+            ],
+            "title": "State"
           },
           "stage": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "reserved",
+                  "created",
+                  "configured",
+                  "verified"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ],
-            "enum": [
-              "reserved",
-              "created",
-              "configured",
-              "verified",
-              null
-            ]
+            "title": "Stage"
           },
           "attempts": {
-            "type": "number"
+            "type": "integer",
+            "title": "Attempts"
           },
           "last_attempt_at": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Attempt At"
           },
           "error": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
           },
           "retention_lock_days": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retention Lock Days"
           },
           "active_at": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Active At",
             "description": "When a verified bucket's Vault becomes active (settling only)."
           },
           "active_in_seconds": {
-            "type": [
-              "number",
-              "null"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Active In Seconds",
             "description": "Seconds until active_at, never negative (settling only)."
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "vault_id",
           "bucket",
@@ -9880,262 +10715,37 @@
           "retention_lock_days",
           "active_at",
           "active_in_seconds"
-        ]
+        ],
+        "title": "VaultBucketStatus",
+        "description": "A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation: creating, failed, or settling (verified, active at active_at, 15 minutes after the verification)."
       },
       "VaultCloudUsage": {
-        "type": "object",
-        "additionalProperties": false,
         "properties": {
           "vault_id": {
-            "type": "number"
+            "type": "integer",
+            "title": "Vault Id"
           },
           "bucket": {
-            "type": "string"
+            "type": "string",
+            "title": "Bucket"
           },
           "region": {
-            "type": "string"
+            "type": "string",
+            "title": "Region"
           },
           "dedicated_bucket": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Dedicated Bucket"
           },
           "estimate": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "versions": {
-                "type": "number"
-              },
-              "bytes": {
-                "type": "number"
-              },
-              "monthly_cost": {
-                "type": "number"
-              },
-              "currency": {
-                "type": "string"
-              },
-              "region": {
-                "type": "string"
-              },
-              "pricing_effective_at": {
-                "type": "string"
-              },
-              "by_storage_class": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "storage_class": {
-                      "type": "string"
-                    },
-                    "versions": {
-                      "type": "number"
-                    },
-                    "bytes": {
-                      "type": "number"
-                    },
-                    "monthly_cost": {
-                      "type": "number"
-                    }
-                  },
-                  "required": [
-                    "storage_class",
-                    "versions",
-                    "bytes",
-                    "monthly_cost"
-                  ]
-                }
-              }
-            },
-            "required": [
-              "versions",
-              "bytes",
-              "monthly_cost",
-              "currency",
-              "region",
-              "pricing_effective_at",
-              "by_storage_class"
-            ],
-            "description": "The catalog's versions not known to be missing, by class, with a Cost Estimate from AWS list prices."
+            "$ref": "#/components/schemas/CloudUsageEstimate"
           },
           "measured": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "status": {
-                "type": "string",
-                "enum": [
-                  "available",
-                  "pending",
-                  "no_data",
-                  "access_denied",
-                  "failed",
-                  "shared_bucket",
-                  "provisioning"
-                ],
-                "description": "available: a data point is saved. pending: not read yet. no_data, access_denied, failed: the last read's outcome, with nothing saved. shared_bucket: an older Vault on a shared bucket, never read. provisioning: the Vault Bucket is being created."
-              },
-              "last_read": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                      "attempted_at": {
-                        "type": "string"
-                      },
-                      "outcome": {
-                        "type": "string",
-                        "enum": [
-                          "ok",
-                          "no_data",
-                          "access_denied",
-                          "failed"
-                        ]
-                      },
-                      "error_code": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
-                      }
-                    },
-                    "required": [
-                      "attempted_at",
-                      "outcome",
-                      "error_code"
-                    ]
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "next_read_after": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "description": "When the Vault Bucket is read again: 24 hours after an ok read, 6 hours after any other outcome."
-              },
-              "history": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "day": {
-                      "type": "string"
-                    },
-                    "bytes": {
-                      "type": "number"
-                    },
-                    "overhead_bytes": {
-                      "type": "number"
-                    },
-                    "object_count": {
-                      "type": [
-                        "number",
-                        "null"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "day",
-                    "bytes",
-                    "overhead_bytes",
-                    "object_count"
-                  ]
-                },
-                "description": "Saved daily totals, newest first."
-              },
-              "day": {
-                "type": "string",
-                "description": "UTC day of the newest data point."
-              },
-              "read_at": {
-                "type": "string"
-              },
-              "object_count": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "bytes": {
-                "type": "number"
-              },
-              "overhead_bytes": {
-                "type": "number"
-              },
-              "by_storage_class": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "storage_class": {
-                      "type": "string"
-                    },
-                    "bytes": {
-                      "type": "number",
-                      "description": "The objects' own bytes in this class."
-                    },
-                    "overhead_bytes": {
-                      "type": "number",
-                      "description": "Bytes AWS bills on top of the objects of this class."
-                    },
-                    "overhead": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {
-                          "storage_type": {
-                            "type": "string",
-                            "description": "The CloudWatch StorageType dimension value."
-                          },
-                          "kind": {
-                            "type": "string",
-                            "enum": [
-                              "object_overhead",
-                              "size_overhead",
-                              "staging"
-                            ]
-                          },
-                          "billed_as": {
-                            "type": "string",
-                            "description": "The storage class whose price AWS applies to these bytes."
-                          },
-                          "bytes": {
-                            "type": "number"
-                          }
-                        },
-                        "required": [
-                          "storage_type",
-                          "kind",
-                          "billed_as",
-                          "bytes"
-                        ]
-                      }
-                    }
-                  },
-                  "required": [
-                    "storage_class",
-                    "bytes",
-                    "overhead_bytes",
-                    "overhead"
-                  ]
-                }
-              }
-            },
-            "required": [
-              "status"
-            ],
-            "description": "Daily S3 storage metrics read from CloudWatch GetMetricStatistics (#737)."
+            "$ref": "#/components/schemas/CloudUsageMeasured"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "vault_id",
           "bucket",
@@ -10144,168 +10754,218 @@
           "estimate",
           "measured"
         ],
+        "title": "VaultCloudUsage",
         "description": "A Vault's cloud usage (#737): the catalog's Cost Estimate next to the CloudWatch sizes of its Vault Bucket."
       },
       "VaultCreateResponse": {
-        "additionalProperties": false,
         "properties": {
-          "creation_mode": {
-            "$ref": "#/components/schemas/VaultCreationMode"
-          },
           "id": {
-            "type": "number"
-          },
-          "name": {
-            "type": "string"
+            "type": "integer",
+            "title": "Id"
           },
           "uuid": {
-            "type": "string"
+            "type": "string",
+            "title": "Uuid"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "creation_mode": {
+            "$ref": "#/components/schemas/VaultCreationMode"
           },
           "lifecycle": {
             "type": "string",
             "enum": [
               "provisioning",
               "active"
-            ]
+            ],
+            "title": "Lifecycle"
           },
           "bucket": {
             "$ref": "#/components/schemas/VaultBucketStatus"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "id",
           "uuid",
           "name",
+          "creation_mode",
           "lifecycle",
           "bucket"
         ],
-        "type": "object"
+        "title": "VaultCreateResponse"
       },
       "VaultCreationCancelled": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "A cancelled Vault creation (#735). The Vault left the catalog; a bucket already created is not deleted: bucket_left says whether it was created (created) or an attempt may have reached AWS (possible).",
         "properties": {
           "vault_id": {
-            "type": "number"
+            "type": "integer",
+            "title": "Vault Id"
           },
           "vault_name": {
-            "type": "string"
+            "type": "string",
+            "title": "Vault Name"
           },
           "bucket": {
-            "type": "string"
+            "type": "string",
+            "title": "Bucket"
           },
           "region": {
-            "type": "string"
+            "type": "string",
+            "title": "Region"
           },
           "bucket_left": {
             "type": "string",
             "enum": [
               "created",
               "possible"
-            ]
+            ],
+            "title": "Bucket Left"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "vault_id",
           "vault_name",
           "bucket",
           "region",
           "bucket_left"
+        ],
+        "title": "VaultCreationCancelled",
+        "description": "A cancelled Vault creation (#735). The Vault left the catalog; a bucket already created is not deleted: bucket_left says whether it was created (created) or an attempt may have reached AWS (possible)."
+      },
+      "VaultCreationMode": {
+        "type": "string",
+        "enum": [
+          "empty",
+          "adopt"
         ]
       },
-      "VaultDeletionPreview": {
-        "type": "object",
-        "additionalProperties": false,
+      "VaultDeletionClass": {
         "properties": {
-          "prefix": {
-            "type": "string"
-          },
-          "object_count": {
-            "type": "number"
+          "storage_class": {
+            "type": "string",
+            "title": "Storage Class"
           },
           "version_count": {
-            "type": "number"
-          },
-          "delete_marker_count": {
-            "type": "number"
-          },
-          "multipart_upload_count": {
-            "type": "number"
+            "type": "integer",
+            "title": "Version Count"
           },
           "byte_count": {
-            "type": "number"
-          },
-          "by_storage_class": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "storage_class": {
-                  "type": "string"
-                },
-                "version_count": {
-                  "type": "number"
-                },
-                "byte_count": {
-                  "type": "number"
-                },
-                "early_deletion_cost": {
-                  "type": "number"
-                },
-                "early_deletion_version_count": {
-                  "type": "number"
-                },
-                "minimum_days": {
-                  "type": "number"
-                },
-                "early_deletion_byte_count": {
-                  "type": "number"
-                }
-              },
-              "required": [
-                "storage_class",
-                "version_count",
-                "byte_count",
-                "early_deletion_cost",
-                "early_deletion_version_count",
-                "minimum_days"
-              ]
-            }
+            "type": "integer",
+            "title": "Byte Count"
           },
           "early_deletion_cost": {
-            "type": "number"
-          },
-          "currency": {
-            "type": "string"
-          },
-          "pricing_effective_at": {
-            "type": "string"
-          },
-          "region": {
-            "type": "string"
-          },
-          "executes_at": {
-            "type": "string"
-          },
-          "delay_seconds": {
-            "type": "number"
+            "type": "number",
+            "title": "Early Deletion Cost"
           },
           "early_deletion_version_count": {
-            "type": "number"
+            "type": "integer",
+            "title": "Early Deletion Version Count"
+          },
+          "minimum_days": {
+            "type": "integer",
+            "title": "Minimum Days"
           },
           "early_deletion_byte_count": {
-            "type": "number"
+            "type": "integer",
+            "title": "Early Deletion Byte Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "storage_class",
+          "version_count",
+          "byte_count",
+          "early_deletion_cost",
+          "early_deletion_version_count",
+          "minimum_days"
+        ],
+        "title": "VaultDeletionClass"
+      },
+      "VaultDeletionPreview": {
+        "properties": {
+          "prefix": {
+            "type": "string",
+            "title": "Prefix"
+          },
+          "object_count": {
+            "type": "integer",
+            "title": "Object Count"
+          },
+          "version_count": {
+            "type": "integer",
+            "title": "Version Count"
+          },
+          "delete_marker_count": {
+            "type": "integer",
+            "title": "Delete Marker Count"
+          },
+          "multipart_upload_count": {
+            "type": "integer",
+            "title": "Multipart Upload Count"
+          },
+          "byte_count": {
+            "type": "integer",
+            "title": "Byte Count"
+          },
+          "by_storage_class": {
+            "items": {
+              "$ref": "#/components/schemas/VaultDeletionClass"
+            },
+            "type": "array",
+            "title": "By Storage Class"
+          },
+          "early_deletion_cost": {
+            "type": "number",
+            "title": "Early Deletion Cost"
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency"
+          },
+          "pricing_effective_at": {
+            "type": "string",
+            "title": "Pricing Effective At"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "executes_at": {
+            "type": "string",
+            "title": "Executes At"
+          },
+          "delay_seconds": {
+            "type": "integer",
+            "title": "Delay Seconds"
+          },
+          "early_deletion_version_count": {
+            "type": "integer",
+            "title": "Early Deletion Version Count"
+          },
+          "early_deletion_byte_count": {
+            "type": "integer",
+            "title": "Early Deletion Byte Count"
           },
           "savings_from": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Savings From"
           },
           "early_deletion_estimated_count": {
-            "type": "number"
+            "type": "integer",
+            "title": "Early Deletion Estimated Count"
           },
           "retention_lock": {
             "anyOf": [
@@ -10318,6 +10978,8 @@
             ]
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "prefix",
           "object_count",
@@ -10332,7 +10994,8 @@
           "region",
           "executes_at",
           "delay_seconds"
-        ]
+        ],
+        "title": "VaultDeletionPreview"
       },
       "VaultDeletionRequest": {
         "properties": {
@@ -10362,15 +11025,138 @@
         ],
         "title": "VaultDeletionRequest"
       },
-      "VaultDeletionStatus": {
-        "type": "object",
+      "VaultDeletionRequestState": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "requested_at": {
+            "type": "string",
+            "title": "Requested At"
+          },
+          "pending_until": {
+            "type": "string",
+            "title": "Pending Until"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts"
+          },
+          "failed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failed At"
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure"
+          },
+          "preview": {
+            "$ref": "#/components/schemas/VaultDeletionPreview"
+          },
+          "cancellable": {
+            "type": "boolean",
+            "title": "Cancellable"
+          },
+          "retryable": {
+            "type": "boolean",
+            "title": "Retryable"
+          },
+          "retained_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retained Count",
+            "description": "Locked versions left after a run (#736): the request waits for them."
+          },
+          "retained_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retained Until",
+            "description": "When the last of them can be deleted."
+          },
+          "next_attempt_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At",
+            "description": "When the deletion runs again for them."
+          },
+          "delete_bucket": {
+            "type": "boolean",
+            "title": "Delete Bucket",
+            "description": "The Owner asked to delete the empty Vault Bucket too (#739)."
+          }
+        },
         "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "requested_at",
+          "pending_until",
+          "reason",
+          "attempts",
+          "failed_at",
+          "failure",
+          "preview",
+          "cancellable",
+          "retryable",
+          "retained_count",
+          "retained_until",
+          "next_attempt_at",
+          "delete_bucket"
+        ],
+        "title": "VaultDeletionRequestState"
+      },
+      "VaultDeletionStatus": {
         "properties": {
           "vault_id": {
-            "type": "number"
+            "type": "integer",
+            "title": "Vault Id"
           },
           "vault_name": {
-            "type": "string"
+            "type": "string",
+            "title": "Vault Name"
           },
           "lifecycle": {
             "type": "string",
@@ -10380,100 +11166,21 @@
               "reconnect_required",
               "stopping",
               "tombstone"
-            ]
+            ],
+            "title": "Lifecycle"
           },
           "deletable": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Deletable"
           },
           "local_files": {
-            "type": "number"
+            "type": "integer",
+            "title": "Local Files"
           },
           "request": {
             "anyOf": [
               {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "status": {
-                    "type": "string",
-                    "enum": [
-                      "pending",
-                      "running",
-                      "failed"
-                    ]
-                  },
-                  "requested_at": {
-                    "type": "string"
-                  },
-                  "pending_until": {
-                    "type": "string"
-                  },
-                  "reason": {
-                    "type": "string"
-                  },
-                  "attempts": {
-                    "type": "number"
-                  },
-                  "failed_at": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "failure": {
-                    "type": [
-                      "object",
-                      "null"
-                    ],
-                    "additionalProperties": true
-                  },
-                  "preview": {
-                    "$ref": "#/components/schemas/VaultDeletionPreview"
-                  },
-                  "cancellable": {
-                    "type": "boolean"
-                  },
-                  "retryable": {
-                    "type": "boolean"
-                  },
-                  "retained_count": {
-                    "type": [
-                      "number",
-                      "null"
-                    ],
-                    "description": "Locked versions left after a run (#736): the request waits for them."
-                  },
-                  "retained_until": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "description": "When the last of them can be deleted."
-                  },
-                  "next_attempt_at": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "description": "When the deletion runs again for them."
-                  },
-                  "delete_bucket": {
-                    "type": "boolean",
-                    "description": "The Owner asked to delete the empty Vault Bucket too (#739)."
-                  }
-                },
-                "required": [
-                  "status",
-                  "requested_at",
-                  "pending_until",
-                  "reason",
-                  "attempts",
-                  "failed_at",
-                  "failure",
-                  "preview",
-                  "cancellable",
-                  "retryable"
-                ]
+                "$ref": "#/components/schemas/VaultDeletionRequestState"
               },
               {
                 "type": "null"
@@ -10481,6 +11188,8 @@
             ]
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "vault_id",
           "vault_name",
@@ -10488,7 +11197,8 @@
           "deletable",
           "local_files",
           "request"
-        ]
+        ],
+        "title": "VaultDeletionStatus"
       },
       "VaultFileListItem": {
         "properties": {
@@ -10961,6 +11671,47 @@
           "not_included"
         ]
       },
+      "VaultListItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "paused": {
+            "type": "boolean",
+            "title": "Paused"
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "provisioning",
+              "active",
+              "reconnect_required",
+              "stopping",
+              "tombstone"
+            ],
+            "title": "Lifecycle"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "uuid",
+          "name",
+          "paused",
+          "lifecycle"
+        ],
+        "title": "VaultListItem"
+      },
       "VaultMovePreview": {
         "type": "object",
         "properties": {
@@ -11347,16 +12098,23 @@
         "title": "VaultRuntimeStatus"
       },
       "VaultSelectResponse": {
-        "additionalProperties": true,
         "properties": {
-          "vault_id": {
-            "type": "number"
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "message_key": {
+            "type": "string",
+            "title": "Message Key"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
-          "vault_id"
+          "message",
+          "message_key"
         ],
-        "type": "object"
+        "title": "VaultSelectResponse"
       },
       "VaultSelection": {
         "properties": {
@@ -11456,19 +12214,21 @@
         "title": "VaultStorageBytes"
       },
       "VaultsResponse": {
-        "additionalProperties": true,
         "properties": {
           "items": {
             "items": {
               "$ref": "#/components/schemas/VaultListItem"
             },
-            "type": "array"
+            "type": "array",
+            "title": "Items"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "items"
         ],
-        "type": "object"
+        "title": "VaultsResponse"
       },
       "VerificationPhaseSpeed": {
         "properties": {
@@ -11554,91 +12314,6 @@
           "region",
           "assumptions"
         ]
-      },
-      "GeneralVault": {
-        "additionalProperties": false,
-        "properties": {
-          "paused": {
-            "type": "boolean"
-          },
-          "id": {
-            "type": "number"
-          },
-          "name": {
-            "type": "string"
-          },
-          "root_released_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "s3_bucket": {
-            "type": "string"
-          },
-          "s3_prefix": {
-            "type": "string"
-          },
-          "source_root": {
-            "type": "string"
-          },
-          "uuid": {
-            "type": "string"
-          },
-          "lifecycle": {
-            "type": "string",
-            "enum": [
-              "provisioning",
-              "active",
-              "reconnect_required",
-              "stopping",
-              "tombstone"
-            ]
-          },
-          "vault_deletion_status": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "pending",
-              "running",
-              "failed",
-              null
-            ]
-          },
-          "s3_region": {
-            "type": "string"
-          },
-          "dedicated_bucket": {
-            "type": "boolean"
-          },
-          "bucket_provisioning": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/VaultBucketStatus"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "retention_lock_days": {
-            "type": [
-              "number",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "uuid",
-          "name",
-          "source_root",
-          "s3_prefix",
-          "lifecycle"
-        ],
-        "type": "object"
       },
       "ApiErrorResponse": {
         "additionalProperties": false,
@@ -12228,271 +12903,6 @@
           "region"
         ],
         "type": "object"
-      },
-      "SourceDirectoryEntry": {
-        "additionalProperties": true,
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "navigable": {
-            "type": "boolean"
-          },
-          "occupation": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/SourceDirectoryOccupation"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "relative_path": {
-            "type": "string"
-          },
-          "selectable": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "name",
-          "relative_path",
-          "navigable",
-          "selectable",
-          "occupation"
-        ],
-        "type": "object"
-      },
-      "SourceDirectoryOccupation": {
-        "additionalProperties": true,
-        "properties": {
-          "kind": {
-            "const": "vault",
-            "type": "string"
-          },
-          "vault_name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "kind",
-          "vault_name"
-        ],
-        "type": "object"
-      },
-      "SourceVolumeInventoryItem": {
-        "additionalProperties": true,
-        "properties": {
-          "access": {
-            "type": "string"
-          },
-          "alias": {
-            "type": "string"
-          },
-          "diagnostic": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "diagnostic_code": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "health": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
-          "vault_count": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "alias",
-          "path",
-          "access",
-          "health",
-          "vault_count",
-          "diagnostic"
-        ],
-        "type": "object"
-      },
-      "VaultCreationMode": {
-        "enum": [
-          "empty",
-          "adopt"
-        ],
-        "type": "string"
-      },
-      "VaultListItem": {
-        "additionalProperties": true,
-        "properties": {
-          "paused": {
-            "type": "boolean"
-          },
-          "id": {
-            "type": "number"
-          },
-          "name": {
-            "type": "string"
-          },
-          "uuid": {
-            "type": "string"
-          },
-          "lifecycle": {
-            "type": "string",
-            "enum": [
-              "provisioning",
-              "active",
-              "reconnect_required",
-              "stopping",
-              "tombstone"
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "uuid",
-          "name"
-        ],
-        "type": "object"
-      },
-      "MinimumStorageDeletion": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "Files of a deletion still within their Minimum Storage Duration when it executes, and what deleting them then still bills: a Cost Estimate from AWS list prices (#731).",
-        "properties": {
-          "count": {
-            "type": "number"
-          },
-          "bytes": {
-            "type": "number"
-          },
-          "remaining_cost": {
-            "type": "number"
-          },
-          "savings_from": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "When the last Minimum Storage Duration of these files ends: deleting from then saves."
-          },
-          "estimated_count": {
-            "type": "number",
-            "description": "How many of them have an estimated Class Entry."
-          },
-          "by_storage_class": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "storage_class": {
-                  "type": "string"
-                },
-                "minimum_days": {
-                  "type": "number"
-                },
-                "count": {
-                  "type": "number"
-                },
-                "bytes": {
-                  "type": "number"
-                },
-                "remaining_cost": {
-                  "type": "number"
-                }
-              },
-              "required": [
-                "storage_class",
-                "minimum_days",
-                "count",
-                "bytes",
-                "remaining_cost"
-              ]
-            }
-          },
-          "currency": {
-            "type": "string"
-          },
-          "pricing_effective_at": {
-            "type": "string"
-          },
-          "region": {
-            "type": "string"
-          },
-          "disclaimer": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "evaluated_at": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "count",
-          "bytes",
-          "remaining_cost",
-          "savings_from",
-          "estimated_count",
-          "by_storage_class",
-          "currency",
-          "pricing_effective_at",
-          "region",
-          "evaluated_at"
-        ]
-      },
-      "RetentionLockPreview": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "Files of a deletion a Governance Retention Lock still holds when it executes (#736). Dates are estimates: each version's creation plus the bucket default days. They are deleted from that date, never earlier.",
-        "properties": {
-          "days": {
-            "type": "number"
-          },
-          "mode": {
-            "type": "string",
-            "enum": [
-              "GOVERNANCE"
-            ]
-          },
-          "locked_count": {
-            "type": "number"
-          },
-          "locked_bytes": {
-            "type": "number"
-          },
-          "locked_from": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "When the first of them can be deleted."
-          },
-          "locked_until": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "When the last of them can be deleted."
-          }
-        },
-        "required": [
-          "days",
-          "mode",
-          "locked_count",
-          "locked_bytes",
-          "locked_from",
-          "locked_until"
-        ]
       },
       "ExcludedFolder": {
         "type": "object",

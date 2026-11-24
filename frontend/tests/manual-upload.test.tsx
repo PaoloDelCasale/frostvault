@@ -31,7 +31,7 @@ function setup(ui: React.ReactElement, stats = STATS, paused = false) {
   renderWithQueryClient(<I18nProvider>{ui}</I18nProvider>);
 }
 
-const vaults = [1, 2, 3].map((id) => ({ id, uuid: `v${id}`, name: `Vault ${id}` }));
+const vaults = [1, 2, 3].map((id) => ({ id, uuid: `v${id}`, name: `Vault ${id}`, paused: false, lifecycle: "active" as const }));
 
 describe("Manual Upload (#647)", () => {
   it("follows the files: green when all protected, amber with pending files, with a neutral note", async () => {

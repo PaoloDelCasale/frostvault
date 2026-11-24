@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import MISSING, BaseModel, ConfigDict, Field
 
-from ..api_models import passthrough, response_model
+from ..api_models import passthrough
 from ..database import db
 from ..errors import Conflict, NotFound, VaultNotFound
 from ..services.source_layout import source_volume_inventory
@@ -120,6 +120,17 @@ class MirrorCleanupUpdate(BaseModel):
     beyond_minimum: bool | None = None
 
 
+# -- Response models (ADR-0056) -------------------------------------------------
+#
+# A route's answer is declared with ``passthrough(Model)``: production neither
+# validates nor filters with it, the tests' HTTP client does. Every model here is
+# closed: the route or one service function builds its keys. A field that is not
+# in every answer is ``MISSING`` by default, so the document says "optional"
+# without inventing a value.
+
+VaultLifecycle = Literal["provisioning", "active", "reconnect_required", "stopping", "tombstone"]
+
+
 class VaultPauseResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
@@ -145,7 +156,21 @@ def _set_vault_pause(vault_id: int, paused: bool, request: Request, user: dict[s
                                        locale=_request_locale(request))
 
 
-@router.get("/api/vaults", response_model=response_model("VaultsResponse"))
+class VaultListItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    uuid: str
+    name: str
+    paused: bool
+    lifecycle: VaultLifecycle
+
+
+class VaultsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[VaultListItem]
+
+
+@router.get("/api/vaults", response_model=passthrough(VaultsResponse))
 def list_vaults(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         rows = connection.execute(
@@ -159,7 +184,38 @@ def list_vaults(_: dict[str, Any] = Depends(current_user)):
     return {"items": rows}
 
 
-@router.post("/api/vaults", status_code=201, response_model=response_model("VaultCreateResponse"))
+class VaultBucketStatus(BaseModel):
+    """A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation: creating, failed, or settling (verified, active at active_at, 15 minutes after the verification)."""
+
+    model_config = ConfigDict(extra="forbid")
+    vault_id: int
+    bucket: str
+    region: str
+    dedicated: bool
+    state: Literal["creating", "failed", "settling", "ready"]
+    stage: Literal["reserved", "created", "configured", "verified"] | None
+    attempts: int
+    last_attempt_at: str | None
+    error: str | None
+    retention_lock_days: int | None
+    active_at: str | None = Field(description="When a verified bucket's Vault becomes active (settling only).")
+    active_in_seconds: int | None = Field(description="Seconds until active_at, never negative (settling only).")
+
+
+type VaultCreationMode = Literal["empty", "adopt"]
+
+
+class VaultCreateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    uuid: str
+    name: str
+    creation_mode: VaultCreationMode
+    lifecycle: Literal["provisioning", "active"]
+    bucket: VaultBucketStatus
+
+
+@router.post("/api/vaults", status_code=201, response_model=passthrough(VaultCreateResponse))
 def create_owner_vault(
     action: VaultSelfServiceCreate,
     background_tasks: BackgroundTasks,
@@ -199,7 +255,7 @@ def create_owner_vault(
     return payload
 
 
-@router.get("/api/vaults/{vault_id}/bucket", response_model=response_model("VaultBucketStatus"))
+@router.get("/api/vaults/{vault_id}/bucket", response_model=passthrough(VaultBucketStatus))
 def vault_bucket_status(vault_id: int, _: dict[str, Any] = Depends(current_user)):
     """The Vault's bucket and, while it is being created, the creation state (#735)."""
     with db() as connection:
@@ -209,7 +265,30 @@ def vault_bucket_status(vault_id: int, _: dict[str, Any] = Depends(current_user)
     return state
 
 
-@router.get("/api/vaults/{vault_id}/retention-lock", response_model=response_model("RetentionLockStatus"))
+class RetainedVersions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    count: int
+    bytes: int
+    deletable_from: str | None
+    deletable_until: str | None
+    failed_count: int = Field(description="Retained Versions whose last deletion failed (#749).")
+    failed_attempts: int = Field(description="The most consecutive failed deletions of one of them.")
+    last_error: str | None = Field(description="The S3 error code of the most recent failure.")
+    last_attempt_at: str | None
+    next_attempt_at: str | None
+
+
+class RetentionLockStatus(BaseModel):
+    """A Vault's Governance Retention Lock, fixed at creation (#736), and the superseded versions it holds back until their RetainUntilDate."""
+
+    model_config = ConfigDict(extra="forbid")
+    vault_id: int
+    days: int | None
+    mode: Literal["GOVERNANCE"] | None
+    retained: RetainedVersions | None
+
+
+@router.get("/api/vaults/{vault_id}/retention-lock", response_model=passthrough(RetentionLockStatus))
 def vault_retention_lock(vault_id: int, _: dict[str, Any] = Depends(current_user)):
     """The Vault's Retention Lock and the superseded versions it holds back (#736).
 
@@ -224,7 +303,7 @@ def vault_retention_lock(vault_id: int, _: dict[str, Any] = Depends(current_user
     return {"vault_id": vault_id, "days": None, "mode": None, "retained": None, **(state or {})}
 
 
-@router.post("/api/vaults/{vault_id}/bucket/retry", response_model=response_model("VaultBucketStatus"))
+@router.post("/api/vaults/{vault_id}/bucket/retry", response_model=passthrough(VaultBucketStatus))
 def retry_vault_bucket(vault_id: int, background_tasks: BackgroundTasks,
                        _: dict[str, Any] = Depends(current_user)):
     """Retry the creation of a provisioning Vault's bucket now (#735).
@@ -244,8 +323,19 @@ def retry_vault_bucket(vault_id: int, background_tasks: BackgroundTasks,
     return state
 
 
+class VaultCreationCancelled(BaseModel):
+    """A cancelled Vault creation (#735). The Vault left the catalog; a bucket already created is not deleted: bucket_left says whether it was created (created) or an attempt may have reached AWS (possible)."""
+
+    model_config = ConfigDict(extra="forbid")
+    vault_id: int
+    vault_name: str
+    bucket: str
+    region: str
+    bucket_left: Literal["created", "possible"]
+
+
 @router.post("/api/vaults/{vault_id}/creation/cancel",
-          response_model=response_model("VaultCreationCancelled"))
+          response_model=passthrough(VaultCreationCancelled))
 def cancel_vault_creation(vault_id: int, request: Request,
                           user: dict[str, Any] = Depends(current_user),
                           _reauth: dict[str, Any] = Depends(require_recent_reauth)):
@@ -260,13 +350,34 @@ def cancel_vault_creation(vault_id: int, request: Request,
     return vault_buckets_service.cancel_creation(vault_id, actor=_actor(request))
 
 
-@router.get("/api/vaults/{vault_id}/stop-protection", response_model=response_model("StopProtectionStatus"))
+class StopProtectionJob(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    status: str
+    pending_until: str | None
+
+
+class StopProtectionStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    vault_id: int
+    vault_name: str
+    stopped: bool
+    root_released: bool
+    cloud_disposition: Literal["keep", "delete"]
+    group_id: str | None
+    cancellable: bool
+    pending_until: str | None
+    local_files_blocking_cloud_delete: int
+    jobs: list[StopProtectionJob]
+
+
+@router.get("/api/vaults/{vault_id}/stop-protection", response_model=passthrough(StopProtectionStatus))
 def stop_protection_status(vault_id: int, user: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         return protection_stop_service.status(connection, vault_id)
 
 
-@router.post("/api/vaults/{vault_id}/stop-protection", status_code=202, response_model=response_model("StopProtectionStatus"))
+@router.post("/api/vaults/{vault_id}/stop-protection", status_code=202, response_model=passthrough(StopProtectionStatus))
 def stop_folder_protection(vault_id: int, action: StopProtectionRequest, request: Request,
                            user: dict[str, Any] = Depends(current_user)):
     if action.cloud_disposition == "delete":
@@ -284,7 +395,7 @@ def stop_folder_protection(vault_id: int, action: StopProtectionRequest, request
         operation_lock.release()
 
 
-@router.post("/api/vaults/{vault_id}/stop-protection/cancel-deletion", response_model=response_model("StopProtectionStatus"))
+@router.post("/api/vaults/{vault_id}/stop-protection/cancel-deletion", response_model=passthrough(StopProtectionStatus))
 def cancel_stopped_folder_deletion(vault_id: int, request: Request,
                                    user: dict[str, Any] = Depends(current_user)):
     del user  # authentication gate only
@@ -304,18 +415,93 @@ def _vault_deletion_preview(vault_id: int) -> dict[str, Any]:
     return vault_deletion_service.preview(client, target, database=db)
 
 
-@router.get("/api/vaults/{vault_id}/vault-deletion", response_model=response_model("VaultDeletionStatus"))
+class RetentionLockPreview(BaseModel):
+    """Files of a deletion a Governance Retention Lock still holds when it executes (#736). Dates are estimates: each version's creation plus the bucket default days. They are deleted from that date, never earlier."""
+
+    model_config = ConfigDict(extra="forbid")
+    days: int
+    mode: Literal["GOVERNANCE"]
+    locked_count: int
+    locked_bytes: int
+    locked_from: str | None = Field(description="When the first of them can be deleted.")
+    locked_until: str | None = Field(description="When the last of them can be deleted.")
+
+
+class VaultDeletionClass(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    storage_class: str
+    version_count: int
+    byte_count: int
+    early_deletion_cost: float
+    early_deletion_version_count: int
+    minimum_days: int
+    early_deletion_byte_count: int | MISSING = MISSING
+
+
+class VaultDeletionPreview(BaseModel):
+    # A Vault Deletion request keeps the preview it was confirmed with: one
+    # recorded by an earlier release lacks the keys added since (#731, #736).
+    model_config = ConfigDict(extra="forbid")
+    prefix: str
+    object_count: int
+    version_count: int
+    delete_marker_count: int
+    multipart_upload_count: int
+    byte_count: int
+    by_storage_class: list[VaultDeletionClass]
+    early_deletion_cost: float
+    currency: str
+    pricing_effective_at: str
+    region: str
+    executes_at: str
+    delay_seconds: int
+    early_deletion_version_count: int | MISSING = MISSING
+    early_deletion_byte_count: int | MISSING = MISSING
+    savings_from: str | None | MISSING = MISSING
+    early_deletion_estimated_count: int | MISSING = MISSING
+    retention_lock: RetentionLockPreview | None | MISSING = MISSING
+
+
+class VaultDeletionRequestState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["pending", "running", "failed"]
+    requested_at: str
+    pending_until: str
+    reason: str
+    attempts: int
+    failed_at: str | None
+    failure: dict[str, Any] | None
+    preview: VaultDeletionPreview
+    cancellable: bool
+    retryable: bool
+    retained_count: int | None = Field(description="Locked versions left after a run (#736): the request waits for them.")
+    retained_until: str | None = Field(description="When the last of them can be deleted.")
+    next_attempt_at: str | None = Field(description="When the deletion runs again for them.")
+    delete_bucket: bool = Field(description="The Owner asked to delete the empty Vault Bucket too (#739).")
+
+
+class VaultDeletionStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    vault_id: int
+    vault_name: str
+    lifecycle: VaultLifecycle
+    deletable: bool
+    local_files: int
+    request: VaultDeletionRequestState | None
+
+
+@router.get("/api/vaults/{vault_id}/vault-deletion", response_model=passthrough(VaultDeletionStatus))
 def vault_deletion_status(vault_id: int, _: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         return vault_deletion_service.status(connection, vault_id)
 
 
-@router.get("/api/vaults/{vault_id}/vault-deletion/preview", response_model=response_model("VaultDeletionPreview"))
+@router.get("/api/vaults/{vault_id}/vault-deletion/preview", response_model=passthrough(VaultDeletionPreview))
 def vault_deletion_preview(vault_id: int, _: dict[str, Any] = Depends(current_user)):
     return _vault_deletion_preview(vault_id)
 
 
-@router.post("/api/vaults/{vault_id}/vault-deletion", status_code=202, response_model=response_model("VaultDeletionStatus"))
+@router.post("/api/vaults/{vault_id}/vault-deletion", status_code=202, response_model=passthrough(VaultDeletionStatus))
 def request_vault_deletion(vault_id: int, action: VaultDeletionRequest, request: Request,
                            user: dict[str, Any] = Depends(current_user),
                            _reauth: dict[str, Any] = Depends(require_recent_reauth)):
@@ -333,7 +519,7 @@ def request_vault_deletion(vault_id: int, action: VaultDeletionRequest, request:
             delete_bucket=action.delete_bucket)
 
 
-@router.post("/api/vaults/{vault_id}/vault-deletion/cancel", response_model=response_model("VaultDeletionStatus"))
+@router.post("/api/vaults/{vault_id}/vault-deletion/cancel", response_model=passthrough(VaultDeletionStatus))
 def cancel_vault_deletion(vault_id: int, request: Request,
                           user: dict[str, Any] = Depends(current_user)):
     with db() as connection:
@@ -341,7 +527,7 @@ def cancel_vault_deletion(vault_id: int, request: Request,
                                              actor=_actor(request))
 
 
-@router.post("/api/vaults/{vault_id}/vault-deletion/retry", response_model=response_model("VaultDeletionStatus"))
+@router.post("/api/vaults/{vault_id}/vault-deletion/retry", response_model=passthrough(VaultDeletionStatus))
 def retry_vault_deletion(vault_id: int, request: Request,
                          user: dict[str, Any] = Depends(current_user),
                          _reauth: dict[str, Any] = Depends(require_recent_reauth)):
@@ -350,13 +536,112 @@ def retry_vault_deletion(vault_id: int, request: Request,
                                             actor=_actor(request))
 
 
-@router.get("/api/vaults/{vault_id}/duplicate-cleanup", response_model=response_model("DuplicateCleanupStatus"))
+class MinimumStorageDeletionClass(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    storage_class: str
+    minimum_days: int
+    count: int
+    bytes: int
+    remaining_cost: float
+
+
+class MinimumStorageDeletion(BaseModel):
+    """Files of a deletion still within their Minimum Storage Duration when it executes, and what deleting them then still bills: a Cost Estimate from AWS list prices (#731)."""
+
+    model_config = ConfigDict(extra="forbid")
+    count: int
+    bytes: int
+    remaining_cost: float
+    savings_from: str | None = Field(description="When the last Minimum Storage Duration of these files ends: deleting from then saves.")
+    estimated_count: int = Field(description="How many of them have an estimated Class Entry.")
+    by_storage_class: list[MinimumStorageDeletionClass]
+    currency: str
+    pricing_effective_at: str
+    region: str
+    disclaimer: str | None
+    evaluated_at: str
+
+
+class CleanupLastOutcome(BaseModel):
+    # Recorded by the daily run; an earlier run recorded fewer counters.
+    model_config = ConfigDict(extra="forbid")
+    outcome: Literal["scheduled", "none", "capped", "skipped"]
+    at: str
+    file_count: int | MISSING = MISSING
+    byte_count: int | MISSING = MISSING
+    group_id: str | MISSING = MISSING
+    run_after: str | MISSING = MISSING
+    waiting_count: int | MISSING = MISSING
+    waiting_bytes: int | MISSING = MISSING
+    unseen_count: int | MISSING = MISSING
+    held_count: int | MISSING = MISSING
+    held_bytes: int | MISSING = MISSING
+    minimum_count: int | MISSING = MISSING
+    minimum_bytes: int | MISSING = MISSING
+    minimum_cost: float | MISSING = MISSING
+    savings_from: str | None | MISSING = MISSING
+
+
+class CleanupPendingGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    group_id: str
+    file_count: int
+    byte_count: int
+    run_after: str | None
+    cancellable: bool
+
+
+class CleanupAmount(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    count: int
+    bytes: int
+
+
+class CleanupWaiting(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    count: int
+    bytes: int
+    first_eligible_at: str | None
+    earliest_deletion_at: str | None
+
+
+class CleanupTotals(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    deleted_count: int
+    deleted_bytes: int
+    last_deleted_at: str | None
+
+
+class DuplicateCleanupStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+    grace_days: int
+    cap_files: int
+    cap_bytes: int
+    grace_days_min: int
+    grace_days_max: int
+    last_run_at: str | None
+    next_run_at: str | None
+    last_outcome: CleanupLastOutcome | None
+    pending: list[CleanupPendingGroup]
+    current: CleanupAmount | None
+    waiting: CleanupWaiting | None
+    ready: CleanupAmount | None
+    unseen: CleanupAmount | None
+    totals: CleanupTotals | None
+    beyond_minimum: bool = Field(description="Schedule only duplicates beyond their Minimum Storage Duration (#731).")
+    held: CleanupAmount | None = Field(description="With beyond_minimum on: duplicates the next run keeps until their minimum ends.")
+    minimum_storage: MinimumStorageDeletion | None
+    retention_lock: RetentionLockPreview | None
+
+
+@router.get("/api/vaults/{vault_id}/duplicate-cleanup", response_model=passthrough(DuplicateCleanupStatus))
 def duplicate_cleanup_status(vault_id: int, _: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         return duplicate_cleanup_service.status(connection, vault_id)
 
 
-@router.put("/api/vaults/{vault_id}/duplicate-cleanup", response_model=response_model("DuplicateCleanupStatus"))
+@router.put("/api/vaults/{vault_id}/duplicate-cleanup", response_model=passthrough(DuplicateCleanupStatus))
 def update_duplicate_cleanup(vault_id: int, action: DuplicateCleanupUpdate, request: Request,
                              user: dict[str, Any] = Depends(current_user)):
     """Change the Automatic Duplicate Cleanup of a Vault (#726, ADR-0048).
@@ -374,13 +659,28 @@ def update_duplicate_cleanup(vault_id: int, action: DuplicateCleanupUpdate, requ
             connection, vault_id=vault_id, actor=_actor(request), values=values)
 
 
-@router.get("/api/vaults/{vault_id}/mirror-cleanup", response_model=response_model("MirrorCleanupStatus"))
+class MirrorCloudLife(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    days_after_disappearance: int
+    storage_class: str
+    class_from_day: int
+    minimum_days: int
+    minimum_until_day: int | None
+    beyond_minimum: bool
+
+
+class MirrorCleanupStatus(DuplicateCleanupStatus):
+    folders: list[str]
+    cloud_life: MirrorCloudLife
+
+
+@router.get("/api/vaults/{vault_id}/mirror-cleanup", response_model=passthrough(MirrorCleanupStatus))
 def mirror_cleanup_status(vault_id: int, _: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         return mirror_cleanup_service.status(connection, vault_id)
 
 
-@router.put("/api/vaults/{vault_id}/mirror-cleanup", response_model=response_model("MirrorCleanupStatus"))
+@router.put("/api/vaults/{vault_id}/mirror-cleanup", response_model=passthrough(MirrorCleanupStatus))
 def update_mirror_cleanup(vault_id: int, action: MirrorCleanupUpdate, request: Request,
                           user: dict[str, Any] = Depends(current_user)):
     """Change the Mirror Cleanup of a Vault (#771, ADR-0052).
@@ -398,7 +698,46 @@ def update_mirror_cleanup(vault_id: int, action: MirrorCleanupUpdate, request: R
             require_reauth=lambda: require_recent_reauth(request, user))
 
 
-@router.get("/api/vaults/{vault_id}/minimum-storage", response_model=response_model("MinimumStorageSummary"))
+class MinimumStorageVersions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    count: int
+    bytes: int
+
+
+class MinimumStorageClass(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    storage_class: str
+    minimum_days: int
+    within: MinimumStorageVersions = Field(description="Versions still within the Minimum Storage Duration.")
+    beyond: MinimumStorageVersions = Field(description="Versions beyond it, or in a class without one.")
+    remaining_cost: float
+    estimated_count: int
+
+
+class MinimumStorageRelease(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    month: str
+    count: int
+    bytes: int
+
+
+class MinimumStorageSummary(BaseModel):
+    """Minimum Storage Duration of a Vault's versions (#731): a Cost Estimate from AWS list prices."""
+
+    model_config = ConfigDict(extra="forbid")
+    vault_id: int
+    by_storage_class: list[MinimumStorageClass]
+    remaining_cost: float
+    releases: list[MinimumStorageRelease] = Field(description="Month by month (YYYY-MM, UTC), the versions whose Minimum Storage Duration ends.")
+    estimated_count: int = Field(description="Versions with a minimum whose Class Entry is estimated from the Storage Plan.")
+    currency: str
+    pricing_effective_at: str
+    region: str
+    disclaimer: str | None
+    evaluated_at: str
+
+
+@router.get("/api/vaults/{vault_id}/minimum-storage", response_model=passthrough(MinimumStorageSummary))
 def minimum_storage_summary(vault_id: int, _: dict[str, Any] = Depends(current_user)):
     """Minimum Storage Duration of a Vault's versions (#731): per storage class,
     those within and beyond it, what the minimum still bills and, month by
@@ -407,7 +746,89 @@ def minimum_storage_summary(vault_id: int, _: dict[str, Any] = Depends(current_u
         return minimum_storage_service.load_vault_summary(connection, vault_id)
 
 
-@router.get("/api/vaults/{vault_id}/cloud-usage", response_model=response_model("VaultCloudUsage"))
+class CloudUsageEstimateClass(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    storage_class: str
+    versions: int
+    bytes: int
+    monthly_cost: float
+
+
+class CloudUsageEstimate(BaseModel):
+    """The catalog's versions not known to be missing, by class, with a Cost Estimate from AWS list prices."""
+
+    model_config = ConfigDict(extra="forbid")
+    versions: int
+    bytes: int
+    monthly_cost: float
+    currency: str
+    region: str
+    pricing_effective_at: str
+    by_storage_class: list[CloudUsageEstimateClass]
+
+
+class CloudUsageRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    attempted_at: str
+    outcome: Literal["ok", "no_data", "access_denied", "failed"]
+    error_code: str | None
+
+
+class CloudUsageDay(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    day: str
+    bytes: int
+    overhead_bytes: int
+    object_count: int | None
+
+
+class CloudUsageOverhead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    storage_type: str = Field(description="The CloudWatch StorageType dimension value.")
+    kind: Literal["object_overhead", "size_overhead", "staging"]
+    billed_as: str = Field(description="The storage class whose price AWS applies to these bytes.")
+    bytes: int
+
+
+class CloudUsageMeasuredClass(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    storage_class: str
+    bytes: int = Field(description="The objects' own bytes in this class.")
+    overhead_bytes: int = Field(description="Bytes AWS bills on top of the objects of this class.")
+    overhead: list[CloudUsageOverhead]
+
+
+class CloudUsageMeasured(BaseModel):
+    """Daily S3 storage metrics read from CloudWatch GetMetricStatistics (#737)."""
+
+    # A shared or provisioning bucket answers its status only; the newest data
+    # point's fields come with ``available``.
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["available", "pending", "no_data", "access_denied", "failed", "shared_bucket", "provisioning"] = Field(description="available: a data point is saved. pending: not read yet. no_data, access_denied, failed: the last read's outcome, with nothing saved. shared_bucket: an older Vault on a shared bucket, never read. provisioning: the Vault Bucket is being created.")
+    last_read: CloudUsageRead | None | MISSING = MISSING
+    next_read_after: str | None | MISSING = Field(default=MISSING, description="When the Vault Bucket is read again: 24 hours after an ok read, 6 hours after any other outcome.")
+    history: list[CloudUsageDay] | MISSING = Field(default=MISSING, description="Saved daily totals, newest first.")
+    day: str | MISSING = Field(default=MISSING, description="UTC day of the newest data point.")
+    read_at: str | MISSING = MISSING
+    object_count: int | None | MISSING = MISSING
+    bytes: int | MISSING = MISSING
+    overhead_bytes: int | MISSING = MISSING
+    by_storage_class: list[CloudUsageMeasuredClass] | MISSING = MISSING
+
+
+class VaultCloudUsage(BaseModel):
+    """A Vault's cloud usage (#737): the catalog's Cost Estimate next to the CloudWatch sizes of its Vault Bucket."""
+
+    model_config = ConfigDict(extra="forbid")
+    vault_id: int
+    bucket: str
+    region: str
+    dedicated_bucket: bool
+    estimate: CloudUsageEstimate
+    measured: CloudUsageMeasured
+
+
+@router.get("/api/vaults/{vault_id}/cloud-usage", response_model=passthrough(VaultCloudUsage))
 def vault_cloud_usage(vault_id: int, _: dict[str, Any] = Depends(current_user)):
     """A Vault's cloud usage (#737): the catalog's Cost Estimate by storage
     class next to the bytes and objects CloudWatch measured in its Vault
@@ -416,7 +837,63 @@ def vault_cloud_usage(vault_id: int, _: dict[str, Any] = Depends(current_user)):
         return bucket_metrics_service.vault_usage(connection, vault_id)
 
 
-@router.get("/api/vaults/{vault_id}/billed-cost", response_model=response_model("VaultBilledCost"))
+class BilledCategories(BaseModel):
+    """Billed amounts by category, in the billing currency; every category is present."""
+
+    model_config = ConfigDict(extra="forbid")
+    storage: float
+    requests: float
+    transitions: float
+    retrievals: float
+    data_transfer: float
+    other: float
+    credits: float = Field(description="Credits, refunds and discounts of the bucket (negative).")
+
+
+BillingExportState = Literal["unavailable", "checking", "not_configured", "waiting", "ok", "error"]
+BillingExportError = Literal[
+    "s3_unreachable", "s3_throttled", "s3_server_error", "credentials", "access_denied",
+    "s3_refused", "parquet", "missing_column", "not_gzip_csv", "short_row", "cost_not_number",
+    "currency_missing", "mixed_currencies", "manifest_invalid", "manifest_too_large",
+    "manifest_foreign_bucket", "manifest_outside_folder", "no_data_files", "internal",
+]
+
+
+class BillingExportFields(BaseModel):
+    """The billing export's state, shared by the installation and each Vault (#738)."""
+
+    model_config = ConfigDict(extra="forbid")
+    state: BillingExportState = Field(description="unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code).")
+    bucket: str | None = Field(description="The System Bucket the export is delivered to.")
+    prefix: str = Field(description="The S3 path prefix of the export in the System Bucket.")
+    checked_at: str | None
+    next_check_at: str | None
+    read_at: str | None = Field(description="When FrostVault last read the export (only when ok).")
+    exported_at: str | None = Field(description="When AWS delivered the newest manifest that was read.")
+    data_through: str | None = Field(description="The newest usage end in the export, never after exported_at.")
+    currency: str | None = Field(description="The billing currency (ISO 4217).")
+    stale: bool = Field(description="ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd.")
+    error_code: BillingExportError | None = Field(description="Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day.")
+    error_detail: str | None = Field(description="An S3 action and AWS error code, column or currency names: never a provider message.")
+
+
+class VaultBilledPeriod(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    period: str = Field(description="YYYY-MM")
+    total: float
+    categories: BilledCategories
+
+
+class VaultBilledCost(BillingExportFields):
+    """A Vault's Billed Cost from the billing export (#738), a block of its cloud usage next to the Cost Estimate (#737)."""
+
+    vault_id: int
+    vault_bucket: str
+    shared: bool = Field(description="The Vault is in a shared bucket: it has no Billed Cost of its own and periods is empty; the bucket is an installation row of GET /api/billing-export.")
+    periods: list[VaultBilledPeriod] = Field(description="Newest first; empty unless state is ok, and for a shared bucket.")
+
+
+@router.get("/api/vaults/{vault_id}/billed-cost", response_model=passthrough(VaultBilledCost))
 def vault_billed_cost(vault_id: int, _: dict[str, Any] = Depends(current_user)):
     """The Vault's Billed Cost from the billing export (#738), by billing
     period and category, with the export's status; never a Cost Explorer call."""
@@ -424,14 +901,52 @@ def vault_billed_cost(vault_id: int, _: dict[str, Any] = Depends(current_user)):
         return billed_cost_service.vault_view(connection, vault_id)
 
 
-@router.get("/api/billing-export", response_model=response_model("BillingExportStatus"))
+class BilledVaultBucket(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    vault_id: int
+    name: str | None
+    bucket: str
+    total: float
+    categories: BilledCategories
+
+
+class BilledInstallationBucket(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["system", "shared"]
+    bucket: str
+    total: float
+    categories: BilledCategories
+
+
+class BillingExportPeriod(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    period: str = Field(description="YYYY-MM")
+    total: float = Field(description="Every row of the period: Vaults and installation.")
+    vaults_total: float = Field(description="The Vault rows only: FrostVault's Vault Buckets, not the whole AWS bill.")
+    vaults: list[BilledVaultBucket]
+    installation: list[BilledInstallationBucket] = Field(description="The System Bucket and shared buckets of older Vaults: not attributed to one Vault.")
+
+
+class BillingExportStatus(BillingExportFields):
+    """The AWS Data Exports (CUR 2.0) billing export and every known bucket's Billed Cost (#738). Never a Cost Explorer figure."""
+
+    periods: list[BillingExportPeriod] = Field(description="Billing periods read, newest first; empty unless state is ok.")
+
+
+@router.get("/api/billing-export", response_model=passthrough(BillingExportStatus))
 def billing_export_status(_: dict[str, Any] = Depends(current_user)):
     """The billing export's status and every known bucket's Billed Cost (#738)."""
     with db() as connection:
         return billed_cost_service.installation_view(connection)
 
 
-@router.post("/api/vaults/select", response_model=response_model("VaultSelectResponse"))
+class VaultSelectResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str
+    message_key: str
+
+
+@router.post("/api/vaults/select", response_model=passthrough(VaultSelectResponse))
 def select_vault(
     action: VaultSelection,
     request: Request,
@@ -458,13 +973,51 @@ def select_vault(
     return {**_api_message(request, "api.vault_selected")}
 
 
-@inventory_router.get("/api/general/source-volumes", response_model=response_model("SourceVolumeInventoryResponse"))
+class SourceVolumeInventoryItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    alias: str
+    path: str
+    access: str
+    health: str
+    vault_count: int
+    diagnostic: str | None
+    diagnostic_code: str | None
+
+
+class SourceVolumeInventoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[SourceVolumeInventoryItem]
+
+
+@inventory_router.get("/api/general/source-volumes", response_model=passthrough(SourceVolumeInventoryResponse))
 def general_source_volumes(user: dict[str, Any] = Depends(current_user)):
     """Operator inventory of discovered Source Volumes (issue #148)."""
     return {"items": source_volume_inventory()}
 
 
-@inventory_router.get("/api/source-volumes/{volume_alias}/browse", response_model=response_model("SourceDirectoryBrowseResponse"))
+class SourceDirectoryOccupation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["vault"]
+    vault_name: str
+
+
+class SourceDirectoryEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    relative_path: str
+    navigable: bool
+    selectable: bool
+    occupation: SourceDirectoryOccupation | None
+
+
+class SourceDirectoryBrowseResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    volume_alias: str
+    relative_path: str
+    items: list[SourceDirectoryEntry]
+
+
+@inventory_router.get("/api/source-volumes/{volume_alias}/browse", response_model=passthrough(SourceDirectoryBrowseResponse))
 def browse_source_volume(
     volume_alias: str,
     path: str = Query(default=""),
@@ -484,13 +1037,45 @@ def browse_source_volume(
         )
 
 
-@inventory_router.get("/api/general/vaults", response_model=response_model("GeneralVaultsResponse"))
+class GeneralVault(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    uuid: str
+    name: str
+    source_root: str
+    s3_bucket: str
+    s3_region: str
+    s3_prefix: str
+    lifecycle: VaultLifecycle
+    paused: bool
+    root_released_at: str | None
+    dedicated_bucket: bool
+    retention_lock_days: int | None
+    vault_deletion_status: Literal["pending", "running", "failed"] | None
+    bucket_provisioning: VaultBucketStatus | None
+
+
+class GeneralVaultsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[GeneralVault]
+
+
+@inventory_router.get("/api/general/vaults", response_model=passthrough(GeneralVaultsResponse))
 def general_vaults(_: dict[str, Any] = Depends(current_user)):
     with db() as connection:
         return {"items": list_vault_inventory(connection)}
 
 
-@inventory_router.post("/api/vaults/{vault_id}/reconnect", response_model=response_model("GeneralVaultReconnectResponse"))
+class GeneralVaultReconnectResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    vault_id: int
+    source_root: str
+    # The accepted root waits for its mandatory full scan (``reconnect_required``).
+    reconnect_state: Literal["reconnect_required"]
+    full_scan_required: bool
+
+
+@inventory_router.post("/api/vaults/{vault_id}/reconnect", response_model=passthrough(GeneralVaultReconnectResponse))
 def reconnect_vault_root(
     vault_id: int,
     action: VaultReconnect,
