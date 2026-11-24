@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict
 
-from ..api_models import passthrough
+from ..api_models import ResponseModel, passthrough
 from ..config import settings
 from ..services.audit_events import audit_log
 from ..i18n import available_locales, catalog as locale_catalog, normalize_locale, translate
@@ -77,14 +77,14 @@ class ReauthRequest(BaseModel):
 # The answers of this router (ADR-0056). Every model is closed: the routes
 # below build these objects from fixed keys, and no service adds any.
 
-class SessionMessageResponse(BaseModel):
+class SessionMessageResponse(ResponseModel):
     """What signing in and signing out answer."""
     model_config = ConfigDict(extra="forbid")
     message: str
     message_key: str
 
 
-class ReauthResponse(BaseModel):
+class ReauthResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     message: str
 
@@ -92,14 +92,14 @@ class ReauthResponse(BaseModel):
 type AuthMethod = str | None
 
 
-class MeVault(BaseModel):
+class MeVault(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
     uuid: UUID
     name: str
 
 
-class MeStoppedVault(BaseModel):
+class MeStoppedVault(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
     uuid: UUID
@@ -109,7 +109,7 @@ class MeStoppedVault(BaseModel):
     root_released: bool
 
 
-class MeResponse(BaseModel):
+class MeResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
     display_name: str
@@ -122,20 +122,20 @@ class MeResponse(BaseModel):
     stopped_vault: MeStoppedVault | None
 
 
-class LoginOptionsResponse(BaseModel):
+class LoginOptionsResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     oidc_enabled: bool
     oidc_provider_name: str | None
 
 
-class I18nCatalogResponse(BaseModel):
+class I18nCatalogResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     locale: str
     locales: list[str]
     messages: dict[str, str]
 
 
-class LocaleUpdateResponse(BaseModel):
+class LocaleUpdateResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     locale: str
     message: str

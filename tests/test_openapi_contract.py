@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import typing
 import unittest
 from pathlib import Path
 from typing import Any
@@ -12,10 +13,10 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, RootModel
 from starlette.routing import Route
 
-from app.api_models import JsonObjectResponse, documented_schemas, passthrough, response_model
+from app.api_models import JsonObjectResponse, ResponseModel, passthrough
 from app.main import app, lifespan
 from tests import fixtures
 
@@ -64,7 +65,7 @@ class OpenApiResponseContractTests(unittest.TestCase):
             "nested": [{"known": True, "extension": {"future": "kept"}}],
         }
 
-        @probe.get("/probe", response_model=response_model("CompatibilityProbe"))
+        @probe.get("/probe", response_model=passthrough(Probe))
         def compatibility_probe():
             return payload
 
@@ -165,7 +166,6 @@ class OpenApiResponseContractTests(unittest.TestCase):
                 self.assertEqual(answer["content"]["application/json"]["schema"],
                                  {"$ref": f"#/components/schemas/{name}"})
                 self.assertIs(schemas[name]["additionalProperties"], False)
-                self.assertNotIn(name, documented_schemas())
         # Both blocks are always in the answer, null when there is none.
         self.assertLessEqual({"vault", "stopped_vault"}, set(schemas["MeResponse"]["required"]))
         self.assertEqual(set(schemas["MeStoppedVault"]["required"]),
@@ -186,9 +186,7 @@ class OpenApiResponseContractTests(unittest.TestCase):
                 self.assertEqual(answer["content"]["application/json"]["schema"],
                                  {"$ref": f"#/components/schemas/{name}"})
                 self.assertIs(schemas[name]["additionalProperties"], False)
-                self.assertNotIn(name, documented_schemas())
         self.assertIs(schemas["ArchiveVersionItem"]["additionalProperties"], False)
-        self.assertNotIn("FileOperationResponse", documented_schemas())
 
     def test_vault_settings_answers_are_documented_from_their_models(self) -> None:
         from app.routes import policy, storage_plan
@@ -202,11 +200,9 @@ class OpenApiResponseContractTests(unittest.TestCase):
                 self.assertEqual(answer["content"]["application/json"]["schema"],
                                  {"$ref": f"#/components/schemas/{name}"})
                 self.assertIs(schemas[name]["additionalProperties"], False)
-                self.assertNotIn(name, documented_schemas())
         # The inclusion preview prices the folder with the storage estimate's model.
         self.assertEqual(schemas["VaultInclusionPreview"]["properties"]["estimate"]["anyOf"][0],
                          {"$ref": "#/components/schemas/StorageEstimateResponse"})
-        self.assertEqual(list(documented_schemas()), ["ApiErrorResponse"])
 
     def test_admin_vault_schema_is_a_closed_non_secret_contract(self) -> None:
         vault = app.openapi()["components"]["schemas"]["GeneralVault"]
@@ -320,10 +316,66 @@ class OpenApiResponseContractTests(unittest.TestCase):
                     issubclass(route.response_model, JsonObjectResponse),
                     route.path,
                 )
+                # Every JSON answer documents a model: none is the bare open object.
+                self.assertIsNotNone(fixtures._response_contract(route), route.path)
+        self.assertNotIn("JsonObjectResponse", app.openapi()["components"]["schemas"])
 
-    def test_every_hand_written_schema_documents_a_route(self) -> None:
-        # Until the last schema moves next to its route (ADR-0056), the
-        # hand-written file may only hold what the document really uses.
+    def test_probe_answers_are_documented_from_their_models(self) -> None:
+        document = app.openapi()
+        schemas = document["components"]["schemas"]
+        for path, name in (("/health", "HealthResponse"), ("/ready", "ReadinessResponse")):
+            with self.subTest(path=path):
+                answer = document["paths"][path]["get"]["responses"]["200"]
+                self.assertEqual(answer["content"]["application/json"]["schema"],
+                                 {"$ref": f"#/components/schemas/{name}"})
+                self.assertIs(schemas[name]["additionalProperties"], False)
+        self.assertEqual(schemas["HealthResponse"]["properties"]["status"]["const"], "ok")
+        self.assertEqual(set(schemas["ReadinessChecks"]["required"]),
+                         {"database", "worker", "config", "sources_layout"})
+
+    def test_api_error_response_is_documented_from_its_model(self) -> None:
+        # The schema the hand-written file held, plus the titles Pydantic writes.
+        from app.errors import STATUS
+        document = app.openapi()
+        self.assertEqual(document["components"]["schemas"]["ApiErrorResponse"], {
+            "properties": {
+                "detail": {"type": "string", "title": "Detail"},
+                "code": {"type": "string", "enum": list(STATUS), "title": "Code"},
+                "message_key": {"type": "string", "title": "Message Key"},
+                "message_params": {
+                    "additionalProperties": True, "type": "object", "title": "Message Params"},
+            },
+            "additionalProperties": False,
+            "type": "object",
+            "required": ["detail", "code", "message_key", "message_params"],
+            "title": "ApiErrorResponse",
+        })
+        refusal = {"application/json": {"schema": {"$ref": "#/components/schemas/ApiErrorResponse"}}}
+        responses = document["paths"]["/api/vaults/{vault_id}/recover/estimate"]["post"]["responses"]
+        self.assertEqual(responses["404"]["content"], refusal)
+        self.assertEqual(responses["422"]["content"], refusal)
+
+    def test_response_models_are_built_on_first_use_not_at_import(self) -> None:
+        # Production never validates with them: Pydantic builds them when the
+        # document is generated or a test checks an answer (ADR-0056).
+        from app.routes.deps import ApiErrorResponse
+        contracts = {fixtures._response_contract(route) for route in app.routes} - {None}
+        pending, models = [*contracts, ApiErrorResponse], set()
+        while pending:
+            model = pending.pop()
+            if model in models:
+                continue
+            models.add(model)
+            for field in model.model_fields.values():
+                pending.extend(nested_models(field.annotation))
+        self.assertGreater(len(models), len(contracts))
+        self.assertEqual(
+            sorted(model.__name__ for model in models if model.model_config.get("defer_build") is not True),
+            [])
+        self.assertTrue(all(
+            issubclass(model, ResponseModel) for model in models if model.__name__ != "ArchiveListItem"))
+
+    def test_every_component_documents_a_route(self) -> None:
         document = app.openapi()
         components = document["components"]["schemas"]
 
@@ -337,11 +389,21 @@ class OpenApiResponseContractTests(unittest.TestCase):
             if name not in reachable:
                 reachable.add(name)
                 pending.extend(references(components[name]))
-        hand_written = documented_schemas()
         self.assertEqual(set(components) - reachable, set())
-        # None is dead text under a Pydantic model of the same name.
-        self.assertEqual(
-            [name for name, schema in hand_written.items() if components[name] != schema], [])
+
+
+def nested_models(annotation: Any) -> list[type[BaseModel]]:
+    """The models an annotation names, through unions, containers and type aliases."""
+    found = []
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        found.append(annotation)
+        if issubclass(annotation, RootModel):
+            found.extend(nested_models(annotation.model_fields["root"].annotation))
+    for argument in typing.get_args(annotation):
+        found.extend(nested_models(argument))
+    if isinstance(annotation, typing.TypeAliasType):
+        found.extend(nested_models(annotation.__value__))
+    return found
 
 
 class Probe(BaseModel):
@@ -383,7 +445,7 @@ class PassthroughResponseModelTests(unittest.TestCase):
             JsonObjectResponse.__pydantic_core_schema__["schema"],
         )
         self.assertIs(declared, passthrough(Probe))
-        before = TestClient(self.probe(response_model("Probe")))
+        before = TestClient(self.probe(JsonObjectResponse))
         after = TestClient(self.probe(declared))
         for case, body in self.BODIES.items():
             with self.subTest(case):

@@ -4073,7 +4073,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
+                  "$ref": "#/components/schemas/HealthResponse"
                 }
               }
             }
@@ -4092,7 +4092,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
+                  "$ref": "#/components/schemas/ReadinessResponse"
                 }
               }
             }
@@ -4209,6 +4209,49 @@
   },
   "components": {
     "schemas": {
+      "ApiErrorResponse": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "bad_request",
+              "unauthenticated",
+              "forbidden",
+              "reauth_required",
+              "not_found",
+              "conflict",
+              "invalid",
+              "rate_limited",
+              "failed",
+              "upstream_failed",
+              "unavailable"
+            ],
+            "title": "Code"
+          },
+          "message_key": {
+            "type": "string",
+            "title": "Message Key"
+          },
+          "message_params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Message Params"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "detail",
+          "code",
+          "message_key",
+          "message_params"
+        ],
+        "title": "ApiErrorResponse"
+      },
       "ArchiveListItem": {
         "anyOf": [
           {
@@ -7273,6 +7316,21 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "title": "Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "HealthResponse"
+      },
       "I18nCatalogResponse": {
         "properties": {
           "locale": {
@@ -7810,12 +7868,6 @@
           "next_groups_before_id"
         ],
         "title": "JobsResponse"
-      },
-      "JsonObjectResponse": {
-        "additionalProperties": true,
-        "type": "object",
-        "title": "JsonObjectResponse",
-        "description": "A JSON object response that never filters nested or extension fields."
       },
       "LifecycleGuidedProfile": {
         "properties": {
@@ -9690,6 +9742,58 @@
         ],
         "title": "ProblemsResponse",
         "description": "One page of the open Problems and how many are open in all."
+      },
+      "ReadinessChecks": {
+        "properties": {
+          "database": {
+            "type": "boolean",
+            "title": "Database"
+          },
+          "worker": {
+            "type": "boolean",
+            "title": "Worker"
+          },
+          "config": {
+            "type": "boolean",
+            "title": "Config"
+          },
+          "sources_layout": {
+            "type": "boolean",
+            "title": "Sources Layout"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "database",
+          "worker",
+          "config",
+          "sources_layout"
+        ],
+        "title": "ReadinessChecks"
+      },
+      "ReadinessResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "not_ready"
+            ],
+            "title": "Status"
+          },
+          "checks": {
+            "$ref": "#/components/schemas/ReadinessChecks"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "checks"
+        ],
+        "title": "ReadinessResponse",
+        "description": "The 200 answer; a 503 answers the same object with status not_ready."
       },
       "ReauthRequest": {
         "properties": {
@@ -13817,44 +13921,6 @@
           "average_bytes_per_second"
         ],
         "title": "VerificationPhaseSpeed"
-      },
-      "ApiErrorResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "code": {
-            "enum": [
-              "bad_request",
-              "unauthenticated",
-              "forbidden",
-              "reauth_required",
-              "not_found",
-              "conflict",
-              "invalid",
-              "rate_limited",
-              "failed",
-              "upstream_failed",
-              "unavailable"
-            ],
-            "type": "string"
-          },
-          "detail": {
-            "type": "string"
-          },
-          "message_key": {
-            "type": "string"
-          },
-          "message_params": {
-            "additionalProperties": {},
-            "type": "object"
-          }
-        },
-        "required": [
-          "detail",
-          "code",
-          "message_key",
-          "message_params"
-        ],
-        "type": "object"
       }
     },
     "securitySchemes": {

@@ -4,17 +4,14 @@ import asyncio
 import os
 import secrets
 from contextlib import asynccontextmanager
-from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import (
     FastAPI,
     Request,
 )
-from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 
-from .api_models import documented_schemas
 from .branding import PRODUCT_NAME
 from .config import settings, validate_settings
 from .errors import STATUS, DomainError
@@ -120,24 +117,6 @@ app = FastAPI(
     redoc_url="/redoc" if settings.api_docs_enabled else None,
     openapi_url="/openapi.json" if settings.api_docs_enabled else None,
 )
-
-
-def _openapi_schema() -> dict[str, Any]:
-    if app.openapi_schema is None:
-        schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
-        components = schema.setdefault("components", {}).setdefault("schemas", {})
-        for name, documented in documented_schemas().items():
-            existing = components.get(name)
-            # Never replace a canonical inbound Pydantic contract. Named
-            # pass-through response components are identifiable by their open
-            # object schema and are enriched with the documented field shape.
-            if existing is None or existing.get("additionalProperties") is True:
-                components[name] = documented
-        app.openapi_schema = schema
-    return app.openapi_schema
-
-
-app.openapi = _openapi_schema
 
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}

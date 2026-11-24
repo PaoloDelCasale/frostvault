@@ -7,7 +7,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Request
 from pydantic import MISSING, BaseModel, ConfigDict, Field, model_validator
 
-from ..api_models import passthrough
+from ..api_models import ResponseModel, passthrough
 from ..config import settings
 from ..services.audit_events import audit_log
 from ..database import db
@@ -95,7 +95,7 @@ class StorageEstimateRequest(BaseModel):
 # without inventing a value.
 
 
-class StorageEstimateResponse(BaseModel):
+class StorageEstimateResponse(ResponseModel):
     # ``CostEstimate.as_dict``; shared with the inclusion preview of policy.py.
     model_config = ConfigDict(extra="forbid")
     kind: Literal["storage_month"]
@@ -110,23 +110,23 @@ class StorageEstimateResponse(BaseModel):
     assumptions: dict[str, Any]
 
 
-class LifecycleTransition(BaseModel):
+class LifecycleTransition(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     days: int
     storage_class: str
 
 
-class LifecycleProfile(BaseModel):
+class LifecycleProfile(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     transitions: list[LifecycleTransition]
 
 
-class LifecycleGuidedProfile(BaseModel):
+class LifecycleGuidedProfile(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     transitions: list[LifecycleTransition]
 
 
-class LifecycleResponse(BaseModel):
+class LifecycleResponse(ResponseModel):
     # Saving the plan adds the outcome to what reading it answers.
     model_config = ConfigDict(extra="forbid")
     profile: LifecycleProfile
@@ -136,7 +136,7 @@ class LifecycleResponse(BaseModel):
     warnings: list[str] | MISSING = MISSING
 
 
-class VaultMoveEstimate(BaseModel):
+class VaultMoveEstimate(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     target_class: str
     eligible_count: int
@@ -150,7 +150,7 @@ class VaultMoveEstimate(BaseModel):
     assumptions: str
 
 
-class VaultMovePreview(BaseModel):
+class VaultMovePreview(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     vault_id: int
     targets: list[VaultMoveEstimate]

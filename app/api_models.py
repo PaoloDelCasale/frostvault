@@ -3,24 +3,32 @@
 The existing JSON payloads are the compatibility boundary.  A route's response
 is declared through a pass-through: at runtime it only checks that a JSON
 object was returned and preserves all keys, including keys added by service
-integrations.  What the document says about the fields comes from one of two
-places while the schemas move (ADR-0056): a Pydantic model next to the route,
-declared with ``passthrough(Model)``, or the hand-written schema of the same
-name in ``openapi_schemas.json``, declared with ``response_model(name)``.
+integrations.  What the document says about the fields comes from a Pydantic
+model next to the route, declared with ``passthrough(Model)`` (ADR-0056).
 """
 
 from __future__ import annotations
 
-import json
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, RootModel
+from pydantic import BaseModel, ConfigDict, RootModel
 
 
 class JsonObjectResponse(RootModel[dict[str, Any]]):
     """A JSON object response that never filters nested or extension fields."""
+
+
+class ResponseModel(BaseModel):
+    """The base of every model that documents a response, and of the models it nests.
+
+    Production never validates with these models: they only describe the
+    OpenAPI document and are checked by the tests. ``defer_build`` keeps
+    Pydantic from building them at import; they are built the first time the
+    document is generated or a test validates an answer.
+    """
+
+    model_config = ConfigDict(defer_build=True)
 
 
 @lru_cache(maxsize=None)
@@ -34,6 +42,9 @@ def passthrough(model: type[BaseModel]) -> type[JsonObjectResponse]:
     """
 
     def model_json_schema(cls, _core_schema: Any, handler: Any) -> Any:
+        # A ``ResponseModel`` is built here, the first time the document is
+        # generated; already built, this does nothing.
+        model.model_rebuild()
         schema = model.__pydantic_core_schema__
         if schema["type"] == "definitions":
             # A model that nests another one twice keeps its own reference here:
@@ -51,17 +62,3 @@ def passthrough(model: type[BaseModel]) -> type[JsonObjectResponse]:
             "__get_pydantic_json_schema__": classmethod(model_json_schema),
         },
     )
-
-
-@lru_cache(maxsize=None)
-def response_model(name: str) -> type[JsonObjectResponse]:
-    """Return a named pass-through response model for an OpenAPI component."""
-
-    return type(name, (JsonObjectResponse,), {"__module__": __name__})
-
-
-def documented_schemas() -> dict[str, Any]:
-    """Load deterministic component schemas shared with generated clients."""
-
-    path = Path(__file__).with_name("openapi_schemas.json")
-    return json.loads(path.read_text(encoding="utf-8"))["schemas"]

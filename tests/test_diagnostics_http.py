@@ -13,11 +13,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
 from app import diagnostics, main
 from app.routes.deps import current_user
-from tests.fixtures import override_settings
+from tests.fixtures import http_client, override_settings
 from tests.spa_fixture import write_spa_dist
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,7 +39,7 @@ class DiagnosticsHttpTests(unittest.TestCase):
         self.enterContext(patch("app.routes.deps.db", self.database))
         self.render = self.enterContext(patch("app.routes.ops.metrics_service.render_prometheus", return_value=METRIC_TEXT))
         # No context-manager lifespan: never initialize DB, workers or cloud SDK.
-        self.client = TestClient(main.app, base_url="http://vault.example")
+        self.client = http_client(base_url="http://vault.example")
         self.addCleanup(self.client.close)
 
     def assert_closed(self, response, status: int) -> None:
@@ -176,16 +174,15 @@ class DocsAndExporterTests(unittest.TestCase):
             import sys
             from pathlib import Path
             from unittest.mock import patch
-            from fastapi.testclient import TestClient
             from app import main
-            from tests.fixtures import override_settings
+            from tests.fixtures import http_client, override_settings
             from tests.spa_fixture import write_spa_dist
             directory = Path(sys.argv[1])
             enabled = sys.argv[2] == "true"
             assert main.settings.api_docs_enabled == enabled
             assert not main.settings.metrics_token
             with override_settings(frontend_dist_dir=str(write_spa_dist(directory))), patch("app.main.db", side_effect=AssertionError("No DB")), patch("app.routes.deps.db", side_effect=AssertionError("No DB")):
-                client = TestClient(main.app)
+                client = http_client()
                 for path in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
                     response = client.get(path)
                     assert response.status_code == (200 if enabled else 404), (path, response.text)

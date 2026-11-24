@@ -7,7 +7,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import MISSING, BaseModel, ConfigDict, Field, RootModel
 
-from ..api_models import passthrough
+from ..api_models import ResponseModel, passthrough
 from ..config import settings
 from ..i18n import translate
 from ..database import db
@@ -62,7 +62,7 @@ def _protection_observation(connection: Any, vault: dict[str, Any], access: Any)
 # in one service function; it stays open where the catalog adds keys.
 
 
-class FileRecovery(BaseModel):
+class FileRecovery(ResponseModel):
     """Recovery in progress of a cloud-only file (#646): its Job and the cloud restore, which continues and is charged after the Job is stopped."""
 
     model_config = ConfigDict(extra="allow")
@@ -75,7 +75,7 @@ class FileRecovery(BaseModel):
     expires_at: str | None = Field(description="End of the readable restored copy.")
 
 
-class VaultFileListItem(BaseModel):
+class VaultFileListItem(ResponseModel):
     """Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, stopped (an upload the Owner stopped, kept out of automatic upload until the content changes, never pending), excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem)."""
 
     # Open: the protection projection (``project_file``) adds its own keys.
@@ -116,7 +116,7 @@ class VaultFileListItem(BaseModel):
     recovery: FileRecovery | None | MISSING = MISSING
 
 
-class DirectoryListItem(BaseModel):
+class DirectoryListItem(ResponseModel):
     """Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed."""
 
     # Open: the directory aggregates add their own counters.
@@ -138,10 +138,11 @@ class DirectoryListItem(BaseModel):
 
 
 class ArchiveListItem(RootModel[VaultFileListItem | DirectoryListItem]):
-    pass
+    # A root model cannot derive from ``ResponseModel``: it defers its build itself.
+    model_config = ConfigDict(defer_build=True)
 
 
-class FilesResponse(BaseModel):
+class FilesResponse(ResponseModel):
     # Open: the search answer is the catalog's own dictionary.
     model_config = ConfigDict(extra="allow")
     manual_upload: bool | MISSING = MISSING
@@ -224,14 +225,14 @@ def search_all_files(
         )
 
 
-class UploadActivityStage(BaseModel):
+class UploadActivityStage(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     files: int = Field(ge=0)
     bytes: int = Field(ge=0)
     transferred_bytes: int = Field(ge=0)
 
 
-class BulkUploadAdmissionActivity(BaseModel):
+class BulkUploadAdmissionActivity(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     requests: int = Field(ge=0)
     selected_files: int = Field(ge=0)
@@ -239,27 +240,27 @@ class BulkUploadAdmissionActivity(BaseModel):
     admitted_files: int = Field(ge=0)
 
 
-class UploadPhaseSpeed(BaseModel):
+class UploadPhaseSpeed(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     bytes_per_second: float | None = Field(ge=0)
     files_per_second: float | None = Field(ge=0)
     average_bytes_per_second: float | None = Field(ge=0)
 
 
-class VerificationPhaseSpeed(BaseModel):
+class VerificationPhaseSpeed(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     bytes_per_second: float | None = Field(ge=0)
     average_bytes_per_second: float | None = Field(ge=0)
 
 
-class ThroughputSample(BaseModel):
+class ThroughputSample(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     at: str
     upload_bytes_per_second: float = Field(ge=0)
     verification_bytes_per_second: float = Field(ge=0)
 
 
-class UploadThroughput(BaseModel):
+class UploadThroughput(ResponseModel):
     """Measured speeds of a Vault's two adoption phases, from in-memory samples lost at restart (#755). Bytes per second; null until measured."""
 
     model_config = ConfigDict(extra="forbid")
@@ -272,7 +273,7 @@ class UploadThroughput(BaseModel):
     history: list[ThroughputSample]
 
 
-class ExpectedFinish(BaseModel):
+class ExpectedFinish(ResponseModel):
     """The later of the active phases at their average speed, and the phase that limits it (#755)."""
 
     model_config = ConfigDict(extra="forbid")
@@ -281,7 +282,7 @@ class ExpectedFinish(BaseModel):
     limited_by: Literal["upload", "verification"]
 
 
-class UploadActivitySummary(BaseModel):
+class UploadActivitySummary(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     stability_wait: UploadActivityStage
     queued: UploadActivityStage
@@ -301,13 +302,13 @@ class UploadActivityVault(UploadActivitySummary):
     paused: bool
 
 
-class ServerPriority(BaseModel):
+class ServerPriority(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     throttled: bool
     since: str | None
 
 
-class UploadActivityResponse(BaseModel):
+class UploadActivityResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     observed_at: str
     global_: UploadActivitySummary = Field(alias="global")
@@ -329,7 +330,7 @@ def upload_activity_overview(_: dict[str, Any] = Depends(current_user)):
                                           "since": priority["since"]}}
 
 
-class GeneralOverviewVault(BaseModel):
+class GeneralOverviewVault(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
     name: str
@@ -339,21 +340,21 @@ class GeneralOverviewVault(BaseModel):
     lifecycle: Literal["provisioning", "active", "reconnect_required", "stopping", "tombstone"]
 
 
-class CloudPreflightSnapshot(BaseModel):
+class CloudPreflightSnapshot(ResponseModel):
     # Not closed: the gate answers with its whole stored row.
     status: Literal["unknown", "ready", "blocked"]
     remediation: str | None
     next_probe_at: str | None
 
 
-class MetadataBackupReference(BaseModel):
+class MetadataBackupReference(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
     created_at: str | None
     verified_at: str | None
 
 
-class MetadataBackupVerification(BaseModel):
+class MetadataBackupVerification(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     last_verified: MetadataBackupReference | None
     latest: MetadataBackupReference | None
@@ -362,7 +363,7 @@ class MetadataBackupVerification(BaseModel):
     next_verification_at: str | None
 
 
-class GeneralOverview(BaseModel):
+class GeneralOverview(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     vaults: list[GeneralOverviewVault] | MISSING = MISSING
     open_problem_count: float | MISSING = MISSING
@@ -386,7 +387,7 @@ def general_overview(request: Request, user: dict[str, Any] = Depends(current_us
         return overview(connection, locale=_request_locale(request))
 
 
-class NotificationItem(BaseModel):
+class NotificationItem(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
     vault_id: int | None
@@ -407,7 +408,7 @@ class NotificationItem(BaseModel):
     resolving: Literal["scan"] | None | MISSING = MISSING
 
 
-class ProblemsResponse(BaseModel):
+class ProblemsResponse(ResponseModel):
     """One page of the open Problems and how many are open in all."""
 
     model_config = ConfigDict(extra="forbid")
@@ -441,7 +442,7 @@ def _problem_resolving(item: dict[str, Any]) -> str | None:
     return "scan" if scanning else None
 
 
-class SourceDeviceReads(BaseModel):
+class SourceDeviceReads(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     device: str
     reading: int
@@ -450,7 +451,7 @@ class SourceDeviceReads(BaseModel):
     bytes_per_second: int | None = Field(description="Bytes read from this device per second over the last 20 s, by scan verification and uploads (#766); null while unmeasured.")
 
 
-class VaultRuntimeStatus(BaseModel):
+class VaultRuntimeStatus(ResponseModel):
     # Open: the scan, the component health and the audit add their own fields.
     model_config = ConfigDict(extra="allow")
     last_error: str | None | MISSING = MISSING
@@ -481,20 +482,20 @@ class VaultRuntimeStatus(BaseModel):
     verify_bytes_read: float | None | MISSING = Field(default=MISSING, description="Bytes read by the running verification, partial files included (#759).")
 
 
-class VaultStorageBytes(BaseModel):
+class VaultStorageBytes(ResponseModel):
     model_config = ConfigDict(extra="allow")
     cloud_bytes: float
     local_bytes: float
 
 
-class StatsSourceVolume(BaseModel):
+class StatsSourceVolume(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     alias: str | None
     health: str
     local_operations_allowed: bool
 
 
-class StatsResponse(BaseModel):
+class StatsResponse(ResponseModel):
     # Open: the catalog summary is spread into the answer.
     model_config = ConfigDict(extra="allow")
     manual_upload: bool | MISSING = MISSING
@@ -571,7 +572,7 @@ def stats(vault: dict[str, Any] = Depends(vault_in_path), request: Request = Non
     }
 
 
-class NotificationsResponse(BaseModel):
+class NotificationsResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     items: list[NotificationItem]
     unread_count: int
@@ -635,7 +636,7 @@ def mark_notification_read(
     return item
 
 
-class MarkAllNotificationsReadResponse(BaseModel):
+class MarkAllNotificationsReadResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     marked_count: int
     unread_count: int
@@ -664,7 +665,7 @@ class RecoveryKitCustody(BaseModel):
     fingerprint: str = Field(min_length=24, max_length=24, pattern="^[0-9a-f]+$")
 
 
-class SystemBucket(BaseModel):
+class SystemBucket(ResponseModel):
     """The installation's System Bucket for metadata backups (#734)."""
 
     model_config = ConfigDict(extra="forbid")
@@ -674,13 +675,13 @@ class SystemBucket(BaseModel):
     ready: bool
 
 
-class MetadataRestoreNotice(BaseModel):
+class MetadataRestoreNotice(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     backup_created_at: str
     updated_files: int
 
 
-class RecoveryKitStatus(BaseModel):
+class RecoveryKitStatus(ResponseModel):
     model_config = ConfigDict(extra="allow")
     configured: bool
     fingerprint: str | None
@@ -732,7 +733,7 @@ def acknowledge_recovery_kit(
         return recovery_kit_service.kit_status(connection)
 
 
-class MetadataBackupRun(BaseModel):
+class MetadataBackupRun(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
     created_at: str
@@ -750,7 +751,7 @@ class MetadataBackupRun(BaseModel):
     verified_at: str | None
 
 
-class MetadataBackupStatus(BaseModel):
+class MetadataBackupStatus(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     last_status: str
     last_run: MetadataBackupRun | None
@@ -761,7 +762,7 @@ class MetadataBackupStatus(BaseModel):
     off_host: bool = Field(description="Whether backups must also reach the System Bucket.")
 
 
-class MetadataBackupsResponse(BaseModel):
+class MetadataBackupsResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     status: MetadataBackupStatus
     runs: list[MetadataBackupRun]
@@ -775,7 +776,7 @@ def list_metadata_backups(_: dict[str, Any] = Depends(current_user)):
     return {"status": status, "runs": runs}
 
 
-class MetadataBackupRunResult(BaseModel):
+class MetadataBackupRunResult(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     ok: bool
     reason: str

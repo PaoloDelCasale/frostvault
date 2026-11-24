@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Header, Path, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import MISSING, BaseModel, ConfigDict, Field, model_validator
 
-from ..api_models import passthrough
+from ..api_models import ResponseModel, passthrough
 from ..config import settings
 from ..i18n import DEFAULT_LOCALE, format_datetime, translate
 from ..database import db
@@ -160,7 +160,7 @@ type FileOperationAction = Annotated[
 ]
 
 
-class UploadRemediation(BaseModel):
+class UploadRemediation(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
     state: Literal["pending", "queued", "retrying", "blocked", "suspended", "cancelled", "resolved"]
@@ -176,7 +176,7 @@ class UploadRemediation(BaseModel):
     original_job_ids: list[int]
 
 
-class JobRecord(BaseModel):
+class JobRecord(ResponseModel):
     # The Job list and a group's page add the request's columns; one Job's
     # detail and a file's history do not.
     model_config = ConfigDict(extra="forbid")
@@ -204,7 +204,7 @@ class JobRecord(BaseModel):
     approved_at: str | None | MISSING = MISSING
 
 
-class JobGroup(BaseModel):
+class JobGroup(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
     path: str
@@ -231,7 +231,7 @@ class JobGroup(BaseModel):
     ready_by: str | None = Field(description="Expected end of the cloud restore: requested_at plus estimated_hours.")
 
 
-class JobsResponse(BaseModel):
+class JobsResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     items: list[JobRecord]
     groups: list[JobGroup]
@@ -239,13 +239,13 @@ class JobsResponse(BaseModel):
     next_groups_before_id: int | None
 
 
-class FileJobHistoryResponse(BaseModel):
+class FileJobHistoryResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     items: list[JobRecord]
     next_before_id: int | None
 
 
-class ScanResponse(BaseModel):
+class ScanResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     message: str
     message_key: str
@@ -254,7 +254,7 @@ class ScanResponse(BaseModel):
     waiting_since: str | MISSING = Field(default=MISSING, description="When that operation took the Vault, when queued.")
 
 
-class CatalogRevisionResponse(BaseModel):
+class CatalogRevisionResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     vault_id: int
     revision: int
@@ -263,7 +263,7 @@ class CatalogRevisionResponse(BaseModel):
     changed: bool
 
 
-class ArchiveVersionItem(BaseModel):
+class ArchiveVersionItem(ResponseModel):
     # ``FileListing.versions`` builds every key of a row, null when not recorded.
     model_config = ConfigDict(extra="forbid")
     upload_verification_requested: Literal["s3_checksum", "read_back"] | None
@@ -292,7 +292,7 @@ class ArchiveVersionItem(BaseModel):
     minimum_storage_until: str | None = Field(description="When the Minimum Storage Duration of the class ends; null for a class without one.")
 
 
-class UploadReconciliation(BaseModel):
+class UploadReconciliation(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     pending: bool
     can_resume: bool
@@ -300,7 +300,7 @@ class UploadReconciliation(BaseModel):
     remedy: str | None
 
 
-class FileVersionsResponse(BaseModel):
+class FileVersionsResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     path: str
     items: list[ArchiveVersionItem]
@@ -313,7 +313,7 @@ class FileVersionsResponse(BaseModel):
     default_restore_days: int
 
 
-class RestoreEstimate(BaseModel):
+class RestoreEstimate(ResponseModel):
     # A folder or a selection is priced per class: tier, days and the amounts.
     model_config = ConfigDict(extra="forbid")
     tier: str
@@ -327,7 +327,7 @@ class RestoreEstimate(BaseModel):
     restore_object_irreversible: bool | MISSING = MISSING
 
 
-class RecoverEstimateResponse(BaseModel):
+class RecoverEstimateResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     path: str
     archive_version_id: str | None
@@ -338,7 +338,7 @@ class RecoverEstimateResponse(BaseModel):
     storage_class: str | None | MISSING = MISSING
 
 
-class BulkUploadAdmissionResponse(BaseModel):
+class BulkUploadAdmissionResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     group_id: str
     vault_id: int
@@ -355,7 +355,7 @@ class BulkUploadAdmissionResponse(BaseModel):
     total_bytes: int = Field(ge=0)
 
 
-class UploadResponse(BaseModel):
+class UploadResponse(ResponseModel):
     # A folder is admitted in the background: no Job yet, the admission instead.
     model_config = ConfigDict(extra="forbid")
     group_id: str
@@ -372,7 +372,7 @@ class UploadResponse(BaseModel):
     estimated_hours: float | None | MISSING = MISSING
 
 
-class FileOperationResponse(BaseModel):
+class FileOperationResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     group_id: str
     job_ids: list[int]
@@ -388,18 +388,18 @@ class FileOperationResponse(BaseModel):
     approval_required: bool | MISSING = Field(default=MISSING, description="A Recovery held for Restore Approval; only in a Recovery's answer.")
 
 
-class UploadReconciliationResponse(BaseModel):
+class UploadReconciliationResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     job_id: int
     group_id: str
 
 
-class RetryFailedUploadsResponse(BaseModel):
+class RetryFailedUploadsResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     item_count: int
 
 
-class JobCancelResponse(BaseModel):
+class JobCancelResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     message: str
     cancelled_count: int
@@ -407,19 +407,19 @@ class JobCancelResponse(BaseModel):
     stopped_admissions: int | MISSING = Field(default=MISSING, ge=0)
 
 
-class RecoverApprovalResponse(BaseModel):
+class RecoverApprovalResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     group_id: str
     job_ids: list[int]
     message: str
 
 
-class CloudDeletionSettings(BaseModel):
+class CloudDeletionSettings(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     purge_delay_seconds: Literal[604800]
 
 
-class CloudDeletionSkipped(BaseModel):
+class CloudDeletionSkipped(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     present_locally: int
     pending_work: int
@@ -429,7 +429,7 @@ class CloudDeletionSkipped(BaseModel):
     no_exact_version: int
 
 
-class CloudDeletionPreview(BaseModel):
+class CloudDeletionPreview(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     object_count: int
     version_count: int
@@ -450,7 +450,7 @@ class CloudDeletionPreview(BaseModel):
     retention_lock: RetentionLockPreview | None
 
 
-class CloudPurgeResponse(BaseModel):
+class CloudPurgeResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     group_id: str
     job_ids: list[int]

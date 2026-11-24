@@ -22,10 +22,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import yaml
-from fastapi.testclient import TestClient
 
-from app import main, readiness_probe
-from tests.fixtures import override_settings
+from app import readiness_probe
+from tests.fixtures import http_client, override_settings
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -72,7 +71,7 @@ class ProbeHostTests(unittest.TestCase):
 
 class ProbeHTTPTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.client = TestClient(main.app, client=("127.0.0.1", 50000))
+        self.client = http_client()
         self.addCleanup(self.client.close)
         for name in ("check_database", "worker_is_healthy", "check_config"):
             patcher = patch(f"app.services.health.{name}", return_value=True)
@@ -141,6 +140,24 @@ class ProbeHTTPTests(unittest.TestCase):
             result = readiness_probe.main()
         return result, stderr.getvalue()
 
+    def test_probes_answer_their_documented_models(self) -> None:
+        # The shared client checks both success bodies against their models.
+        from app.routes.ops import ReadinessResponse
+        from tests.fixtures import response_contract_report
+        with override_settings(allowed_hosts=""):
+            self.assertEqual(self.client.get("/health").content, b'{"status":"ok"}')
+            ready = self.client.get("/ready")
+            self.assertEqual(ready.json(), {"status": "ready", "checks": {
+                "database": True, "worker": True, "config": True, "sources_layout": True}})
+            with patch("app.services.health.worker_is_healthy", return_value=False):
+                not_ready = self.client.get("/ready")
+        self.assertEqual(not_ready.status_code, 503)
+        # The 503 is not a success body: the model still describes it.
+        ReadinessResponse.model_validate_json(not_ready.content, strict=True)
+        self.assertEqual(not_ready.json()["status"], "not_ready")
+        self.assertLessEqual({"seen\tGET /health", "seen\tGET /ready"},
+                             set(response_contract_report(self.client.app)))
+
     def test_ready_with_unset_empty_and_multiple_allowed_hosts(self) -> None:
         for allowed_hosts, expected_host in (
             (None, "127.0.0.1"), ("", "127.0.0.1"), (" , ", "127.0.0.1"),
@@ -171,7 +188,7 @@ class ProbeHTTPTests(unittest.TestCase):
         with override_settings(allowed_hosts="vault.example"):
             for peer in ("127.0.0.1", "203.0.113.42"):
                 # No context-manager lifespan: never initialize a database.
-                client = TestClient(main.app, client=(peer, 50000))
+                client = http_client(client=(peer, 50000))
                 try:
                     for path in ("/health", "/ready", "/api/me"):
                         for host in ("127.0.0.1", "localhost", "evil.example"):
