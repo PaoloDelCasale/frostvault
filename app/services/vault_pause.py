@@ -40,7 +40,7 @@ def set_paused(connection: Any, *, vault_id: int, paused: bool,
         # Optional delivery failure must not roll back the Owner's hold.
         try:
             with transaction(connection):
-                channels = ("in_app", "email") if notifications._smtp_config() is not None else ("in_app",)
+                channels = ("in_app", "email") if notifications.email_configured() else ("in_app",)
                 notifications.enqueue_notification(
                     connection, vault_id=vault_id,
                     event="vault_paused" if paused else "vault_resumed", title="",

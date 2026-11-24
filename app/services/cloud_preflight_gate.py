@@ -104,7 +104,7 @@ def is_readiness_error(error: BaseException) -> bool:
     ) for item in exception_chain(error))
 
 
-def _problem_params(remediation: str | None) -> dict[str, str]:
+def problem_params(remediation: str | None) -> dict[str, str]:
     params = {'remediation': remediation or ''}
     match = remediation_match(remediation)
     if match:
@@ -125,7 +125,7 @@ def _publish(connect: Callable, *, remediation: str | None, failures: int, due: 
         )
         notifications.set_problem(
             connection, key='blocked:installation:preflight', event='cloud_preflight_blocked',
-            active=bool(remediation), params=_problem_params(remediation),
+            active=bool(remediation), params=problem_params(remediation),
         )
         # Supersede pre-461 per-Vault episodes, not Job failure history.
         connection.execute(

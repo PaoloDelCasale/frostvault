@@ -211,7 +211,7 @@ def _row_notification(
     }
 
 
-def _lock_owner_inbox(connection: Any) -> None:
+def lock_owner_inbox(connection: Any) -> None:
     """Serialize problem episodes and failure groups on the single Owner row."""
     connection.execute("SELECT id FROM owner WHERE id=1 FOR NO KEY UPDATE")
 
@@ -688,7 +688,7 @@ def set_problem(
     an open problem never resolves it or re-arms email. A recurrence does both.
     Only safe structured context belongs in params, never exception strings.
     """
-    _lock_owner_inbox(connection)
+    lock_owner_inbox(connection)
     previous = connection.execute(
         "SELECT * FROM notifications WHERE dedupe_key=%s", (key,),
     ).fetchone()

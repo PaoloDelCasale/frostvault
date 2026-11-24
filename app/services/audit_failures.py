@@ -44,7 +44,7 @@ def problem_params(exc: BaseException) -> dict[str, str]:
     URLs or credentials.
     """
     if isinstance(exc, cloud_preflight_gate.CloudPreflightBlocked):
-        return cloud_preflight_gate._problem_params(str(exc))
+        return cloud_preflight_gate.problem_params(str(exc))
     key = CLOUD_REQUEST_KEY if isinstance(exc, (ClientError, BotoCoreError)) else UNEXPECTED_KEY
     return {"remediation": translate(key, locale="en"), "remediation_key": key}
 
