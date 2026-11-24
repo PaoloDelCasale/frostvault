@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import threading
 from collections.abc import AsyncIterator, Awaitable, Iterable, Iterator
 from pathlib import Path
 from typing import Any, NamedTuple, Protocol
@@ -37,6 +38,8 @@ from .vault_paths import is_restore_temporary_name
 _logger = logging.getLogger("uvicorn.error")
 # The raw watcher batch is logged at DEBUG with at most this many paths.
 DEBUG_BATCH_PATHS = 50
+# Set while ``watch_loop`` runs in this process (#862).
+_loop_running = threading.Event()
 
 
 class WatcherHost(Protocol):
@@ -629,9 +632,33 @@ def root_signature(vault: dict[str, Any]) -> tuple[Any, ...]:
             vault.get("reconnect_volume_fingerprint"))
 
 
+def start_blocker(vault: dict[str, Any]) -> str | None:
+    """Why ``watch_loop`` starts no watcher for this active Vault, or None.
+
+    ``"suspended"``: its local work is suspended (relocation);
+    ``"unavailable"``: its Source Volume refuses local operations.
+    """
+    if vault_relocation.local_work_suspended(vault):
+        return "suspended"
+    if not source_layout.vault_local_access(vault["source_root"]).local_operations_allowed:
+        return "unavailable"
+    return None
+
+
+def pairs_startup_scan(vault: dict[str, Any]) -> bool:
+    """Whether a watcher of this process scans this active Vault once registered (#862).
+
+    True while ``watch_loop`` runs and would start a watcher for the Vault:
+    every watcher run is paired with a scan, so the scheduler's startup scan
+    of the Vault would walk it a second time.
+    """
+    return _loop_running.is_set() and start_blocker(vault) is None
+
+
 async def watch_loop(host: WatcherHost) -> None:
     """Keep one recursive filesystem watcher aligned with each enabled vault."""
     watchers: dict[int, tuple[tuple[Any, ...], asyncio.Task[None]]] = {}
+    _loop_running.set()
     try:
         while True:
             await asyncio.to_thread(source_layout.verify_mounts_once)
@@ -643,18 +670,13 @@ async def watch_loop(host: WatcherHost) -> None:
                     task.cancel()
                     watchers.pop(vault_id)
             for vault_id, vault in desired.items():
-                if vault_relocation.local_work_suspended(vault):
-                    existing = watchers.get(vault_id)
-                    if existing is not None:
-                        existing[1].cancel()
-                        watchers.pop(vault_id, None)
-                    continue
-                access = source_layout.vault_local_access(vault["source_root"])
-                if not access.local_operations_allowed:
-                    await asyncio.to_thread(
-                        host.record_source_health, vault_id,
-                        ok=False, error="Protection blocked: Source Volume unavailable",
-                    )
+                blocker = start_blocker(vault)
+                if blocker is not None:
+                    if blocker == "unavailable":
+                        await asyncio.to_thread(
+                            host.record_source_health, vault_id,
+                            ok=False, error="Protection blocked: Source Volume unavailable",
+                        )
                     existing = watchers.get(vault_id)
                     if existing is not None:
                         existing[1].cancel()
@@ -667,6 +689,7 @@ async def watch_loop(host: WatcherHost) -> None:
                     )
             await asyncio.sleep(10)
     finally:
+        _loop_running.clear()
         tasks = [task for _, task in watchers.values()]
         for task in tasks:
             task.cancel()

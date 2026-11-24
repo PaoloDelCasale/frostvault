@@ -78,7 +78,9 @@ class SchedulerHost(Protocol):
 
     def observe_failed_job_backlog(self) -> tuple[int, float]: ...
 
-    def scan_all_vaults(self) -> None: ...
+    def scan_all_vaults(self, *, startup: bool = False) -> None:
+        """Scan every active Vault; the ``startup`` scan leaves to the watchers
+        the Vaults they scan anyway (#862)."""
 
     def audit_all_vaults(self) -> None: ...
 
@@ -119,7 +121,9 @@ def persisted_maintenance_ages(
     """Return seconds since each maintenance task last ran, or None when never.
 
     The full scan is always due at startup: it is the reconciliation net for
-    events missed while the process was down.  Audit, scheduled backup, and
+    events missed while the process was down (for the Vaults a watcher will
+    scan once registered, that watcher's paired scan is, #862).  Audit,
+    scheduled backup, and
     restore verification are read back from their durable records so a
     restart neither skips an overdue run nor repeats a recent one.
     """
@@ -199,6 +203,8 @@ async def run_cycles(host: SchedulerHost, loop: asyncio.AbstractEventLoop, wakeu
     marks = initial_maintenance_marks(loop.time(), ages)
     host.forget_audit_retry()
     last_scan = marks["scan"]
+    # A scan age nobody recorded makes the first scan the startup scan.
+    startup_scan = ages.get("scan") is None
     last_audit = marks["audit"]
     last_backup = marks["backup"]
     last_backup_verify = marks["backup_verify"]
@@ -288,7 +294,8 @@ async def run_cycles(host: SchedulerHost, loop: asyncio.AbstractEventLoop, wakeu
                     runnable_count = backlog_runnable
                 current = loop.time()
                 if current - last_scan >= runtime.scan_interval:
-                    host.submit("scan", host.scan_all_vaults)
+                    host.submit("scan", partial(host.scan_all_vaults, startup=startup_scan))
+                    startup_scan = False
                     last_scan = current
                 if current - last_audit >= runtime.audit_interval:
                     host.submit("audit", host.audit_all_vaults)

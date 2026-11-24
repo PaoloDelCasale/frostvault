@@ -6254,7 +6254,12 @@ def _scan_or_queue(vault: dict[str, Any]) -> None:
             queue_scan(vault)
 
 
-def scan_all_vaults() -> None:
+def scan_all_vaults(*, startup: bool = False) -> None:
+    """Scan every active Vault, one at a time.
+
+    The ``startup`` scan leaves out the Vaults that a watcher of this process
+    scans once registered (#862): walking them here would only repeat it.
+    """
     with db() as connection:
         vaults = connection.execute(
             f"{VAULT_ROW_SQL} WHERE v.lifecycle='active' ORDER BY v.id"
@@ -6262,6 +6267,10 @@ def scan_all_vaults() -> None:
     for vault in vaults:
         if shutdown_state.requested:
             return
+        if startup and filesystem_watcher.pairs_startup_scan(vault):
+            _traversal_logger.info(
+                "Vault %s: startup scan left to the watcher's paired scan", vault["id"])
+            continue
         _scan_or_queue(vault)
 
 
@@ -7331,8 +7340,8 @@ class _SchedulerHost:
     def observe_failed_job_backlog(self) -> tuple[int, float]:
         return observe_failed_job_backlog()
 
-    def scan_all_vaults(self) -> None:
-        scan_all_vaults()
+    def scan_all_vaults(self, *, startup: bool = False) -> None:
+        scan_all_vaults(startup=startup)
 
     def audit_all_vaults(self) -> None:
         audit_all_vaults()

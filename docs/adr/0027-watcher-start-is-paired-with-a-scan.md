@@ -113,6 +113,16 @@ Vault `unconfirmed` and its notifications open until a scan happens to run.
 - Each application start scans every enabled Vault once (local walk, cloud
   listing, Storage Plan synchronization), one Vault at a time. This is the price
   of never leaving files unseen for up to six hours; the periodic scan is unchanged.
+
+  _Amended by #862:_ once, not twice. The scheduler's startup scan leaves out
+  the Vaults that a watcher of this process will scan once registered (the
+  watcher loop runs, the Vault's local work is not suspended and its Source
+  Volume allows local operations: the rule the loop uses to start a watcher).
+  It started before the registration, so it never closed the gap the paired
+  scan closes. A watcher run that fails before its paired scan is followed by
+  one that pairs its own. Vaults without a watcher (watchers off, Source Volume
+  unavailable, local work suspended) are still scanned at startup, and the
+  periodic scans still cover every active Vault.
 - While a path is unreadable or has an unsupported name, the Vault is
   `unconfirmed`: it is still uploaded, but no local space is freed and nothing is
   deleted from the cloud. The notifications say so. That rule is the one that

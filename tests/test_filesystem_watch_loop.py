@@ -219,6 +219,88 @@ class WatchLoopTests(WatcherCase):
         self.assertEqual(len(self.opened), 2)
 
 
+class StartupScanTests(WatcherCase):
+    """The scheduler's startup scan and the watchers' paired scans (#862).
+
+    A watcher of this process pairs a scan with its registration, so the
+    startup scan leaves it that Vault; every other Vault is scanned as before.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.vaults: list[dict] = []
+        self.stack.enter_context(patch("app.storage._enabled_vaults", side_effect=lambda: list(self.vaults)))
+        # ``scan_all_vaults`` reads the active Vaults with the same query.
+        self.connection.execute.return_value.fetchall.side_effect = lambda: list(self.vaults)
+        self.scheduled: list[int] = []
+        self.stack.enter_context(patch(
+            "app.storage._scan_or_queue", side_effect=lambda vault: self.scheduled.append(vault["id"])))
+
+    run_loop = WatchLoopTests.run_loop
+
+    async def scan_all(self, **options):
+        self.scheduled.clear()
+        await asyncio.to_thread(storage.scan_all_vaults, **options)
+        return self.scheduled[:]
+
+    async def test_the_startup_scan_leaves_a_watched_vault_to_its_paired_scan(self):
+        watched, unavailable, relocating = self.vault(9531, "a"), self.vault(9532, "b"), self.vault(9533, "c")
+        self.vaults = [watched, unavailable, relocating]
+        self.access[unavailable["source_root"]] = BLOCKED
+        self.stack.enter_context(patch(
+            "app.storage.vault_relocation.local_work_suspended",
+            side_effect=lambda vault: vault["id"] == 9533))
+        await self.run_loop()
+        await self.settle(lambda: self.open == [(watched["source_root"],)])
+        with self.assertLogs("uvicorn.error", "INFO") as logs:
+            self.assertEqual(await self.scan_all(startup=True), [9532, 9533])
+        self.assertEqual(
+            [line for line in logs.output if "startup scan" in line],
+            ["INFO:uvicorn.error:Vault 9531: startup scan left to the watcher's paired scan"])
+        # The watcher's paired scan is the one that walks it.
+        await self.settle(lambda: [call[1][0]["id"] for call in self.calls if call[0] == "scan_vault"] == [9531])
+        # The periodic scan still walks every active Vault, the watched one too.
+        self.assertEqual(await self.scan_all(), [9531, 9532, 9533])
+
+    async def test_without_a_running_watch_loop_the_startup_scan_walks_every_vault(self):
+        first, second = self.vault(9534, "a"), self.vault(9535, "b")
+        self.vaults = [first, second]
+        # Watchers disabled: the loop never started, and no Source is looked at.
+        access = self.stack.enter_context(patch(
+            "app.storage.source_layout.vault_local_access", return_value=ALLOWED))
+        self.assertEqual(await self.scan_all(startup=True), [9534, 9535])
+        access.assert_not_called()
+        # A loop that has stopped no longer pairs any scan.
+        task = await self.run_loop()
+        await self.settle(lambda: len(self.open) == 2)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(await self.scan_all(startup=True), [9534, 9535])
+
+    async def test_a_watcher_run_that_fails_before_its_paired_scan_is_restarted_and_scans(self):
+        vault = self.vault(9536, "a")
+        self.vaults = [vault]
+        failures = [RuntimeError("catalog unreachable")]
+        checks = []
+
+        def inactive(vault_id):
+            checks.append(vault_id)
+            if failures:
+                raise failures.pop()
+            return False
+
+        self.stack.enter_context(patch.object(storage._WatcherHost, "vault_inactive", side_effect=inactive))
+        await self.run_loop()
+        await self.settle(lambda: not failures)
+        self.assertEqual(await self.scan_all(startup=True), [])
+        # The run died before registering: the loop starts a new one, which
+        # registers and pairs its scan (#496, #497).
+        await self.settle(lambda: "scan_vault" in self.names())
+        self.assertEqual([call[1][0]["id"] for call in self.calls if call[0] == "scan_vault"], [9536])
+        self.assertGreaterEqual(len(checks), 2)
+        self.assertEqual(len(self.opened), 1)
+
+
 class WatcherCycleCostTests(WatcherCase):
     """One watcher run: what a cycle costs, idle and with one event."""
 
