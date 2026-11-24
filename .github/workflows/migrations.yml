@@ -75,26 +75,41 @@ jobs:
         run: |
           mapfile -t TEST_MODULES < <(
             python - <<'PY'
+          import json
           import os
           from pathlib import Path
 
           shard_index = int(os.environ["SHARD_INDEX"])
           shard_count = int(os.environ["SHARD_COUNT"])
-          paths = sorted(
-              (path for path in Path("tests").glob("test_*.py")
-               if path.stem not in {"test_database", "test_aggregate_deadlocks"}),
-              key=lambda path: (-path.stat().st_size, path.name),
+          candidates = [
+              path for path in Path("tests").glob("test_*.py")
+              if path.stem not in {"test_database", "test_aggregate_deadlocks"}
+          ]
+          # Seconds each module took in CI. File size alone stacked slow
+          # small modules on one shard. A module missing from the table
+          # (a new one) is weighed by its size at the table's average rate;
+          # a stale table only unbalances the shards, never drops a module.
+          seconds = json.loads(Path(".github/test-durations.json").read_text())
+          known = [path for path in candidates if path.stem in seconds]
+          rate = (
+              sum(seconds[path.stem] for path in known)
+              / max(1, sum(path.stat().st_size for path in known))
           )
+
+          def weight(path):
+              return seconds.get(path.stem, path.stat().st_size * rate)
+
+          paths = sorted(candidates, key=lambda path: (-weight(path), path.name))
           # The slowest module (~1 min of real-filesystem waits) gets the
-          # last shard alone; the rest are packed by size, largest first.
+          # last shard alone; the rest are packed by weight, heaviest first.
           isolated = "test_watcher_real_filesystem"
-          loads = [0] * (shard_count - 1)
+          loads = [0.0] * (shard_count - 1)
           assigned = [[] for _ in range(shard_count - 1)]
           assigned.append([path for path in paths if path.stem == isolated])
           for path in (path for path in paths if path.stem != isolated):
               target = min(range(shard_count - 1), key=lambda index: (loads[index], index))
               assigned[target].append(path)
-              loads[target] += path.stat().st_size
+              loads[target] += weight(path)
           for path in assigned[shard_index]:
               print(f"tests.{path.stem}")
           PY

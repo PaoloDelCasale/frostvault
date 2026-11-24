@@ -268,7 +268,12 @@ class PullRequestCiContractTests(unittest.TestCase):
         python_runs = "\n".join(
             step.get("run", "") for step in python_job["steps"]
         )
-        self.assertIn("key=lambda path: (-path.stat().st_size, path.name)", python_runs)
+        self.assertIn("key=lambda path: (-weight(path), path.name)", python_runs)
+        durations = json.loads((WORKFLOWS.parent / "test-durations.json").read_text(encoding="utf-8"))
+        self.assertTrue(durations)
+        self.assertTrue(all(
+            isinstance(seconds, (int, float)) and seconds >= 0 for seconds in durations.values()
+        ))
         self.assertIn("assigned[target].append(path)", python_runs)
         self.assertEqual(
             next(step for step in python_job["steps"] if step.get("name") == "Run PostgreSQL unit-test shard")
