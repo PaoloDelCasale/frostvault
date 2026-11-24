@@ -12,11 +12,13 @@ import threading
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 from unittest.mock import patch
 
 import psycopg
 
-from app.catalog import ArchiveCatalog, VaultFileNotFound
+from app.services.archive_versions import ArchiveVersions
+from app.services.catalog_shared import VaultFileNotFound
 from app.services.local_copies import LocalCopies
 from app.services.file_renames import FileRenames
 from tests.catalog_support import fingerprint, protect, sha256_hex
@@ -40,7 +42,7 @@ class _CatalogFixture(FrostVaultTestCase):
 
     def seed_rename(
         self,
-        catalog: ArchiveCatalog,
+        connection: Any,
         *,
         old_path: str,
         new_path: str,
@@ -53,46 +55,45 @@ class _CatalogFixture(FrostVaultTestCase):
         new_seen: str = "2026-07-21T11:00:00+00:00",
         protected: bool = False,
     ) -> tuple[str, str]:
-        local_copies = LocalCopies(catalog.connection)
+        local_copies = LocalCopies(connection)
         old_id = local_copies.observe_local_copy(
             vault_id=2, path=old_path, file_type="regular", size=old_size,
             mtime_ns=100, observed_at=old_seen,
         )
-        self.assertTrue(fingerprint(catalog, 2, old_path, old_digest))
+        self.assertTrue(fingerprint(connection, 2, old_path, old_digest))
         if protected:
-            protect(catalog, 2, old_path, old_digest,
+            protect(connection, 2, old_path, old_digest,
                     provider_version_id=f"rename-{uuid.uuid4()}")
         local_copies.mark_local_copy_missing(old_id, observed_at=gone_at)
         new_id = local_copies.observe_local_copy(
             vault_id=2, path=new_path, file_type="regular", size=new_size,
             mtime_ns=100, observed_at=new_seen,
         )
-        self.assertTrue(fingerprint(catalog, 2, new_path, new_digest))
+        self.assertTrue(fingerprint(connection, 2, new_path, new_digest))
         return old_id, new_id
 
 
 class RenameMatchingTests(_CatalogFixture):
     def test_unique_digest_match_is_auto_confirmed_without_duplicate_file(self) -> None:
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             old_id, new_id = self.seed_rename(
-                catalog, old_path="reports/old-name.txt", new_path="reports/new-name.txt",
+                connection, old_path="reports/old-name.txt", new_path="reports/new-name.txt",
             )
-            candidates = catalog.list_rename_candidates(vault_id=2)
+            candidates = FileRenames(connection).list_rename_candidates(vault_id=2)
             self.assertEqual(len(candidates), 1)
             self.assertEqual(candidates[0]["missing_vault_file_id"], old_id)
             self.assertEqual(candidates[0]["new_vault_file_id"], new_id)
             self.assertEqual(candidates[0]["digest"], DIGEST_A)
 
-            confirmed_id = catalog.confirm_file_rename(
+            confirmed_id = FileRenames(connection).confirm_file_rename(
                 vault_file_id=old_id,
                 new_path="reports/new-name.txt",
                 changed_at="2026-07-21T11:05:00+00:00",
                 vault_id=2,
             )
-            renamed = catalog_probe.get_file_by_path(catalog, 2, "reports/new-name.txt")
-            old_path = catalog_probe.get_file_by_path(catalog, 2, "reports/old-name.txt")
-            history = catalog_probe.list_path_history(catalog, confirmed_id, vault_id=2)
+            renamed = catalog_probe.get_file_by_path(connection, 2, "reports/new-name.txt")
+            old_path = catalog_probe.get_file_by_path(connection, 2, "reports/old-name.txt")
+            history = catalog_probe.list_path_history(connection, confirmed_id, vault_id=2)
             files = connection.execute("SELECT count(*) AS n FROM files").fetchone()["n"]
             closed = connection.execute(
                 "SELECT file_id::text AS file_id, path FROM file_path_history"
@@ -114,37 +115,34 @@ class RenameMatchingTests(_CatalogFixture):
 
     def test_unique_but_stale_digest_match_remains_a_new_file(self) -> None:
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             old_id, new_id = self.seed_rename(
-                catalog, old_path="reports/old-name.txt", new_path="archive/old-name.txt",
+                connection, old_path="reports/old-name.txt", new_path="archive/old-name.txt",
                 old_seen="2026-01-01T10:00:00+00:00", gone_at="2026-01-01T11:00:00+00:00",
             )
-            candidates = catalog.list_rename_candidates(vault_id=2)
+            candidates = FileRenames(connection).list_rename_candidates(vault_id=2)
         self.assertEqual(candidates, [])
         self.assertNotEqual(old_id, new_id)
 
     def test_same_name_changed_content_remains_a_new_file(self) -> None:
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             old_id, new_id = self.seed_rename(
-                catalog, old_path="reports/notes.txt", new_path="archive/notes.txt",
+                connection, old_path="reports/notes.txt", new_path="archive/notes.txt",
                 new_digest=DIGEST_B, new_size=12,
             )
-            candidates = catalog.list_rename_candidates(vault_id=2)
+            candidates = FileRenames(connection).list_rename_candidates(vault_id=2)
             with self.assertRaises(VaultFileNotFound):
-                catalog.confirm_file_rename(
+                FileRenames(connection).confirm_file_rename(
                     vault_file_id=old_id,
                     new_path="archive/notes.txt",
                     changed_at="2026-07-21T11:05:00+00:00",
                     vault_id=2,
                 )
-            self.assertEqual(catalog_probe.get_file_by_path(catalog, 2, "archive/notes.txt")["id"], new_id)
+            self.assertEqual(catalog_probe.get_file_by_path(connection, 2, "archive/notes.txt")["id"], new_id)
         self.assertEqual(candidates, [])
         self.assertNotEqual(old_id, new_id)
 
     def test_ambiguous_equal_digest_candidates_are_never_auto_merged(self) -> None:
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             missing_ids = []
             for path in ("a/one.txt", "a/two.txt"):
@@ -152,7 +150,7 @@ class RenameMatchingTests(_CatalogFixture):
                     vault_id=2, path=path, file_type="regular", size=9, mtime_ns=100,
                     observed_at="2026-07-21T10:00:00+00:00",
                 )
-                fingerprint(catalog, 2, path, DIGEST_A)
+                fingerprint(connection, 2, path, DIGEST_A)
                 local_copies.mark_local_copy_missing(file_id, observed_at="2026-07-21T11:00:00+00:00")
                 missing_ids.append(file_id)
             for path in ("b/one.txt", "b/two.txt"):
@@ -160,22 +158,21 @@ class RenameMatchingTests(_CatalogFixture):
                     vault_id=2, path=path, file_type="regular", size=9, mtime_ns=100,
                     observed_at="2026-07-21T11:00:00+00:00",
                 )
-                fingerprint(catalog, 2, path, DIGEST_A)
-            candidates = catalog.list_rename_candidates(vault_id=2)
+                fingerprint(connection, 2, path, DIGEST_A)
+            candidates = FileRenames(connection).list_rename_candidates(vault_id=2)
             with self.assertRaises(VaultFileNotFound):
-                catalog.confirm_file_rename(
+                FileRenames(connection).confirm_file_rename(
                     vault_file_id=missing_ids[0], new_path="b/one.txt",
                     changed_at="2026-07-21T11:05:00+00:00", vault_id=2,
                 )
-            before_a = catalog_probe.get_file_by_path(catalog, 2, "a/one.txt")
-            before_b = catalog_probe.get_file_by_path(catalog, 2, "b/one.txt")
+            before_a = catalog_probe.get_file_by_path(connection, 2, "a/one.txt")
+            before_b = catalog_probe.get_file_by_path(connection, 2, "b/one.txt")
         self.assertEqual(candidates, [])
         self.assertNotEqual(before_a["id"], before_b["id"])
         self.assertEqual(before_a["id"], missing_ids[0])
 
     def test_size_and_mtime_alone_never_produce_automatic_match(self) -> None:
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             old_id = local_copies.observe_local_copy(
                 vault_id=2, path="reports/old-name.txt", file_type="regular", size=42,
@@ -186,9 +183,9 @@ class RenameMatchingTests(_CatalogFixture):
                 vault_id=2, path="reports/new-name.txt", file_type="regular", size=42,
                 mtime_ns=1_750_000_000_000_000_000, observed_at="2026-07-21T11:00:00+00:00",
             )
-            candidates = catalog.list_rename_candidates(vault_id=2)
-            old_file = catalog_probe.get_file_by_path(catalog, 2, "reports/old-name.txt")
-            new_file = catalog_probe.get_file_by_path(catalog, 2, "reports/new-name.txt")
+            candidates = FileRenames(connection).list_rename_candidates(vault_id=2)
+            old_file = catalog_probe.get_file_by_path(connection, 2, "reports/old-name.txt")
+            new_file = catalog_probe.get_file_by_path(connection, 2, "reports/new-name.txt")
         self.assertEqual(candidates, [])
         self.assertEqual(old_file["id"], old_id)
         self.assertEqual(new_file["id"], new_id)
@@ -198,11 +195,10 @@ class RenameMatchingTests(_CatalogFixture):
 class FolderRenameTests(_CatalogFixture):
     def test_folder_rename_updates_all_descendants_atomically(self) -> None:
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             ids = {}
             for relative in ("docs/a.txt", "docs/nested/b.txt", "docs/nested/c.txt"):
                 old_id, _ = self.seed_rename(
-                    catalog, old_path=relative,
+                    connection, old_path=relative,
                     new_path=relative.replace("docs/", "archive/", 1),
                     old_digest=sha256_hex(relative.encode()),
                     new_digest=sha256_hex(relative.encode()),
@@ -211,20 +207,20 @@ class FolderRenameTests(_CatalogFixture):
 
             # A folder move is just a batch of independently safe matches.
             renamed_ids = [
-                catalog.confirm_file_rename(
+                FileRenames(connection).confirm_file_rename(
                     vault_file_id=match["missing_vault_file_id"],
                     new_path=match["new_path"],
                     changed_at="2026-07-21T11:05:00+00:00",
                     vault_id=2,
                 )
-                for match in catalog.list_rename_candidates(2)
+                for match in FileRenames(connection).list_rename_candidates(2)
             ]
 
             for old_relative, file_id in ids.items():
                 new_relative = old_relative.replace("docs/", "archive/", 1)
-                observed = catalog_probe.get_file_by_path(catalog, 2, new_relative)
-                missing = catalog_probe.get_file_by_path(catalog, 2, old_relative)
-                history = catalog_probe.list_path_history(catalog, file_id, vault_id=2)
+                observed = catalog_probe.get_file_by_path(connection, 2, new_relative)
+                missing = catalog_probe.get_file_by_path(connection, 2, old_relative)
+                history = catalog_probe.list_path_history(connection, file_id, vault_id=2)
                 self.assertEqual(observed["id"], file_id)
                 self.assertIsNone(missing)
                 self.assertEqual(
@@ -242,12 +238,11 @@ class FolderRenameTests(_CatalogFixture):
             with self.subTest(old_path=old_path, new_path=new_path):
                 digest = sha256_hex(f"{old_path}->{new_path}".encode())
                 with self.connect() as connection:
-                    catalog = ArchiveCatalog(connection)
                     file_id, _ = self.seed_rename(
-                        catalog, old_path=old_path, new_path=new_path,
+                        connection, old_path=old_path, new_path=new_path,
                         old_digest=digest, new_digest=digest,
                     )
-                    confirmed = catalog.confirm_file_rename(
+                    confirmed = FileRenames(connection).confirm_file_rename(
                         vault_file_id=file_id,
                         new_path=new_path,
                         changed_at="2026-07-21T11:05:00+00:00",
@@ -255,9 +250,9 @@ class FolderRenameTests(_CatalogFixture):
                     )
                     history = [
                         entry["path"]
-                        for entry in catalog_probe.list_path_history(catalog, confirmed, vault_id=2)
+                        for entry in catalog_probe.list_path_history(connection, confirmed, vault_id=2)
                     ]
-                    observed = catalog_probe.get_file_by_path(catalog, 2, new_path)
+                    observed = catalog_probe.get_file_by_path(connection, 2, new_path)
                 self.assertEqual(confirmed, file_id)
                 self.assertEqual(observed["id"], file_id)
                 self.assertEqual(history, [old_path, new_path])
@@ -266,17 +261,16 @@ class FolderRenameTests(_CatalogFixture):
 class RenameSafetyTests(_CatalogFixture):
     def test_rename_keeps_identity_and_keeper(self) -> None:
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             old_id, _ = self.seed_rename(
-                catalog, old_path="photos/a.jpg", new_path="photos/b.jpg", protected=True,
+                connection, old_path="photos/a.jpg", new_path="photos/b.jpg", protected=True,
             )
-            keeper = catalog_probe.get_file(catalog, old_id, vault_id=2)["current_version"]
+            keeper = catalog_probe.get_file(connection, old_id, vault_id=2)["current_version"]
             self.assertEqual(keeper["integrity"], "verified")
-            catalog.confirm_file_rename(
+            FileRenames(connection).confirm_file_rename(
                 vault_file_id=old_id, new_path="photos/b.jpg",
                 changed_at="2026-07-21T11:05:00+00:00", vault_id=2,
             )
-            renamed = catalog_probe.get_file_by_path(catalog, 2, "photos/b.jpg")
+            renamed = catalog_probe.get_file_by_path(connection, 2, "photos/b.jpg")
             versions = connection.execute(
                 "SELECT id::text AS id, object_key FROM archive_versions"
             ).fetchall()
@@ -290,52 +284,48 @@ class RenameSafetyTests(_CatalogFixture):
 
     def test_identity_that_has_been_in_the_cloud_is_never_consumed(self) -> None:
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             old_id, new_id = self.seed_rename(
-                catalog, old_path="docs/a.txt", new_path="docs/b.txt",
+                connection, old_path="docs/a.txt", new_path="docs/b.txt",
             )
             # The destination had an upload attempt: its replacement was
             # abandoned, but the identity has been in the cloud.
-            version = catalog.begin_replacement(
+            version = ArchiveVersions(connection).begin_replacement(
                 new_id, object_key="vaults/x/docs/b.txt", provider_version_id="b1", size=9,
             )
-            catalog.abandon_replacement(new_id, archive_version_id=version)
-            self.assertEqual(catalog.list_rename_candidates(vault_id=2), [])
+            ArchiveVersions(connection).abandon_replacement(new_id, archive_version_id=version)
+            self.assertEqual(FileRenames(connection).list_rename_candidates(vault_id=2), [])
             with self.assertRaises(VaultFileNotFound):
-                catalog.confirm_file_rename(
+                FileRenames(connection).confirm_file_rename(
                     vault_file_id=old_id, new_path="docs/b.txt",
                     changed_at="2026-07-21T11:05:00+00:00", vault_id=2,
                 )
-            self.assertEqual(catalog_probe.get_file_by_path(catalog, 2, "docs/b.txt")["id"], new_id)
+            self.assertEqual(catalog_probe.get_file_by_path(connection, 2, "docs/b.txt")["id"], new_id)
 
     def test_identity_with_any_job_is_never_consumed(self) -> None:
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
-            _, new_id = self.seed_rename(catalog, old_path="a.txt", new_path="b.txt")
+            _, new_id = self.seed_rename(connection, old_path="a.txt", new_path="b.txt")
             connection.execute(
                 "INSERT INTO jobs(vault_id, file_id, action, status, origin) "
                 "VALUES (2, %s, 'upload', 'failed', 'automatic')",
                 (new_id,),
             )
-            self.assertEqual(catalog.list_rename_candidates(vault_id=2), [])
+            self.assertEqual(FileRenames(connection).list_rename_candidates(vault_id=2), [])
 
     def test_open_work_on_the_missing_file_blocks_the_rename(self) -> None:
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
-            old_id, _ = self.seed_rename(catalog, old_path="a.txt", new_path="b.txt")
+            old_id, _ = self.seed_rename(connection, old_path="a.txt", new_path="b.txt")
             connection.execute(
                 "INSERT INTO jobs(vault_id, file_id, action, status, origin) "
                 "VALUES (2, %s, 'recover', 'downloading', 'manual')",
                 (old_id,),
             )
-            self.assertEqual(catalog.list_rename_candidates(vault_id=2), [])
+            self.assertEqual(FileRenames(connection).list_rename_candidates(vault_id=2), [])
 
     def test_rename_revokes_deletion_consent_and_invalidates_aggregates_atomically(self) -> None:
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             old_id, _ = self.seed_rename(
-                catalog, old_path="trip/day1/a.jpg", new_path="album/b.jpg", protected=True,
+                connection, old_path="trip/day1/a.jpg", new_path="album/b.jpg", protected=True,
             )
             sibling = local_copies.observe_local_copy(
                 vault_id=2, path="trip/day1/c.jpg", file_type="regular", size=1, mtime_ns=1,
@@ -351,8 +341,8 @@ class RenameSafetyTests(_CatalogFixture):
                 )
             connection.commit()
             connection.execute("DELETE FROM directory_aggregate_dirty")
-            self.assertEqual(len(catalog.list_rename_candidates(vault_id=2)), 1)
-            catalog.confirm_file_rename(
+            self.assertEqual(len(FileRenames(connection).list_rename_candidates(vault_id=2)), 1)
+            FileRenames(connection).confirm_file_rename(
                 vault_file_id=old_id, new_path="album/b.jpg",
                 changed_at="2026-07-21T11:05:00+00:00", vault_id=2,
             )
@@ -370,7 +360,7 @@ class RenameSafetyTests(_CatalogFixture):
                 connection.execute(
                     "SELECT status FROM jobs ORDER BY id"
                 ).fetchall(),
-                catalog_probe.get_file_by_path(catalog, 2, "trip/day1/a.jpg")["id"],
+                catalog_probe.get_file_by_path(connection, 2, "trip/day1/a.jpg")["id"],
                 connection.execute("SELECT count(*) AS n FROM file_path_history").fetchone()["n"],
             )
         # The whole selection is revoked, not only the renamed file.
@@ -383,27 +373,25 @@ class RenameSafetyTests(_CatalogFixture):
 
     def test_rename_invalidates_the_previous_observation(self) -> None:
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             file_id = local_copies.observe_local_copy(
                 vault_id=2, path="a.txt", file_type="regular", size=3, mtime_ns=7,
                 observed_at="2026-07-21T10:00:00+00:00",
             )
             token = local_copies.local_copies_to_fingerprint(2)[0]
-            catalog.rename_file(
+            FileRenames(connection).rename_file(
                 file_id, new_path="b.txt", changed_at="2026-07-21T10:30:00+00:00", vault_id=2,
             )
             published = local_copies.publish_local_fingerprint(
                 file_id, generation=token["generation"], plaintext_sha256=DIGEST_A,
                 size=3, mtime_ns=7,
             )
-            renamed = catalog_probe.get_file_by_path(catalog, 2, "b.txt")
+            renamed = catalog_probe.get_file_by_path(connection, 2, "b.txt")
         self.assertFalse(published)
         self.assertIsNone(renamed["local_copy"]["plaintext_sha256"])
 
     def test_rename_onto_an_occupied_path_is_refused(self) -> None:
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             first = local_copies.observe_local_copy(
                 vault_id=2, path="a.txt", file_type="regular", size=1, mtime_ns=1,
@@ -414,31 +402,30 @@ class RenameSafetyTests(_CatalogFixture):
                 observed_at="2026-07-21T10:00:00+00:00",
             )
             with self.assertRaises(psycopg.errors.UniqueViolation):
-                catalog.rename_file(
+                FileRenames(connection).rename_file(
                     first, new_path="b.txt", changed_at="2026-07-21T11:00:00+00:00", vault_id=2,
                 )
             connection.rollback()
             with self.assertRaises(VaultFileNotFound):
-                catalog.rename_file(
+                FileRenames(connection).rename_file(
                     str(uuid.uuid4()), new_path="c.txt",
                     changed_at="2026-07-21T11:00:00+00:00", vault_id=2,
                 )
 
     def test_path_history_rows_are_immutable(self) -> None:
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             file_id = local_copies.observe_local_copy(
                 vault_id=2, path="a.txt", file_type="regular", size=1, mtime_ns=1,
                 observed_at="2026-07-21T10:00:00+00:00",
             )
-            catalog.rename_file(
+            FileRenames(connection).rename_file(
                 file_id, new_path="b.txt", changed_at="2026-07-21T11:00:00+00:00", vault_id=2,
             )
-            catalog.rename_file(
+            FileRenames(connection).rename_file(
                 file_id, new_path="c.txt", changed_at="2026-07-21T12:00:00+00:00", vault_id=2,
             )
-            history = catalog_probe.list_path_history(catalog, file_id, vault_id=2)
+            history = catalog_probe.list_path_history(connection, file_id, vault_id=2)
             with self.assertRaises(psycopg.errors.RestrictViolation):
                 connection.execute("UPDATE file_path_history SET path='z.txt'")
         self.assertEqual([entry["path"] for entry in history], ["a.txt", "b.txt", "c.txt"])
@@ -449,11 +436,10 @@ class RenameSafetyTests(_CatalogFixture):
 
     def test_a_vault_that_is_not_active_confirms_nothing(self) -> None:
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
-            old_id, _ = self.seed_rename(catalog, old_path="a.txt", new_path="b.txt")
+            old_id, _ = self.seed_rename(connection, old_path="a.txt", new_path="b.txt")
             connection.execute("UPDATE vaults SET lifecycle='reconnect_required' WHERE id=2")
             with self.assertRaises(VaultFileNotFound):
-                catalog.confirm_file_rename(
+                FileRenames(connection).confirm_file_rename(
                     vault_file_id=old_id, new_path="b.txt",
                     changed_at="2026-07-21T11:05:00+00:00", vault_id=2,
                 )
@@ -465,7 +451,7 @@ class RenameConfirmationRaceTests(_CatalogFixture):
     def test_issue_188_two_concurrent_confirms_consume_one_candidate_once(self) -> None:
         with self.connect() as connection:
             old_id, _ = self.seed_rename(
-                ArchiveCatalog(connection), old_path="concurrent/old.txt",
+                connection, old_path="concurrent/old.txt",
                 new_path="concurrent/new.txt", protected=True,
             )
         start = threading.Barrier(2)
@@ -474,7 +460,7 @@ class RenameConfirmationRaceTests(_CatalogFixture):
             start.wait(timeout=10)
             try:
                 with self.connect() as connection:
-                    ArchiveCatalog(connection).confirm_file_rename(
+                    FileRenames(connection).confirm_file_rename(
                         vault_file_id=old_id,
                         new_path="concurrent/new.txt",
                         changed_at="2026-07-21T11:05:00+00:00",
@@ -489,9 +475,8 @@ class RenameConfirmationRaceTests(_CatalogFixture):
         self.assertEqual(outcomes, ["confirmed", "not_found"])
 
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
-            current = catalog_probe.get_file_by_path(catalog, 2, "concurrent/new.txt")
-            history = catalog_probe.list_path_history(catalog, old_id, vault_id=2)
+            current = catalog_probe.get_file_by_path(connection, 2, "concurrent/new.txt")
+            history = catalog_probe.list_path_history(connection, old_id, vault_id=2)
             files = connection.execute("SELECT count(*) AS n FROM files").fetchone()["n"]
         self.assertEqual(current["id"], old_id)
         self.assertEqual(
@@ -503,7 +488,7 @@ class RenameConfirmationRaceTests(_CatalogFixture):
     def test_issue_188_scan_state_change_wins_before_confirmation_claim(self) -> None:
         with self.connect() as connection:
             old_id, new_id = self.seed_rename(
-                ArchiveCatalog(connection), old_path="scan-race/old.txt",
+                connection, old_path="scan-race/old.txt",
                 new_path="scan-race/new.txt",
             )
         scanner_reserved = threading.Event()
@@ -550,7 +535,7 @@ class RenameConfirmationRaceTests(_CatalogFixture):
         def confirm_while_scanner_holds_write_lock() -> None:
             try:
                 with self.connect() as connection:
-                    ArchiveCatalog(connection).confirm_file_rename(
+                    FileRenames(connection).confirm_file_rename(
                         vault_file_id=old_id,
                         new_path="scan-race/new.txt",
                         changed_at="2026-07-21T12:01:00+00:00",
@@ -585,9 +570,8 @@ class RenameConfirmationRaceTests(_CatalogFixture):
         self.assertEqual(confirmation_outcome, ["not_found"])
 
         with self.connect() as connection:
-            catalog = ArchiveCatalog(connection)
-            source = catalog_probe.get_file(catalog, old_id, vault_id=2)
-            provisional = catalog_probe.get_file(catalog, new_id, vault_id=2)
+            source = catalog_probe.get_file(connection, old_id, vault_id=2)
+            provisional = catalog_probe.get_file(connection, new_id, vault_id=2)
             history = connection.execute(
                 "SELECT count(*) AS n FROM file_path_history"
             ).fetchone()["n"]

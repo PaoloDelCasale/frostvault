@@ -19,7 +19,7 @@ from unittest.mock import patch
 import psycopg
 
 from app import database, storage
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
 from app.services.local_copies import LocalCopies
 from app.services.job_admission import queue_jobs
 from app.services import upload_pipeline as pipeline, upload_provenance as provenance
@@ -457,7 +457,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         for fault in ("proof", "cleanup"):
             with self.subTest(fault=fault):
                 failed, next_job = self.queue(f"failed-{fault}.txt"), self.queue(f"next-{fault}.txt")
-                verified = ArchiveCatalog.promote_replacement
+                verified = ArchiveVersions.promote_replacement
                 def abort_proof(catalog, *args, **kwargs):
                     verified(catalog, *args, **kwargs)
                     raise RuntimeError("proof publication aborted")
@@ -469,7 +469,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
                     if stage == "list" and acknowledged:
                         raise RuntimeError("cleanup inventory unavailable")
                 if fault == "proof":
-                    with patch.object(ArchiveCatalog, "promote_replacement", abort_proof):
+                    with patch.object(ArchiveVersions, "promote_replacement", abort_proof):
                         self.worker.run_job(failed)
                 else:
                     self.worker.provider.hook = fail_cleanup
@@ -622,7 +622,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
 
     def test_transaction_abort_after_ack_replays_only_catalog_and_returns_permits(self):
         job = self.queue("report.txt")
-        original = ArchiveCatalog.begin_replacement
+        original = ArchiveVersions.begin_replacement
         attempts = []
         def abort_first(catalog, *args, **kwargs):
             result = original(catalog, *args, **kwargs)
@@ -630,7 +630,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
             if len(attempts) == 1:
                 catalog.connection.execute("DO $$ BEGIN RAISE EXCEPTION 'publication abort' USING ERRCODE='40001'; END $$")
             return result
-        with patch.object(ArchiveCatalog, "begin_replacement", abort_first):
+        with patch.object(ArchiveVersions, "begin_replacement", abort_first):
             self.worker.run_job(job)
         self.assertEqual(len(attempts), 2)
         self.worker.assert_keeper(job)

@@ -14,7 +14,7 @@ import unittest
 
 import psycopg
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
 from app.services.local_copies import LocalCopies
 from app.services import upload_provenance as provenance
 from app.services.upload_provenance import UploadBlocked
@@ -41,7 +41,6 @@ class _Fixture(FrostVaultTestCase):
         self.connection = self.database.connect()
         self.addCleanup(self.connection.close)
         seed_vault(self.connection, id=2, source_root="/source")
-        self.catalog = ArchiveCatalog(self.connection)
         self.local_copies = LocalCopies(self.connection)
         self.snapshot = self.hashed(b"content-a")
         self.file_id = self.local_copies.observe_local_copy(
@@ -122,7 +121,7 @@ class _Fixture(FrostVaultTestCase):
     def land(self, attempt: provenance.UploadAttempt, version: str = "v1") -> str:
         provenance.append_receipt(self.db, attempt.id, {"VersionId": version}, T1)
         provenance.record_landed(self.connection, self.job, attempt, version, T1)
-        return self.catalog.begin_replacement(
+        return ArchiveVersions(self.connection).begin_replacement(
             self.file_id, object_key=self.key, provider_version_id=version,
             size=self.snapshot.size, upload_attempt_id=attempt.id, created_at=T1)
 
@@ -171,7 +170,7 @@ class SnapshotOnceTests(_Fixture):
         stored = self.connection.execute(
             "SELECT plaintext_sha256, integrity FROM archive_versions WHERE id=%s", (version,)).fetchone()
         self.assertEqual((stored["plaintext_sha256"], stored["integrity"]), (None, "unverified"))
-        self.assertTrue(self.catalog.promote_replacement(
+        self.assertTrue(ArchiveVersions(self.connection).promote_replacement(
             self.file_id, archive_version_id=version, plaintext_sha256=self.snapshot.plaintext_sha256,
             verified_at=T2, local_generation=expected.local_generation) is not None)
 
@@ -530,7 +529,7 @@ class IntegrityTests(_Fixture):
         landed = self.started()
         provenance.journal_multipart(self.db, landed.id, "mpu", T1)
         version = self.land(landed)
-        self.catalog.abandon_replacement(self.file_id, archive_version_id=version)
+        ArchiveVersions(self.connection).abandon_replacement(self.file_id, archive_version_id=version)
         # The exact cleanup and its proof are covered in tests.test_upload_cleanup;
         # here only the collection of the provenance left behind matters.
         self.connection.execute("ALTER TABLE archive_versions DISABLE TRIGGER archive_versions_removed_with_proof")

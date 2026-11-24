@@ -271,7 +271,6 @@ class VaultAdoptionScanTests(_AdoptionFixture):
             return dict(connection.execute(f"{VAULT_ROW_SQL} WHERE v.id=%s", (created["id"],)).fetchone())
 
     def test_successful_adoption_scan_catalogs_existing_regular_file(self) -> None:
-        from app.catalog import ArchiveCatalog
         from app.storage import scan_vault
 
         vault = self._adopt()
@@ -289,7 +288,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
 
         self.assertGreaterEqual(result.get("local", 0), 1)
         with self.database.connect() as connection:
-            rows = catalog_probe.list_file_rows(ArchiveCatalog(connection), int(vault["id"]))
+            rows = catalog_probe.list_file_rows(connection, int(vault["id"]))
         by_path = {row["path"]: row for row in rows}
         self.assertIn("photo.jpg", by_path)
         self.assertEqual(by_path["photo.jpg"]["local_file_type"], "regular")
@@ -323,7 +322,8 @@ class VaultAdoptionScanTests(_AdoptionFixture):
 
     def test_unreadable_file_keeps_healthy_observations_without_missing_or_rename(self) -> None:
         import os
-        from app.catalog import ArchiveCatalog
+        from app.services.archive_versions import ArchiveVersions
+        from app.services.file_renames import FileRenames
         from app.storage import scan_tree, scan_vault
 
         vault = self._adopt_for_verified_scan()
@@ -332,9 +332,8 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         (self.albums / "old.jpg").unlink()
         (self.albums / "healthy.jpg").write_bytes(b"healthy new content")
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
-            file_id = catalog_probe.get_file_by_path(catalog, vault["id"], "photo.jpg")["id"]
-            version_id = catalog.begin_replacement(
+            file_id = catalog_probe.get_file_by_path(connection, vault["id"], "photo.jpg")["id"]
+            version_id = ArchiveVersions(connection).begin_replacement(
                 file_id, object_key="only/photo.jpg", provider_version_id="only-copy",
                 size=10, storage_class="STANDARD", created_at="2026-11-03T00:00:00+00:00",
             )
@@ -350,7 +349,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
             patch("app.storage.s3_client"),
             patch("app.storage.queue_auto_uploads", return_value=0),
             patch("app.storage.queue_auto_local_cleanups", return_value=0),
-            patch.object(ArchiveCatalog, "list_rename_candidates") as renames,
+            patch.object(FileRenames, "list_rename_candidates") as renames,
         ):
             result = scan_vault(dict(vault))
         renames.assert_not_called()
@@ -360,7 +359,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
             problems = connection.execute("SELECT event, message_params FROM notifications").fetchall()
             self.assertTrue(any(p["event"] == "file_unreadable" and "photo.jpg" in str(p["message_params"]) for p in problems))
             self.assertFalse(any(p["event"] == "protection_blocked" for p in problems))
-            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), vault["id"])}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(connection, vault["id"])}
             self.assertEqual(set(rows), {"photo.jpg", "old.jpg", "healthy.jpg"})
             self.assertTrue(all(r["local_exists"] for r in rows.values()))
             self.assertTrue(rows["healthy.jpg"]["upload_eligible"])
@@ -396,7 +395,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
     def test_incomplete_scan_still_holds_and_notifies_cloud_only_conflicts(self) -> None:
         import hashlib
         import os
-        from app.catalog import ArchiveCatalog
+        from app.services.archive_versions import ArchiveVersions
         from app.services.local_copies import LocalCopies
         from app.services.operation_policies import OperationPolicy, set_policy
         from app.storage import scan_tree, scan_vault
@@ -404,16 +403,15 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         vault = self._adopt_for_verified_scan()
         scan_tree(dict(vault), "2026-11-02T00:00:00+00:00")
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             digest = hashlib.sha256(b"jpeg-bytes").hexdigest()
-            row = catalog_probe.get_file_by_path(catalog, vault["id"], "photo.jpg")
+            row = catalog_probe.get_file_by_path(connection, vault["id"], "photo.jpg")
             file_id = row["id"]
-            version_id = catalog.begin_replacement(
+            version_id = ArchiveVersions(connection).begin_replacement(
                 file_id, object_key="only/photo.jpg", provider_version_id="only-copy",
                 size=10, storage_class="STANDARD", created_at="2026-11-03T00:00:00+00:00",
             )
-            catalog.promote_replacement(
+            ArchiveVersions(connection).promote_replacement(
                 file_id, archive_version_id=version_id, plaintext_sha256=digest,
                 verified_at="2026-11-03T00:00:00+00:00", local_generation=row["generation"],
             )
@@ -443,7 +441,6 @@ class VaultAdoptionScanTests(_AdoptionFixture):
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM jobs").fetchone()["n"], 0)
 
     def test_descendant_symlink_findings_do_not_roll_back_adoption(self) -> None:
-        from app.catalog import ArchiveCatalog
         from app.storage import scan_tree
 
         link = self.albums / "alias.jpg"
@@ -453,7 +450,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         self.assertGreaterEqual(count, 2)
 
         with self.database.connect() as connection:
-            rows = catalog_probe.list_file_rows(ArchiveCatalog(connection), int(vault["id"]))
+            rows = catalog_probe.list_file_rows(connection, int(vault["id"]))
         by_path = {row["path"]: row for row in rows}
         self.assertEqual(by_path["photo.jpg"]["local_file_type"], "regular")
         self.assertEqual(by_path["alias.jpg"]["local_file_type"], "symlink")

@@ -8,7 +8,6 @@ from unittest.mock import patch
 from watchfiles import Change
 
 from app import storage
-from app.catalog import ArchiveCatalog
 
 from app.services import source_layout
 from app.services.fs_preflight import inspect_entry
@@ -38,7 +37,7 @@ class FilesystemProblemTests(FrostVaultTestCase):
         (self.root / "link.txt").symlink_to(self.root / "ok.txt")
         self.assertEqual(storage.scan_tree(self.vault, "2026-07-21T10:00:00+00:00"), 2)
         with self.database.connect() as connection:
-            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 9)}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(connection, 9)}
         self.assertTrue(rows["ok.txt"]["upload_eligible"])
         self.assertFalse(rows["link.txt"]["upload_eligible"])
         self.assertFalse(rows["link.txt"]["cleanup_eligible"])

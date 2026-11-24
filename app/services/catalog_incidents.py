@@ -125,7 +125,7 @@ def settle_cloud_only_copies(
     """Decide held content at a cloud-only path (``files.held_version_id``).
 
     Identical content is matched (and released) by the fingerprint itself
-    (:meth:`ArchiveCatalog.set_local_fingerprint`). Here: when Current is no
+    (:meth:`LocalCopies.publish_local_fingerprint`). Here: when Current is no
     longer recoverable there is nothing left to protect, so the hold is
     lifted; fingerprinted different content opens one ``cloud_only_conflict``
     problem with an immediate notification; problems whose hold ended are

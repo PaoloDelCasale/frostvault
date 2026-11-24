@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 from app.errors import NotFound
 from app import main
 from app.routes import deps
-from app.catalog import ArchiveCatalog
+from app.services.file_listing import FileListing
 from app.services import job_admission
 from app.services.notification_links import notification_path, notification_url
 from app.services.operation_policies import OperationPolicy
@@ -97,7 +97,7 @@ class EssentialInterfaceTests(unittest.TestCase):
         # The Vault's exclusion rules are part of the state SQL (#498); the policy
         # lookup is a separate read, so keep this test's call sequence about search.
         with patch("app.services.operation_policies.get_policy", return_value=OperationPolicy()):
-            result = ArchiveCatalog(connection).search_protected_vaults([
+            result = FileListing(connection).search_protected_vaults([
                 {"id": 1, "name": "First", "unconfirmed": False},
                 {"id": 2, "name": "Missing", "unconfirmed": True},
             ], search="photo", state="cloud_only", page=2, page_size=10)

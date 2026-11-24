@@ -16,7 +16,8 @@ from unittest.mock import patch
 
 import psycopg
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
+from app.services.file_renames import FileRenames
 from app.services.local_copies import LocalCopies
 from app.storage import scan_cloud
 from tests.catalog_support import fingerprint, sha256_hex
@@ -49,19 +50,18 @@ class CloudRediscoveryIdentityTests(FrostVaultTestCase):
         digest = sha256_hex(b"q1")
         with self.database.connect() as connection:
             seed_vault(connection, id=2, uuid=VAULT_UUID, source_root="/source")
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             self.file_id = local_copies.observe_local_copy(
                 vault_id=2, path=OLD_PATH, file_type="regular", size=32,
                 mtime_ns=1_000, observed_at="2026-07-21T10:00:00+00:00",
             )
-            fingerprint(catalog, 2, OLD_PATH, digest)
-            row = catalog_probe.get_file_by_path(catalog, 2, OLD_PATH)
-            self.version_id = catalog.begin_replacement(
+            fingerprint(connection, 2, OLD_PATH, digest)
+            row = catalog_probe.get_file_by_path(connection, 2, OLD_PATH)
+            self.version_id = ArchiveVersions(connection).begin_replacement(
                 row["id"], object_key=PREFIX + OLD_PATH, provider_version_id="s3-v-old",
                 size=32, storage_class="STANDARD", created_at="2026-07-21T10:01:00+00:00",
             )
-            catalog.promote_replacement(
+            ArchiveVersions(connection).promote_replacement(
                 row["id"], archive_version_id=self.version_id, plaintext_sha256=digest,
                 verified_at="2026-07-21T10:02:00+00:00", local_generation=row["generation"],
             )
@@ -72,13 +72,13 @@ class CloudRediscoveryIdentityTests(FrostVaultTestCase):
                 vault_id=2, path=NEW_PATH, file_type="regular", size=32,
                 mtime_ns=1_000, observed_at="2026-07-21T11:00:00+00:00",
             )
-            fingerprint(catalog, 2, NEW_PATH, digest)
-            catalog.confirm_file_rename(
+            fingerprint(connection, 2, NEW_PATH, digest)
+            FileRenames(connection).confirm_file_rename(
                 vault_file_id=self.file_id, new_path=NEW_PATH,
                 changed_at="2026-07-21T11:00:00+00:00", vault_id=2,
             )
-            self.assertEqual(catalog_probe.get_file_by_path(catalog, 2, NEW_PATH)["id"], self.file_id)
-            self.assertIsNone(catalog_probe.get_file_by_path(catalog, 2, OLD_PATH))
+            self.assertEqual(catalog_probe.get_file_by_path(connection, 2, NEW_PATH)["id"], self.file_id)
+            self.assertIsNone(catalog_probe.get_file_by_path(connection, 2, OLD_PATH))
 
     def _scan(self, versions: list[dict]) -> tuple[int, dict]:
         report: dict = {}
@@ -99,12 +99,11 @@ class CloudRediscoveryIdentityTests(FrostVaultTestCase):
         return count, report
 
     def _assert_identity_kept(self, connection: psycopg.Connection) -> None:
-        catalog = ArchiveCatalog(connection)
         self.assertIsNone(
-            catalog_probe.get_file_by_path(catalog, 2, OLD_PATH),
+            catalog_probe.get_file_by_path(connection, 2, OLD_PATH),
             "cloud rediscovery must not mint an orphan Vault File at the old path",
         )
-        current = catalog_probe.get_file_by_path(catalog, 2, NEW_PATH)
+        current = catalog_probe.get_file_by_path(connection, 2, NEW_PATH)
         self.assertEqual(current["id"], self.file_id)
         self.assertEqual(current["current_version"]["id"], self.version_id)
         self.assertIsNone(current["replacing_version"])

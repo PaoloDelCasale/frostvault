@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from botocore.exceptions import ClientError
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
 from app.services.local_copies import LocalCopies
 from app.services.job_admission import queue_jobs
 from app.services.operation_policies import OperationPolicy, get_policy, set_policy
@@ -122,7 +122,7 @@ class UploadModeTests(FrostVaultTestCase):
         self.assertEqual(item["local_copy"]["plaintext_sha256"], item["latest_version"]["plaintext_sha256"])
         self.assertEqual(self.s3.reads, [])
         with self.database.connect() as connection:
-            self.assertTrue(catalog_probe.list_file_rows(ArchiveCatalog(connection), 2)[0]["cleanup_eligible"])
+            self.assertTrue(catalog_probe.list_file_rows(connection, 2)[0]["cleanup_eligible"])
 
     def test_requested_mode_frozen_at_admission_and_history_not_rewritten(self):
         self.set_mode("read_back"); self.queue(); self.set_mode("s3_checksum")
@@ -374,7 +374,7 @@ class UploadModeTests(FrostVaultTestCase):
         self.assertNotEqual(item["local_copy"]["plaintext_sha256"], hashlib.sha256(self.payload).hexdigest())
         self.assertIsNone(item["matched_version_id"])
         with self.database.connect() as connection:
-            listing = catalog_probe.list_file_rows(ArchiveCatalog(connection), 2)[0]
+            listing = catalog_probe.list_file_rows(connection, 2)[0]
         self.assertFalse(listing["cleanup_eligible"])
         self.assertNotEqual(listing["state"], "protected")
         self.assertEqual(self.s3.reads, [])
@@ -453,9 +453,8 @@ class UploadModeTests(FrostVaultTestCase):
         # proof: it is never verified against the current local bytes.
         key = f"vaults/{self._vault_uuid()}/a.txt"
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
-            file_id = catalog_probe.get_file_by_path(catalog, 2, "a.txt")["id"]
-            orphan = catalog.begin_replacement(
+            file_id = catalog_probe.get_file_by_path(connection, 2, "a.txt")["id"]
+            orphan = ArchiveVersions(connection).begin_replacement(
                 file_id, object_key=key, provider_version_id="raw-version", size=len(self.payload),
                 storage_class="STANDARD", created_at="2026-11-01T00:00:00+00:00")
         self.s3.versions.setdefault(key, set()).add("raw-version")

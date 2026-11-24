@@ -858,7 +858,7 @@ def record_landed(connection: Any, job: dict[str, Any], attempt: UploadAttempt, 
     ``version_id`` comes from the journaled receipt or from exact
     reconciliation; every receipt of the attempt must agree with it. The
     Archive Version is then created with ``upload_attempt_id`` in the same
-    unit (``ArchiveCatalog.begin_replacement``); the database refuses any
+    unit (``ArchiveVersions.begin_replacement``); the database refuses any
     other key, size or VersionId for it.
     """
     if not version_id or version_id == "null":

@@ -15,7 +15,6 @@ from watchfiles import Change
 
 from app import storage
 from app.services import job_queue
-from app.catalog import ArchiveCatalog
 from app.services.job_admission import JobAdmission
 from app.services.operation_policies import OperationPolicy, set_policy
 from app.services import vault_relocation
@@ -100,9 +99,8 @@ class WatcherCase(FrostVaultTestCase):
         """Protect ``payload`` at photo.jpg as a verified, matched Current."""
         digest = hashlib.sha256(payload).hexdigest()
         with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
-            fingerprint(catalog, 2, "photo.jpg", digest)
-            return protect(catalog, 2, "photo.jpg", digest, provider_version_id="previous",
+            fingerprint(connection, 2, "photo.jpg", digest)
+            return protect(connection, 2, "photo.jpg", digest, provider_version_id="previous",
                            created_at=self.clock.isoformat(), verified_at=self.clock.isoformat())
 
 

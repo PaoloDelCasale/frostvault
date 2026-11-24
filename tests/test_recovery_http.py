@@ -6,7 +6,7 @@ import hashlib
 import unittest
 from unittest.mock import patch
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
 from app.services.local_copies import LocalCopies
 from app.storage import process_jobs_once
 from tests.catalog_support import fingerprint, protect
@@ -36,7 +36,6 @@ class RecoveryHttpTests(FrostVaultTestCase):
 
         with self.database.connect() as connection:
             self.vault_id = seed_vault(connection, source_root=str(self.source))["id"]
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             payload = b"http-recover"
             self.file_id = local_copies.observe_local_copy(
@@ -47,8 +46,8 @@ class RecoveryHttpTests(FrostVaultTestCase):
                 mtime_ns=1,
                 observed_at="2026-07-21T10:00:00+00:00",
             )
-            fingerprint(catalog, self.vault_id, "docs/note.txt", _sha(payload))
-            self.version_id = protect(catalog, self.vault_id, "docs/note.txt", _sha(payload))
+            fingerprint(connection, self.vault_id, "docs/note.txt", _sha(payload))
+            self.version_id = protect(connection, self.vault_id, "docs/note.txt", _sha(payload))
             connection.execute("UPDATE archive_versions SET storage_class='GLACIER' WHERE id=%s",
                                (self.version_id,))
             local_copies.mark_local_copy_missing(
@@ -88,12 +87,11 @@ class RecoveryHttpTests(FrostVaultTestCase):
 
     def test_superseded_copies_are_preserved_but_cannot_be_chosen_as_history(self) -> None:
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
-            generation = catalog_probe.get_file_by_path(catalog, self.vault_id, "docs/note.txt")["generation"]
-            newest = catalog.begin_replacement(
+            generation = catalog_probe.get_file_by_path(connection, self.vault_id, "docs/note.txt")["generation"]
+            newest = ArchiveVersions(connection).begin_replacement(
                 self.file_id, object_key="vaults/x/docs/note.txt", provider_version_id="v2", size=5,
                 storage_class="STANDARD", created_at="2026-11-03T00:00:00+00:00")
-            catalog.promote_replacement(
+            ArchiveVersions(connection).promote_replacement(
                 self.file_id, archive_version_id=newest, plaintext_sha256=_sha(b"newer"),
                 verified_at="2026-11-03T00:00:00+00:00", local_generation=generation)
         self.sign_in()

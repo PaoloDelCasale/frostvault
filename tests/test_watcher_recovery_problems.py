@@ -11,7 +11,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app import storage
-from app.catalog import ArchiveCatalog
 from app.services import notifications, source_layout, vault_relocation, watch_plan
 from tests.fixtures import FrostVaultTestCase, seed_vault
 from tests import catalog_probe
@@ -59,7 +58,7 @@ class RecoveryProblemTests(FrostVaultTestCase):
         self.assertEqual(storage.scan_tree(self.vault, storage.now_iso()), 2)
 
         with self.database.connect() as connection:
-            paths = {row["path"] for row in catalog_probe.list_file_rows(ArchiveCatalog(connection), 9)}
+            paths = {row["path"] for row in catalog_probe.list_file_rows(connection, 9)}
         self.assertEqual(paths, {"ok.txt", "sub/nested.txt"})
         problems = self.problems("file_name_unsupported")
         self.assertEqual(

@@ -161,8 +161,8 @@ class RecoveryPreflightTests(unittest.TestCase):
 
     def test_no_restore_request_into_an_unwritable_folder(self) -> None:
         with tempfile.TemporaryDirectory() as root, ExitStack() as stack:
-            catalog = MagicMock()
-            catalog.get_job_target.return_value = {
+            versions = MagicMock()
+            versions.get_job_target.return_value = {
                 "integrity": "verified", "availability": "available", "provider_version_id": "exact",
                 "object_key": "vault/c2.bin", "version_sha256": "0" * 64, "archive_version_id": "av",
                 "current_version_id": "av", "file_id": "f", "local_generation": 1,
@@ -171,7 +171,7 @@ class RecoveryPreflightTests(unittest.TestCase):
             }
             client = MagicMock()
             client.head_object.return_value = {"VersionId": "exact", "StorageClass": "DEEP_ARCHIVE"}
-            stack.enter_context(patch.object(storage, "ArchiveCatalog", return_value=catalog))
+            stack.enter_context(patch.object(storage, "ArchiveVersions", return_value=versions))
             for name in ("db", "ensure_job_active", "validate_cloud_vault", "set_job"):
                 stack.enter_context(patch.object(storage, name))
             stack.enter_context(patch.object(storage, "s3_client", return_value=client))

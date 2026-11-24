@@ -1,6 +1,6 @@
 """Single-path catalog lookups must use the current-path index (B1).
 
-Seam: ``ArchiveCatalog`` queries that resolve one logical path.  Without both
+Seam: the catalog queries that resolve one logical path.  Without both
 ``vault_id`` and ``path`` as index conditions the planner scans every file of
 the Vault for each lookup, which made watcher events, upload completion, and
 automatic upload queueing scale with Vault size. On the rebuilt schema (#587)
@@ -13,7 +13,6 @@ import unittest
 
 import psycopg
 
-from app.catalog import ArchiveCatalog
 from app.services.local_copies import LocalCopies
 
 from tests import catalog_probe
@@ -47,7 +46,6 @@ class SinglePathLookupPlanTests(FrostVaultTestCase):
 
     def test_path_lookups_search_files_by_vault_and_path(self) -> None:
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             captured: list[tuple[str, tuple]] = []
             original = connection.execute
@@ -57,7 +55,7 @@ class SinglePathLookupPlanTests(FrostVaultTestCase):
                 return original(sql, params)
 
             connection.execute = recording  # type: ignore[method-assign]
-            catalog_probe.get_file_by_path(catalog, 1, "folder/file-010.txt")
+            catalog_probe.get_file_by_path(connection, 1, "folder/file-010.txt")
             local_copies.mark_local_path_missing(
                 vault_id=1, path="folder/file-011.txt",
                 observed_at="2026-09-30T00:00:01+00:00",

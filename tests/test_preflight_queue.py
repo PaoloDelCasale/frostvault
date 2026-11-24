@@ -28,7 +28,6 @@ from unittest.mock import patch, Mock
 from botocore.exceptions import ClientError
 from app import storage
 from app.routes.jobs import retry_failed_uploads
-from app.catalog import ArchiveCatalog
 from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 from app.config import settings
@@ -424,10 +423,9 @@ class PreflightQueueTests(FrostVaultTestCase):
         self.fail_uploads(1)
         digest = hashlib.sha256(b'photo').hexdigest()
         with self.db() as c:
-            catalog = ArchiveCatalog(c)
             for path in ('a.txt', 'nested/b.txt'):
-                fingerprint(catalog, 1, path, digest)
-                protect(catalog, 1, path, digest, provider_version_id=path)
+                fingerprint(c, 1, path, digest)
+                protect(c, 1, path, digest, provider_version_id=path)
             # nested/b.txt: different content held at the path of its cloud-only Current.
             c.execute("""UPDATE files SET matched_version_id=NULL, held_version_id=current_version_id
                          WHERE vault_id=1 AND path='nested/b.txt'""")

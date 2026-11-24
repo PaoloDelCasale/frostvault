@@ -12,7 +12,7 @@ import uuid
 from unittest.mock import patch
 
 from app.routes.jobs import PendingUploadCancelAction, cancel_job_group, cancel_pending_uploads
-from app.catalog import ArchiveCatalog
+from app.services.file_renames import FileRenames
 from app.services.local_copies import LocalCopies
 from app.services import bulk_upload_admission as bulk, protection_stop, vault_relocation
 from app.services.operation_policies import OperationPolicy, set_policy
@@ -174,7 +174,7 @@ class BulkAdmissionPostgresTests(QueueFixture):
         group = self.create("foo%_")["group_id"]
         with self.db() as c:
             row = c.execute("SELECT id FROM files WHERE vault_id=2 AND path='foo%_/b.jpg'").fetchone()
-            ArchiveCatalog(c).rename_file(str(row["id"]), new_path="foo%_/renamed.jpg",
+            FileRenames(c).rename_file(str(row["id"]), new_path="foo%_/renamed.jpg",
                                           changed_at=self.clock.isoformat(), vault_id=2)
         self.seed(["foo%_/new.jpg", "foo%_/b.jpg"])
         result = self.finish(group)

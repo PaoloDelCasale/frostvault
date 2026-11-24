@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
 from app.services.local_copies import LocalCopies
 from app.storage import scan_cloud
 from tests.catalog_support import fingerprint, sha256_hex
@@ -62,19 +62,18 @@ class SnapshotScanStaleCatalogTests(FrostVaultTestCase):
         digest = sha256_hex(b"report")
         with self.database.connect() as connection:
             seed_vault(connection, id=2, uuid=VAULT_UUID, source_root="/source")
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             self.file_id = local_copies.observe_local_copy(
                 vault_id=2, path="report.txt", file_type="regular", size=4,
                 mtime_ns=1, observed_at="2026-07-21T09:00:00+00:00",
             )
-            fingerprint(catalog, 2, "report.txt", digest)
-            row = catalog_probe.get_file_by_path(catalog, 2, "report.txt")
-            self.current_id = catalog.begin_replacement(
+            fingerprint(connection, 2, "report.txt", digest)
+            row = catalog_probe.get_file_by_path(connection, 2, "report.txt")
+            self.current_id = ArchiveVersions(connection).begin_replacement(
                 row["id"], object_key=PREFIX + "report.txt", provider_version_id="s3-a",
                 size=4, storage_class="STANDARD", created_at="2026-07-21T10:00:00+00:00",
             )
-            catalog.promote_replacement(
+            ArchiveVersions(connection).promote_replacement(
                 row["id"], archive_version_id=self.current_id, plaintext_sha256=digest,
                 verified_at="2026-07-21T10:01:00+00:00", local_generation=row["generation"],
             )
@@ -97,7 +96,7 @@ class SnapshotScanStaleCatalogTests(FrostVaultTestCase):
 
     def _file(self) -> dict:
         with self.database.connect() as connection:
-            return catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "report.txt")
+            return catalog_probe.get_file_by_path(connection, 2, "report.txt")
 
     def test_uncatalogued_newer_version_is_never_adopted_when_current_is_gone(self) -> None:
         s3 = _ListingS3([_item("s3-b", 12)])
@@ -124,7 +123,7 @@ class SnapshotScanStaleCatalogTests(FrostVaultTestCase):
 
     def test_listed_pending_replacement_is_not_promoted(self) -> None:
         with self.database.connect() as connection:
-            pending_id = ArchiveCatalog(connection).begin_replacement(
+            pending_id = ArchiveVersions(connection).begin_replacement(
                 self.file_id, object_key=PREFIX + "report.txt", provider_version_id="s3-b",
                 size=4, storage_class="STANDARD", created_at="2026-07-21T12:00:00+00:00",
             )

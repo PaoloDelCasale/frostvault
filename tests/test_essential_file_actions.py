@@ -21,7 +21,9 @@ import unittest
 from unittest.mock import patch
 
 from app import storage
-from app.catalog import ArchiveCatalog, VaultFileNotFound
+from app.services.archive_versions import ArchiveVersions
+from app.services.catalog_shared import VaultFileNotFound
+from app.services.file_listing import FileListing
 from app.services.local_copies import LocalCopies
 from app.services.file_renames import FileRenames
 from app.services.vaults import VAULT_ROW_SQL
@@ -75,10 +77,9 @@ class EssentialFileActionTests(CopyWorkerFixture):
         self.assertEqual((self.provider.copies, self.provider.puts), (1, 1), "a rename never uploads")
         self.assertEqual(self.file.read_bytes(), A)
         with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
-            self.assertEqual(str(catalog_probe.get_file_by_path(catalog, 2, NEW)["id"]), str(self.file_id))
+            self.assertEqual(str(catalog_probe.get_file_by_path(connection, 2, NEW)["id"]), str(self.file_id))
             self.assertEqual(connection.execute("SELECT count(*) n FROM files").fetchone()["n"], 1)
-            self.assertEqual([v["provider_version_id"] for v in catalog.list_versions(2, NEW) if v["recoverable"]],
+            self.assertEqual([v["provider_version_id"] for v in FileListing(connection).list_versions(2, NEW) if v["recoverable"]],
                              [current["provider_version_id"]])
 
     def test_ambiguous_match_is_a_new_upload_and_never_deletes_cloud_content(self) -> None:
@@ -87,28 +88,27 @@ class EssentialFileActionTests(CopyWorkerFixture):
                 self.setUp()
                 before = self.moved()
                 with self.db() as connection:
-                    catalog = ArchiveCatalog(connection)
                     local_copies = LocalCopies(connection)
                     other = self.source / "other.txt"
                     other.write_bytes(A)
                     extra_id = local_copies.observe_local_copy(
                         vault_id=2, path="other.txt", file_type="regular", size=len(A),
                         mtime_ns=other.stat().st_mtime_ns, observed_at=storage.now_iso())
-                    fingerprint(catalog, 2, "other.txt", sha(A))
-                    fingerprint(catalog, 2, NEW, sha(A))
+                    fingerprint(connection, 2, "other.txt", sha(A))
+                    fingerprint(connection, 2, NEW, sha(A))
                     if not extra_present:
                         local_copies.mark_local_copy_missing(extra_id, observed_at=storage.now_iso())
                 with self.db() as connection, self.assertRaises(VaultFileNotFound):
-                    ArchiveCatalog(connection).confirm_file_rename(
+                    FileRenames(connection).confirm_file_rename(
                         vault_file_id=self.file_id, new_path=NEW, changed_at=storage.now_iso(), vault_id=2)
                 summary = storage.apply_auto_renames(self.vault())
                 self.assertEqual(summary["confirmed"], 0)
                 self.assertEqual(self.jobs("rename"), [])
                 with self.db() as connection:
-                    current = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, NEW)
+                    current = catalog_probe.get_file_by_path(connection, 2, NEW)
                     self.assertNotEqual(str(current["id"]), str(self.file_id))
                     # The old file keeps its Current: nothing was removed from the cloud.
-                    old = ArchiveCatalog(connection).list_versions(2, "report.txt")
+                    old = FileListing(connection).list_versions(2, "report.txt")
                     self.assertEqual([(v["provider_version_id"], v["availability"]) for v in old],
                                      [(before["provider_version_id"], "available")])
                 self.assertEqual(self.provider.deleted, [])
@@ -119,10 +119,9 @@ class EssentialFileActionTests(CopyWorkerFixture):
                 self.setUp()
                 self.moved()
                 with self.db() as connection:
-                    catalog = ArchiveCatalog(connection)
-                    destination_id = str(catalog_probe.get_file_by_path(catalog, 2, NEW)["id"])
+                    destination_id = str(catalog_probe.get_file_by_path(connection, 2, NEW)["id"])
                     if state == "archived":
-                        catalog.begin_replacement(
+                        ArchiveVersions(connection).begin_replacement(
                             destination_id, object_key=self.new_key,
                             provider_version_id="independent-copy", size=len(A),
                             storage_class="STANDARD", created_at=storage.now_iso())
@@ -138,13 +137,12 @@ class EssentialFileActionTests(CopyWorkerFixture):
                 self.assertEqual(summary["confirmed"], 0)
                 self.assertEqual(self.provider.deleted, [])
                 with self.db() as connection:
-                    self.assertEqual(str(catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, NEW)["id"]), destination_id)
+                    self.assertEqual(str(catalog_probe.get_file_by_path(connection, 2, NEW)["id"]), destination_id)
 
     def test_confirmation_rechecks_only_its_fingerprint_group(self) -> None:
         self.moved()
         with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
-            fingerprint(catalog, 2, NEW, sha(A))
+            fingerprint(connection, 2, NEW, sha(A))
             renames = FileRenames(connection)
             with patch.object(renames, "list_rename_candidates", wraps=renames.list_rename_candidates) as recheck:
                 renames.confirm_file_rename(

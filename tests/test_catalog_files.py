@@ -1,7 +1,7 @@
 """One row per Vault File: Local Copy, observation token and explicit states (#587).
 
-Seams: ``ArchiveCatalog`` observation, fingerprint publication and replacement
-methods, and the ``files`` / ``archive_versions`` constraints of the
+Seams: ``LocalCopies`` observation and fingerprint publication, the
+``ArchiveVersions`` replacement methods, and the ``files`` / ``archive_versions`` constraints of the
 ``0001_baseline`` schema (ADR-0035) on a disposable PostgreSQL database.
 """
 from __future__ import annotations
@@ -13,7 +13,8 @@ from unittest.mock import patch
 
 import psycopg
 
-from app.catalog import ArchiveCatalog, ReplacementInProgress, StaleReplacement
+from app.services.archive_versions import ArchiveVersions, ReplacementInProgress, StaleReplacement
+from app.services.file_listing import FileListing
 from app.services.local_copies import LocalCopies
 from app.services.file_renames import FileRenames
 from tests.catalog_support import fingerprint, protect, sha256_hex
@@ -35,7 +36,6 @@ class _Fixture(FrostVaultTestCase):
         self.connection = self.database.connect()
         self.addCleanup(self.connection.close)
         seed_vault(self.connection, id=2, source_root="/source")
-        self.catalog = ArchiveCatalog(self.connection)
         self.local_copies = LocalCopies(self.connection)
 
     def observe(self, path: str = "a.txt", *, size: int = 9, mtime_ns: int = 100,
@@ -46,7 +46,7 @@ class _Fixture(FrostVaultTestCase):
         )
 
     def file(self, path: str = "a.txt") -> dict:
-        return catalog_probe.get_file_by_path(self.catalog, 2, path)
+        return catalog_probe.get_file_by_path(self.connection, 2, path)
 
     def rejects(self, statement: str, params=(), error=psycopg.errors.IntegrityError) -> None:
         self.connection.execute("SAVEPOINT rejected")
@@ -93,7 +93,7 @@ class LocalCopyTests(_Fixture):
             "local_observed_at) VALUES (2, 'y', now(), 'present', 'symlink', now())"
         )
         file_id = self.observe()
-        self.assertTrue(fingerprint(self.catalog, 2, "a.txt", DIGEST_A))
+        self.assertTrue(fingerprint(self.connection, 2, "a.txt", DIGEST_A))
         self.local_copies.mark_local_copy_missing(file_id, observed_at=T1)
         missing = self.file()["local_copy"]
         self.assertEqual(missing["presence"], "missing")
@@ -180,8 +180,8 @@ class LocalCopyTests(_Fixture):
 
     def test_unchanged_stat_keeps_fingerprint_and_match_changed_content_does_not(self) -> None:
         self.observe()
-        fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
-        protect(self.catalog, 2, "a.txt", DIGEST_A)
+        fingerprint(self.connection, 2, "a.txt", DIGEST_A)
+        protect(self.connection, 2, "a.txt", DIGEST_A)
         self.assertIsNotNone(self.file()["matched_version_id"])
         self.observe(at=T1)
         unchanged = self.file()
@@ -194,7 +194,7 @@ class LocalCopyTests(_Fixture):
         self.assertIsNone(invalidated["matched_version_id"])
         self.assertEqual(invalidated["local_copy"]["content_observed_at"],
                          invalidated["local_copy"]["observed_at"])
-        fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
+        fingerprint(self.connection, 2, "a.txt", DIGEST_A)
         self.observe(size=10, at="2026-07-21T13:00:00+00:00")
         changed = self.file()
         self.assertIsNone(changed["local_copy"]["plaintext_sha256"])
@@ -270,11 +270,11 @@ class LocalCopyTests(_Fixture):
         self.assertEqual(self.file("photos/cache/u.jpg")["local_copy"]["presence"], "present")
         self.assertEqual(self.file("photos/v.jpg")["local_copy"]["presence"], "missing")
         # Shown Excluded and not observed, derived from the current policy.
-        item = self.catalog.get_file_item(2, "backups/a.zip")
+        item = FileListing(self.connection).get_file_item(2, "backups/a.zip")
         self.assertEqual(item["state"], "excluded")
         self.assertTrue(item["in_excluded_folder"])
         self.observe("backups_x/d.txt")
-        self.assertFalse(self.catalog.get_file_item(2, "backups_x/d.txt")["in_excluded_folder"])
+        self.assertFalse(FileListing(self.connection).get_file_item(2, "backups_x/d.txt")["in_excluded_folder"])
 
     def test_reappearance_revokes_the_whole_pending_deletion(self) -> None:
         first = self.observe("a.txt")
@@ -304,12 +304,12 @@ class LocalCopyTests(_Fixture):
 class ExplicitStateTests(_Fixture):
     def test_current_changes_only_by_promoting_the_verified_replacement(self) -> None:
         file_id = self.observe()
-        fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
-        first = self.catalog.begin_replacement(
+        fingerprint(self.connection, 2, "a.txt", DIGEST_A)
+        first = ArchiveVersions(self.connection).begin_replacement(
             file_id, object_key="vaults/x/a.txt", provider_version_id="v1", size=9,
         )
         with self.assertRaises(ReplacementInProgress):
-            self.catalog.begin_replacement(
+            ArchiveVersions(self.connection).begin_replacement(
                 file_id, object_key="vaults/x/a.txt", provider_version_id="v2", size=9,
             )
         # Only one replacement row was written.
@@ -327,11 +327,11 @@ class ExplicitStateTests(_Fixture):
             error=psycopg.errors.RestrictViolation,
         )
         with self.assertRaises(StaleReplacement):
-            self.catalog.promote_replacement(
+            ArchiveVersions(self.connection).promote_replacement(
                 file_id, archive_version_id=str(uuid.uuid4()),
                 plaintext_sha256=DIGEST_A, verified_at=T1,
             )
-        matched = self.catalog.promote_replacement(
+        matched = ArchiveVersions(self.connection).promote_replacement(
             file_id, archive_version_id=first, plaintext_sha256=DIGEST_A, verified_at=T1,
             local_generation=self.file()["generation"],
         )
@@ -345,14 +345,14 @@ class ExplicitStateTests(_Fixture):
         # A second content: the replacement waits; Current stays the keeper.
         self.observe(size=10, at=T2)
         self.assertIsNone(self.file()["matched_version_id"])
-        fingerprint(self.catalog, 2, "a.txt", DIGEST_B)
-        second = self.catalog.begin_replacement(
+        fingerprint(self.connection, 2, "a.txt", DIGEST_B)
+        second = ArchiveVersions(self.connection).begin_replacement(
             file_id, object_key="vaults/x/a.txt", provider_version_id="v2", size=10,
         )
         state = self.file()
         self.assertEqual((state["current_version"]["id"], state["replacing_version"]["id"]),
                          (first, second))
-        self.catalog.promote_replacement(
+        ArchiveVersions(self.connection).promote_replacement(
             file_id, archive_version_id=second, plaintext_sha256=DIGEST_B,
             verified_at="2026-07-21T13:00:00+00:00", local_generation=state["generation"],
         )
@@ -373,15 +373,15 @@ class ExplicitStateTests(_Fixture):
     def test_a_confirming_scan_between_snapshot_and_publish_keeps_the_match(self) -> None:
         # #619: snapshot -> scan re-observes the unchanged file -> publish.
         file_id = self.observe()
-        fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
+        fingerprint(self.connection, 2, "a.txt", DIGEST_A)
         generation = self.file()["generation"]
-        version = self.catalog.begin_replacement(
+        version = ArchiveVersions(self.connection).begin_replacement(
             file_id, object_key="vaults/x/a.txt", provider_version_id="v1", size=9,
         )
         self.local_copies.observe_local_copies_batch(
             vault_id=2, entries=[("a.txt", "regular", 9, 100, T1)], seen_at=T1,
         )
-        matched = self.catalog.promote_replacement(
+        matched = ArchiveVersions(self.connection).promote_replacement(
             file_id, archive_version_id=version, plaintext_sha256=DIGEST_A,
             verified_at=T1, local_generation=generation,
         )
@@ -397,13 +397,13 @@ class ExplicitStateTests(_Fixture):
                              ("event.txt", {"invalidate_content": True})):
             with self.subTest(change=change):
                 file_id = self.observe(path)
-                fingerprint(self.catalog, 2, path, DIGEST_A)
+                fingerprint(self.connection, 2, path, DIGEST_A)
                 generation = self.file(path)["generation"]
-                version = self.catalog.begin_replacement(
+                version = ArchiveVersions(self.connection).begin_replacement(
                     file_id, object_key=f"vaults/x/{path}", provider_version_id="v1", size=9,
                 )
                 self.observe(path, at=T1, **change)
-                matched = self.catalog.promote_replacement(
+                matched = ArchiveVersions(self.connection).promote_replacement(
                     file_id, archive_version_id=version, plaintext_sha256=DIGEST_A,
                     verified_at=T1, local_generation=generation,
                 )
@@ -414,12 +414,12 @@ class ExplicitStateTests(_Fixture):
 
     def test_a_failed_replacement_preserves_current(self) -> None:
         file_id = self.observe()
-        fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
-        keeper = protect(self.catalog, 2, "a.txt", DIGEST_A)
-        replacement = self.catalog.begin_replacement(
+        fingerprint(self.connection, 2, "a.txt", DIGEST_A)
+        keeper = protect(self.connection, 2, "a.txt", DIGEST_A)
+        replacement = ArchiveVersions(self.connection).begin_replacement(
             file_id, object_key="vaults/x/a.txt", provider_version_id="v2", size=9,
         )
-        self.catalog.abandon_replacement(
+        ArchiveVersions(self.connection).abandon_replacement(
             file_id, archive_version_id=replacement, mismatch_sha256=DIGEST_B, checked_at=T1,
         )
         state = self.file()
@@ -430,13 +430,13 @@ class ExplicitStateTests(_Fixture):
         ).fetchone()["integrity"]
         self.assertEqual(integrity, "mismatch")
         with self.assertRaises(StaleReplacement):
-            self.catalog.abandon_replacement(file_id, archive_version_id=replacement)
+            ArchiveVersions(self.connection).abandon_replacement(file_id, archive_version_id=replacement)
 
     def test_only_current_can_be_matched_or_held(self) -> None:
         file_id = self.observe()
-        fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
-        keeper = protect(self.catalog, 2, "a.txt", DIGEST_A)
-        replacement = self.catalog.begin_replacement(
+        fingerprint(self.connection, 2, "a.txt", DIGEST_A)
+        keeper = protect(self.connection, 2, "a.txt", DIGEST_A)
+        replacement = ArchiveVersions(self.connection).begin_replacement(
             file_id, object_key="vaults/x/a.txt", provider_version_id="v2", size=9,
         )
         self.rejects("UPDATE files SET matched_version_id=%s WHERE id=%s",
@@ -449,8 +449,8 @@ class ExplicitStateTests(_Fixture):
 
     def test_content_reappearing_at_a_cloud_only_path_is_held_until_identical(self) -> None:
         file_id = self.observe()
-        fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
-        keeper = protect(self.catalog, 2, "a.txt", DIGEST_A)
+        fingerprint(self.connection, 2, "a.txt", DIGEST_A)
+        keeper = protect(self.connection, 2, "a.txt", DIGEST_A)
         self.local_copies.mark_local_copy_missing(file_id, observed_at=T1)
         # Same stat, but reappeared bytes do not inherit the old fingerprint.
         self.observe(at=T2)
@@ -459,19 +459,19 @@ class ExplicitStateTests(_Fixture):
         self.assertIsNone(held["matched_version_id"])
         self.assertIsNone(held["local_copy"]["plaintext_sha256"])
         # Different content stays held.
-        self.assertTrue(fingerprint(self.catalog, 2, "a.txt", DIGEST_B))
+        self.assertTrue(fingerprint(self.connection, 2, "a.txt", DIGEST_B))
         self.assertEqual(self.file()["held_version_id"], keeper)
         # Identical content (after a new observation) becomes the Local Copy.
         self.observe(at="2026-07-21T13:00:00+00:00", invalidate_content=True)
-        self.assertTrue(fingerprint(self.catalog, 2, "a.txt", DIGEST_A))
+        self.assertTrue(fingerprint(self.connection, 2, "a.txt", DIGEST_A))
         settled = self.file()
         self.assertIsNone(settled["held_version_id"])
         self.assertEqual(settled["matched_version_id"], keeper)
 
     def test_a_completed_recovery_holds_nothing_back(self) -> None:
         file_id = self.observe()
-        fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
-        protect(self.catalog, 2, "a.txt", DIGEST_A)
+        fingerprint(self.connection, 2, "a.txt", DIGEST_A)
+        protect(self.connection, 2, "a.txt", DIGEST_A)
         self.local_copies.mark_local_copy_missing(file_id, observed_at=T1)
         self.observe(at=T2, recovered_at=T2)
         state = self.file()
@@ -483,8 +483,8 @@ class ExplicitStateTests(_Fixture):
 
     def test_replaced_local_copy_is_held_against_current(self) -> None:
         file_id = self.observe()
-        fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
-        keeper = protect(self.catalog, 2, "a.txt", DIGEST_A)
+        fingerprint(self.connection, 2, "a.txt", DIGEST_A)
+        keeper = protect(self.connection, 2, "a.txt", DIGEST_A)
         generation = self.file()["generation"]
         self.local_copies.observe_replaced_local_copy(
             file_id, file_type="regular", size=12, mtime_ns=5, observed_at=T1,
@@ -504,8 +504,8 @@ class ExplicitStateTests(_Fixture):
         durable = self.local_copies.record_pending_files(2, {first: T2})
         self.assertEqual(durable[first].isoformat(), T0)
         self.assertIsNone(self.file("b.txt")["pending_since"])
-        fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
-        protect(self.catalog, 2, "a.txt", DIGEST_A)
+        fingerprint(self.connection, 2, "a.txt", DIGEST_A)
+        protect(self.connection, 2, "a.txt", DIGEST_A)
         # Becoming protected ends the pending state in the same write.
         self.assertIsNone(self.file("a.txt")["pending_since"])
 
@@ -543,8 +543,8 @@ class ExplicitStateTests(_Fixture):
 
     def test_identity_and_cloud_history_are_permanent(self) -> None:
         file_id = self.observe()
-        fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
-        version = protect(self.catalog, 2, "a.txt", DIGEST_A)
+        fingerprint(self.connection, 2, "a.txt", DIGEST_A)
+        version = protect(self.connection, 2, "a.txt", DIGEST_A)
         self.assertIsNotNone(self.file()["cloud_since"])
         self.rejects("UPDATE files SET cloud_since=NULL WHERE id=%s", (file_id,),
                      error=psycopg.errors.RestrictViolation)
@@ -567,7 +567,7 @@ class ExplicitStateTests(_Fixture):
         renames = ("list_rename_candidates", "confirm_file_rename", "rename_file")
         import app.services.local_copies as local_copies_module
 
-        sources = [inspect.getsource(getattr(ArchiveCatalog, name)) for name in methods]
+        sources = [inspect.getsource(getattr(ArchiveVersions, name)) for name in methods]
         sources.extend(inspect.getsource(getattr(LocalCopies, name)) for name in observations)
         sources.extend(inspect.getsource(getattr(FileRenames, name)) for name in renames)
         sources.append(inspect.getsource(local_copies_module._only_cloud_copy_sql))

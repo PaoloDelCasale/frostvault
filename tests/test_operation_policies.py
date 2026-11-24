@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from app.catalog import ArchiveCatalog
 from app.services.local_copies import LocalCopies
 
 from app.services.operation_policies import (
@@ -33,11 +32,11 @@ from tests import catalog_probe
 from tests.fixtures import FrostVaultTestCase, seed_vault
 
 
-def _protect(catalog, path: str, digest: str, provider_version_id: str, verified_at: str) -> str:
+def _protect(connection, path: str, digest: str, provider_version_id: str, verified_at: str) -> str:
     """Fingerprint the Local Copy at ``path`` and make it a verified Current."""
-    fingerprint(catalog, 2, path, digest)
+    fingerprint(connection, 2, path, digest)
     return protect(
-        catalog, 2, path, digest, provider_version_id=provider_version_id,
+        connection, 2, path, digest, provider_version_id=provider_version_id,
         created_at=verified_at, verified_at=verified_at,
     )
 
@@ -421,7 +420,6 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
         digest = hashlib.sha256(original).hexdigest()
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             local_copies.observe_local_copy(
                 vault_id=2,
@@ -431,7 +429,7 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
                 mtime_ns=target.stat().st_mtime_ns,
                 observed_at="2026-07-01T11:00:00+00:00",
             )
-            version_id = _protect(catalog, "ready.txt", digest, "s3-a", "2026-07-01T11:00:00+00:00")
+            version_id = _protect(connection, "ready.txt", digest, "s3-a", "2026-07-01T11:00:00+00:00")
             set_policy(
                 connection,
                 2,
@@ -500,7 +498,7 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
         )
 
     def _state(self, connection, name: str) -> str:
-        rows = catalog_probe.list_file_rows(ArchiveCatalog(connection), 2)
+        rows = catalog_probe.list_file_rows(connection, 2)
         return next(row["state"] for row in rows if row["path"] == name)
 
     def test_stopped_upload_survives_reconnect_with_the_same_content(self) -> None:
@@ -520,7 +518,7 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
             self._rescan(connection, watched, invalidate=True)
             self.assertEqual(self._state(connection, "scanned.bin"), "stopped")
             self.assertEqual(self._state(connection, "watched.bin"), "stopped")
-            row = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "scanned.bin")
+            row = catalog_probe.get_file_by_path(connection, 2, "scanned.bin")
             self.assertEqual(
                 row["local_copy"]["content_observed_at"],
                 datetime(2026, 7, 1, 11, 0, tzinfo=timezone.utc),
@@ -570,7 +568,6 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
         digest = hashlib.sha256(payload).hexdigest()
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             local_copies.observe_local_copy(
                 vault_id=2,
@@ -580,7 +577,7 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
                 mtime_ns=target.stat().st_mtime_ns,
                 observed_at="2026-07-01T11:00:00+00:00",
             )
-            version_id = _protect(catalog, "ready.txt", digest, "s3-a", "2026-07-01T11:00:00+00:00")
+            version_id = _protect(connection, "ready.txt", digest, "s3-a", "2026-07-01T11:00:00+00:00")
             set_policy(
                 connection,
                 2,
@@ -632,7 +629,6 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
         now = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
         due_version_id = None
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             for name, verified_at in (
                 ("due.txt", "2026-07-01T12:00:00+00:00"),
@@ -662,7 +658,7 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
                     mtime_ns=target.stat().st_mtime_ns,
                     observed_at=now.isoformat() if name == "imported-old.jpg" else verified_at,
                 )
-                version_id = _protect(catalog, name, digest, f"s3-{name}", verified_at)
+                version_id = _protect(connection, name, digest, f"s3-{name}", verified_at)
                 if name == "due.txt":
                     due_version_id = version_id
             set_policy(
@@ -728,7 +724,6 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
         verified_at = "2026-01-01T12:00:00+00:00"
         names = ("a.txt", "priv/b.txt", "priv/secret/c.txt")
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             for name in names:
                 target = self.source / name
@@ -740,7 +735,7 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
                     vault_id=2, path=name, file_type="regular", size=len(name.encode()),
                     mtime_ns=target.stat().st_mtime_ns, observed_at=verified_at,
                 )
-                _protect(catalog, name, hashlib.sha256(name.encode()).hexdigest(), f"s3-{name}", verified_at)
+                _protect(connection, name, hashlib.sha256(name.encode()).hexdigest(), f"s3-{name}", verified_at)
             set_policy(connection, 2, OperationPolicy(local_release_after_days=90))
             record_component_health(connection, vault_id=2, component="source", ok=False,
                                     error=SOURCE_SCAN_INCOMPLETE)

@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.catalog import ArchiveCatalog
+from app.services.file_renames import FileRenames
 from app.services.local_copies import LocalCopies
 from tests.catalog_support import fingerprint, queue_rename_job
 
@@ -86,9 +86,8 @@ class PlainS3IntegrityIntegrationTests(FrostVaultTestCase):
                 queue_jobs(relative_path, "upload", 2)
                 process_jobs_once()
                 with self.database.connect() as connection:
-                    catalog = ArchiveCatalog(connection)
                     local_copies = LocalCopies(connection)
-                    observed = catalog_probe.get_file_by_path(catalog, 2, relative_path)
+                    observed = catalog_probe.get_file_by_path(connection, 2, relative_path)
                     job = connection.execute("SELECT status, message FROM jobs WHERE action='upload'").fetchone()
                     self.assertEqual(job["status"], "completed", job["message"])
                     version = observed["current_version"]
@@ -107,14 +106,13 @@ class PlainS3IntegrityIntegrationTests(FrostVaultTestCase):
                     local.rename(renamed)
                     local = renamed
                     with self.database.connect() as connection:
-                        catalog = ArchiveCatalog(connection)
                         local_copies = LocalCopies(connection)
                         timestamp = "2026-11-11T12:00:00+00:00"
                         local_copies.mark_local_copy_missing(observed["id"], observed_at=timestamp)
                         local_copies.observe_local_copy(vault_id=2, path=relative_path, file_type="regular",
                             size=len(payload), mtime_ns=original_mtime_ns, observed_at=timestamp)
-                        fingerprint(catalog, 2, relative_path, digest)
-                        catalog.confirm_file_rename(vault_file_id=observed["id"], new_path=relative_path,
+                        fingerprint(connection, 2, relative_path, digest)
+                        FileRenames(connection).confirm_file_rename(vault_file_id=observed["id"], new_path=relative_path,
                             changed_at=timestamp, vault_id=2)
                     with self.database.connect() as connection:
                         self.assertEqual(len(queue_rename_job(connection, 2, relative_path)), 1)
@@ -122,7 +120,7 @@ class PlainS3IntegrityIntegrationTests(FrostVaultTestCase):
                     with self.database.connect() as connection:
                         job = connection.execute("SELECT status,message FROM jobs WHERE action='rename'").fetchone()
                         self.assertEqual(job["status"], "completed", job["message"])
-                        renamed_version = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, relative_path)["current_version"]
+                        renamed_version = catalog_probe.get_file_by_path(connection, 2, relative_path)["current_version"]
                         head = s3_client().head_object(Bucket=self.bucket, Key=renamed_version["object_key"], VersionId=renamed_version["provider_version_id"])
                         # A server-side copy keeps the exact metadata (MetadataDirective=COPY).
                         self.assertEqual(head["Metadata"]["frostvault-mtime-ns"], str(original_mtime_ns))
@@ -156,7 +154,6 @@ class PlainS3IntegrityIntegrationTests(FrostVaultTestCase):
                         self.assertEqual(len(listed.get('Versions',[])),1)
                         self.assertNotEqual(listed['Versions'][0]['VersionId'],version['provider_version_id'])
                 with self.database.connect() as connection:
-                    catalog = ArchiveCatalog(connection)
                     local_copies = LocalCopies(connection)
                     local.unlink()
                     local_copies.mark_local_copy_missing(observed["id"], observed_at="2026-07-22T12:30:00+00:00")
@@ -173,7 +170,7 @@ class PlainS3IntegrityIntegrationTests(FrostVaultTestCase):
                     self.assertIsNotNone(recovered["local_recovered_at"])
                     # Even a catalogless recovery has exact metadata after a
                     # single/multipart storage-class copy (MetadataDirective).
-                    latest = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, relative_path)["current_version"]
+                    latest = catalog_probe.get_file_by_path(connection, 2, relative_path)["current_version"]
                     head = s3_client().head_object(Bucket=self.bucket, Key=latest["object_key"], VersionId=latest["provider_version_id"])
                     self.assertEqual(head["Metadata"]["frostvault-mtime-ns"], str(original_mtime_ns))
 

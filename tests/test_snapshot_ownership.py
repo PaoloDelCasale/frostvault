@@ -95,8 +95,8 @@ class RecoveryOwnershipTests(unittest.TestCase):
     def recover(self, *, snapshot_json=None, metadata=None, fchown=None):
         with tempfile.TemporaryDirectory() as root, ExitStack() as stack:
             evidence = _snapshot(root)
-            catalog = MagicMock()
-            catalog.get_job_target.return_value = {
+            versions = MagicMock()
+            versions.get_job_target.return_value = {
                 "integrity": "verified", "availability": "available", "provider_version_id": "exact",
                 "object_key": "vault/photo", "version_sha256": evidence.plaintext_sha256,
                 "archive_version_id": "av", "current_version_id": "av", "file_id": "f",
@@ -110,7 +110,7 @@ class RecoveryOwnershipTests(unittest.TestCase):
                 Path(kwargs["Filename"]).write_bytes(b"photo")
                 kwargs["Callback"](5)
             client.download_file.side_effect = download
-            stack.enter_context(patch.object(storage, "ArchiveCatalog", return_value=catalog))
+            stack.enter_context(patch.object(storage, "ArchiveVersions", return_value=versions))
             for name in ("db", "ensure_job_active", "validate_cloud_vault",
                          "ensure_job_claim_owned_in_transaction", "set_job_progress",
                          "_ThrottledByteProgress"):

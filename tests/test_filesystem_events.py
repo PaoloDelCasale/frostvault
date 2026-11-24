@@ -427,7 +427,7 @@ class ReleaseRepairVaultIdentityTests(test_local_release.LocalReleaseWorkerCase)
               self.assertRaises(RuntimeError)):
             storage._repair_failed_local_release(self.job, self.target, self.path)
         inspect.assert_not_called()
-        self.catalog.set_local_fingerprint.assert_not_called()
+        self.local_copies.publish_local_fingerprint.assert_not_called()
 
     def test_actual_vault_identity_change_fails_before_read(self):
         self.job.update(id=100, vault_id=2)
@@ -440,7 +440,7 @@ class ReleaseRepairVaultIdentityTests(test_local_release.LocalReleaseWorkerCase)
               self.assertRaisesRegex(RuntimeError, "identity mismatch")):
             storage._repair_failed_local_release(self.job, self.target, self.path)
         inspect.assert_not_called()
-        self.catalog.set_local_fingerprint.assert_not_called()
+        self.local_copies.publish_local_fingerprint.assert_not_called()
 
     def test_actual_vault_unavailable_source_fails_before_read(self):
         self.job.update(id=100, vault_id=2)
@@ -451,7 +451,7 @@ class ReleaseRepairVaultIdentityTests(test_local_release.LocalReleaseWorkerCase)
               self.assertRaisesRegex(RuntimeError, "Source Volume changed")):
             storage._repair_failed_local_release(self.job, self.target, self.path)
         inspect.assert_not_called()
-        self.catalog.set_local_fingerprint.assert_not_called()
+        self.local_copies.publish_local_fingerprint.assert_not_called()
 
     def test_changed_actual_vault_fails_before_read_or_publication(self):
         self.job.update(id=100, vault_id=2)
@@ -461,7 +461,7 @@ class ReleaseRepairVaultIdentityTests(test_local_release.LocalReleaseWorkerCase)
               self.assertRaisesRegex(RuntimeError, "root changed")):
             storage._repair_failed_local_release(self.job, self.target, self.path)
         inspect.assert_not_called()
-        self.catalog.set_local_fingerprint.assert_not_called()
+        self.local_copies.publish_local_fingerprint.assert_not_called()
 
 
 class SDKTemporaryNameTests(unittest.TestCase):

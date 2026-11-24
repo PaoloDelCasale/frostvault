@@ -10,7 +10,8 @@ from unittest.mock import patch
 
 import psycopg
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
+from app.services.file_renames import FileRenames
 from app.services.local_copies import LocalCopies
 
 from app.routes.browse import list_files
@@ -38,17 +39,17 @@ def _seed_vault(
     )
 
 
-def _cloud_only(catalog, vault_id: int, path: str, provider_version_id: str, size: int) -> str:
+def _cloud_only(connection, vault_id: int, path: str, provider_version_id: str, size: int) -> str:
     """A verified Current whose Local Copy is gone."""
     stamp = "2026-07-21T10:00:00+00:00"
-    local_copies = LocalCopies(catalog.connection)
+    local_copies = LocalCopies(connection)
     file_id = local_copies.observe_local_copy(
         vault_id=vault_id, path=path, file_type="regular", size=size, mtime_ns=1, observed_at=stamp,
     )
     digest = "e" * 64
-    fingerprint(catalog, vault_id, path, digest)
+    fingerprint(connection, vault_id, path, digest)
     version_id = protect(
-        catalog, vault_id, path, digest, provider_version_id=provider_version_id,
+        connection, vault_id, path, digest, provider_version_id=provider_version_id,
         created_at=stamp, verified_at=stamp,
     )
     local_copies.mark_local_copy_missing(file_id, observed_at=stamp)
@@ -106,7 +107,6 @@ class DirectoryScaleTests(FrostVaultTestCase):
         self.connection = self.database.connect()
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
-        self.catalog = ArchiveCatalog(self.connection)
         self.local_copies = LocalCopies(self.connection)
         self.listing = FileListing(self.connection)
 
@@ -126,7 +126,6 @@ class DirectoryScaleTests(FrostVaultTestCase):
         self.assertIn("directory_aggregate_dirty", tables)
 
     def test_list_files_page_matches_build_directory_items_semantics(self) -> None:
-        catalog = self.catalog
         self.local_copies.observe_local_copy(
             vault_id=2,
             path="photos/small.jpg",
@@ -143,7 +142,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
             mtime_ns=1,
             observed_at="2026-07-21T10:00:00+00:00",
         )
-        _cloud_only(catalog, 2, "photos/large.jpg", "v-large", 2_000_000)
+        _cloud_only(self.connection, 2, "photos/large.jpg", "v-large", 2_000_000)
         self.local_copies.observe_local_copy(
             vault_id=2,
             path="documents/invoice.pdf",
@@ -162,9 +161,9 @@ class DirectoryScaleTests(FrostVaultTestCase):
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
 
-        rows = catalog_probe.list_file_rows(catalog, 2)
+        rows = catalog_probe.list_file_rows(self.connection, 2)
         expected = build_directory_items(rows, "")
-        page = catalog.list_files_page(2, page=1, page_size=100)
+        page = self.listing.list_files_page(2, page=1, page_size=100)
         self.assertEqual(page["mode"], "browse")
         self.assertEqual(page["total"], len(expected))
         self.assertEqual(
@@ -236,23 +235,23 @@ class DirectoryScaleTests(FrostVaultTestCase):
             ],
         )
         # Only a verified, available snapshot can be Cloud only.
-        _cloud_only(self.catalog, 2, "clips/cloud-only.bin", "v-cloud", 9)
+        _cloud_only(self.connection, 2, "clips/cloud-only.bin", "v-cloud", 9)
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
 
-        search = self.catalog.list_files_page(
+        search = FileListing(self.connection).list_files_page(
             2, search="keep-me", page=1, page_size=10
         )
         self.assertEqual(search["mode"], "search")
         self.assertEqual(search["total"], 2)
         self.assertEqual(len(search["items"]), 2)
 
-        filtered = self.catalog.list_files_page(
+        filtered = FileListing(self.connection).list_files_page(
             2, search="clips", state="cloud_only", page=1, page_size=10
         )
         self.assertEqual(filtered["total"], 1)
         self.assertEqual(filtered["items"][0]["path"], "clips/cloud-only.bin")
 
-        browse_filtered = self.catalog.list_files_page(
+        browse_filtered = FileListing(self.connection).list_files_page(
             2, directory="", state="cloud_only", page=1, page_size=10
         )
         self.assertEqual(
@@ -272,7 +271,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
             observed_at="2026-07-21T10:00:00+00:00",
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        before = self.catalog.list_files_page(2)["items"][0]
+        before = FileListing(self.connection).list_files_page(2)["items"][0]
         self.assertEqual(before["item_count"], 1)
 
         self.local_copies.observe_local_copy(
@@ -289,7 +288,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         ).fetchall()
         self.assertTrue(dirty)
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        after = self.catalog.list_files_page(2)["items"][0]
+        after = FileListing(self.connection).list_files_page(2)["items"][0]
         self.assertEqual(after["item_count"], 2)
         self.assertEqual(after["total_size"], 150)
 
@@ -303,14 +302,14 @@ class DirectoryScaleTests(FrostVaultTestCase):
             observed_at="2026-07-21T10:00:00+00:00",
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        self.catalog.rename_file(
+        FileRenames(self.connection).rename_file(
             file_id,
             new_path="new-dir/nested/file.bin",
             changed_at="2026-07-21T11:00:00+00:00",
             vault_id=2,
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        root = self.catalog.list_files_page(2, page=1, page_size=20)
+        root = FileListing(self.connection).list_files_page(2, page=1, page_size=20)
         names = {item["name"] for item in root["items"]}
         self.assertIn("new-dir", names)
         self.assertNotIn("old-dir", names)
@@ -346,7 +345,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         result = aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         duration = time.perf_counter() - started
         self.assertEqual(result["rebuilt_directories"], 1)
-        page = self.catalog.list_files_page(2)
+        page = FileListing(self.connection).list_files_page(2)
         self.assertEqual(page["items"][0]["item_count"], burst + 1)
         self.assertLess(duration, 120.0)
 
@@ -420,7 +419,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
             connection=self.connection,
         )
         self.assertEqual(result["full_rebuilds"], 1)
-        page = self.catalog.list_files_page(2)
+        page = FileListing(self.connection).list_files_page(2)
         self.assertEqual(page["aggregate_status"], "ready")
         self.assertEqual(page["total"], 1)
         self.assertEqual(page["items"][0]["item_count"], 1)
@@ -447,7 +446,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
             "rebuild_vault_directory_aggregates",
             side_effect=blocked_rebuild,
         ):
-            page = self.catalog.list_files_page(2)
+            page = FileListing(self.connection).list_files_page(2)
         self.assertEqual(page["aggregate_status"], "stale")
         self.assertEqual(page["total"], 1)
         self.assertEqual(page["items"][0]["name"], "keep")
@@ -472,7 +471,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
                 self.connection, vault_id=2
             )
         self.assertEqual(result["rebuilt_directories"], 1)
-        page = self.catalog.list_files_page(2)
+        page = FileListing(self.connection).list_files_page(2)
         self.assertEqual(page["items"][0]["item_count"], 250)
 
     def test_full_rebuild_streams_bounded_batches(self) -> None:
@@ -504,7 +503,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         self.assertTrue(observed_sizes)
         self.assertLessEqual(max(observed_sizes), 10)
         self.assertGreaterEqual(sum(observed_sizes), 26)
-        page = self.catalog.list_files_page(2)
+        page = FileListing(self.connection).list_files_page(2)
         names = {item["name"] for item in page["items"]}
         self.assertEqual(names, {"bucket", "other"})
 
@@ -721,7 +720,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
             observed_at="2026-07-21T10:00:03+00:00",
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        page = self.catalog.list_files_page(2)
+        page = FileListing(self.connection).list_files_page(2)
         self.assertEqual(page["items"][0]["item_count"], 2)
 
     def test_two_flush_passes_are_idempotent_on_shared_dirty_set(self) -> None:
@@ -756,7 +755,6 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         self.connection = self.database.connect()
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
-        self.catalog = ArchiveCatalog(self.connection)
         self.local_copies = LocalCopies(self.connection)
 
     def tearDown(self) -> None:
@@ -773,9 +771,9 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
             mtime_ns=1,
             observed_at="2026-07-21T10:00:00+00:00",
         )
-        fingerprint(self.catalog, 2, path, digest)
+        fingerprint(self.connection, 2, path, digest)
         protect(
-            self.catalog, 2, path, digest, provider_version_id="v-1",
+            self.connection, 2, path, digest, provider_version_id="v-1",
             created_at="2026-07-21T10:00:00+00:00", verified_at="2026-07-21T10:00:00+00:00",
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
@@ -785,7 +783,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         from app.services.catalog_audit import audit_vault_catalog
 
         self._seed_both_file()
-        before = self.catalog.list_files_page(2)["items"][0]
+        before = FileListing(self.connection).list_files_page(2)["items"][0]
         self.assertEqual(before["state"], "protected")
         self.assertEqual(before["available_actions"]["free-space"], 1)
 
@@ -800,7 +798,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
 
         audit_vault_catalog(self.connection, vault, _EmptyClient())
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        after = self.catalog.list_files_page(2)["items"][0]
+        after = FileListing(self.connection).list_files_page(2)["items"][0]
         self.assertEqual(after["state"], "problem")
         self.assertEqual(after["available_actions"]["upload"], 1)
         self.assertEqual(after["available_actions"]["free-space"], 0)
@@ -836,7 +834,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
 
         audit_vault_catalog(self.connection, vault, _DriftClient())
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        after = self.catalog.list_files_page(2)["items"][0]
+        after = FileListing(self.connection).list_files_page(2)["items"][0]
         self.assertEqual(after["storage_class"], "GLACIER")
         self.assertEqual(after["storage_class_count"], 1)
 
@@ -870,17 +868,17 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
             """UPDATE upload_attempts SET settled_at=now(), outcome='landed', landed_version_id='v-1'
                WHERE id=%s""", (attempt,))
         self.connection.execute("UPDATE upload_snapshots SET closed_at=now() WHERE id=%s", (snapshot,))
-        version_id = self.catalog.begin_replacement(
+        version_id = ArchiveVersions(self.connection).begin_replacement(
             file_id, object_key=f"vaults/{uuid_}/{path}", provider_version_id="v-1",
             size=100, storage_class="STANDARD", upload_attempt_id=str(attempt),
         )
-        self.catalog.promote_replacement(
+        ArchiveVersions(self.connection).promote_replacement(
             file_id, archive_version_id=version_id, plaintext_sha256=digest.hex(),
             verified_at="2026-07-21T10:00:00+00:00", local_generation=row["generation"],
         )
         self.local_copies.mark_local_copy_missing(file_id, observed_at="2026-07-21T10:30:00+00:00")
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        before = self.catalog.list_files_page(2)["items"][0]
+        before = FileListing(self.connection).list_files_page(2)["items"][0]
         self.assertEqual(before["available_actions"]["cloud-purge"], 1)
         self.assertEqual(before["cloud_size"], 100)
         # The claimed consent, its frozen grant and the recorded deletion.
@@ -902,7 +900,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
             self.connection, jobs=[job], at="2026-07-21T11:00:00+00:00", actor="system",
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        after = self.catalog.list_files_page(2)["items"]
+        after = FileListing(self.connection).list_files_page(2)["items"]
         self.assertEqual(
             self.connection.execute("SELECT count(*) AS n FROM archive_versions").fetchone()["n"], 0,
         )
@@ -912,7 +910,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
 
     def test_direct_local_copy_fingerprint_update_invalidates_actions(self) -> None:
         self._seed_both_file(path="hash/me.bin")
-        before = self.catalog.list_files_page(2)["items"][0]
+        before = FileListing(self.connection).list_files_page(2)["items"][0]
         self.assertEqual(before["available_actions"]["free-space"], 1)
         self.assertEqual(before["available_actions"]["upload"], 0)
 
@@ -937,7 +935,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         )
         aggregates.mark_file_id_dirty(self.connection, 2, file_id)
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        after = self.catalog.list_files_page(2)["items"][0]
+        after = FileListing(self.connection).list_files_page(2)["items"][0]
         self.assertEqual(after["available_actions"]["free-space"], 0)
         self.assertEqual(after["available_actions"]["upload"], 1)
 
@@ -976,10 +974,10 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
             mtime_ns=1,
             observed_at="2026-07-21T10:00:00+00:00",
         )
-        fingerprint(self.catalog, 2, old_path, digest)
+        fingerprint(self.connection, 2, old_path, digest)
         if with_cloud:
             protect(
-                self.catalog, 2, old_path, digest, provider_version_id="rename-v1",
+                self.connection, 2, old_path, digest, provider_version_id="rename-v1",
                 created_at="2026-07-21T10:00:00+00:00", verified_at="2026-07-21T10:00:00+00:00",
             )
         self.local_copies.mark_local_copy_missing(
@@ -995,7 +993,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         )
         # Carry the verified match onto the provisional so post-confirm
         # free-space eligibility (local match == archive version) is realistic.
-        fingerprint(self.catalog, 2, new_path, digest)
+        fingerprint(self.connection, 2, new_path, digest)
         return file_id
 
     def _clear_dirty(self) -> None:
@@ -1018,7 +1016,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         self._clear_dirty()
 
-        self.catalog.confirm_file_rename(
+        FileRenames(self.connection).confirm_file_rename(
             vault_file_id=file_id,
             new_path="new-dir/nested/file.bin",
             changed_at="2026-07-21T12:00:00+00:00",
@@ -1030,7 +1028,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
             {"old-dir", "old-dir/nested", "new-dir", "new-dir/nested"},
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        root = self.catalog.list_files_page(2, page=1, page_size=20)
+        root = FileListing(self.connection).list_files_page(2, page=1, page_size=20)
         names = {item["name"] for item in root["items"]}
         self.assertIn("new-dir", names)
         self.assertNotIn("old-dir", names)
@@ -1048,7 +1046,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         self._clear_dirty()
 
-        self.catalog.confirm_file_rename(
+        FileRenames(self.connection).confirm_file_rename(
             vault_file_id=file_id,
             new_path="cloud-new/shot.jpg",
             changed_at="2026-07-21T12:00:00+00:00",
@@ -1056,7 +1054,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
 
-        root = self.catalog.list_files_page(2)["items"]
+        root = FileListing(self.connection).list_files_page(2)["items"]
         names = {item["name"] for item in root}
         self.assertIn("cloud-new", names)
         self.assertNotIn("cloud-old", names)
@@ -1086,7 +1084,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
             mtime_ns=1,
             observed_at="2026-07-21T10:05:00+00:00",
         )
-        fingerprint(self.catalog, 2, second_old, digest)
+        fingerprint(self.connection, 2, second_old, digest)
         self.local_copies.mark_local_copy_missing(
             second_id, observed_at="2026-07-21T11:05:00+00:00"
         )
@@ -1098,18 +1096,18 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
             mtime_ns=2,
             observed_at="2026-07-21T11:05:00+00:00",
         )
-        fingerprint(self.catalog, 2, second_new, digest)
+        fingerprint(self.connection, 2, second_new, digest)
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         self._clear_dirty()
 
         renamed = [
-            self.catalog.confirm_file_rename(
+            FileRenames(self.connection).confirm_file_rename(
                 vault_file_id=match["missing_vault_file_id"],
                 new_path=match["new_path"],
                 changed_at="2026-07-21T12:30:00+00:00",
                 vault_id=2,
             )
-            for match in self.catalog.list_rename_candidates(2)
+            for match in FileRenames(self.connection).list_rename_candidates(2)
         ]
         self.assertEqual(set(renamed), {first, second_id})
         dirty = self._dirty_paths()
@@ -1117,7 +1115,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         self.assertTrue({"archive", "archive/2024"}.issubset(dirty))
 
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        root = self.catalog.list_files_page(2)["items"]
+        root = FileListing(self.connection).list_files_page(2)["items"]
         names = {item["name"] for item in root}
         self.assertIn("archive", names)
         self.assertNotIn("album", names)
@@ -1147,13 +1145,13 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         # Missing@alpha has no cloud so it does not contribute; only beta shows.
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         before_names = {
-            item["name"] for item in self.catalog.list_files_page(2)["items"]
+            item["name"] for item in FileListing(self.connection).list_files_page(2)["items"]
         }
         self.assertIn("beta", before_names)
         self.assertNotIn("alpha", before_names)
         self._clear_dirty()
 
-        self.catalog.confirm_file_rename(
+        FileRenames(self.connection).confirm_file_rename(
             vault_file_id=file_id,
             new_path="beta/x.bin",
             changed_at="2026-07-21T13:00:00+00:00",
@@ -1164,7 +1162,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         after = {
             item["name"]: item
-            for item in self.catalog.list_files_page(2)["items"]
+            for item in FileListing(self.connection).list_files_page(2)["items"]
         }
         self.assertIn("beta", after)
         self.assertNotIn("alpha", after)
@@ -1179,10 +1177,10 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         self._clear_dirty()
 
-        from app.catalog import VaultFileNotFound
+        from app.services.catalog_shared import VaultFileNotFound
 
         with self.assertRaises(VaultFileNotFound):
-            self.catalog.confirm_file_rename(
+            FileRenames(self.connection).confirm_file_rename(
                 vault_file_id=file_id,
                 new_path="fail-new/does-not-exist.bin",
                 changed_at="2026-07-21T14:00:00+00:00",
@@ -1191,7 +1189,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         self.assertEqual(self._dirty_paths(), set())
 
         # Successful confirmation after a failed attempt still dirties correctly.
-        self.catalog.confirm_file_rename(
+        FileRenames(self.connection).confirm_file_rename(
             vault_file_id=file_id,
             new_path="fail-new/a.bin",
             changed_at="2026-07-21T14:01:00+00:00",
@@ -1207,7 +1205,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         self._clear_dirty()
 
-        self.catalog.confirm_file_rename(
+        FileRenames(self.connection).confirm_file_rename(
             vault_file_id=file_id,
             new_path="once-new/f.bin",
             changed_at="2026-07-21T15:00:00+00:00",
@@ -1218,10 +1216,10 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         self._clear_dirty()
 
-        from app.catalog import VaultFileNotFound
+        from app.services.catalog_shared import VaultFileNotFound
 
         with self.assertRaises(VaultFileNotFound):
-            self.catalog.confirm_file_rename(
+            FileRenames(self.connection).confirm_file_rename(
                 vault_file_id=file_id,
                 new_path="once-new/f.bin",
                 changed_at="2026-07-21T15:01:00+00:00",
@@ -1237,7 +1235,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         )
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         self._clear_dirty()
-        self.catalog.confirm_file_rename(
+        FileRenames(self.connection).confirm_file_rename(
             vault_file_id=file_id,
             new_path="persist-new/p.bin",
             changed_at="2026-07-21T16:00:00+00:00",
@@ -1258,9 +1256,8 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
             other.commit()
 
         with self.database.connect() as verify:
-            catalog = ArchiveCatalog(verify)
             names = {
-                item["name"] for item in catalog.list_files_page(2)["items"]
+                item["name"] for item in FileListing(verify).list_files_page(2)["items"]
             }
             self.assertIn("persist-new", names)
             self.assertNotIn("persist-old", names)
@@ -1280,7 +1277,6 @@ class MaintenanceFixture(FrostVaultTestCase):
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
         _seed_vault(self.connection, 3)
-        self.catalog = ArchiveCatalog(self.connection)
         self.local_copies = LocalCopies(self.connection)
 
     def tearDown(self) -> None:

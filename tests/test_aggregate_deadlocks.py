@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app import storage
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
 from app.services.local_copies import LocalCopies
 from app.services import directory_aggregates as aggregates
 from tests.stress_profile import stress_file_count
@@ -535,7 +535,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
     def test_551_shared_database_retries_preserve_snapshot_and_one_exact_put(self):
         from app.services import upload_provenance as provenance
         seams = ((provenance, "prepare"), (provenance, "mark_send_started"),
-                 (provenance, "record_landed"), (ArchiveCatalog, "record_verification_evidence"))
+                 (provenance, "record_landed"), (ArchiveVersions, "record_verification_evidence"))
         for code in ("40P01", "40001"):
             for owner, name in seams:
                 with self.subTest(sqlstate=code, seam=name):
@@ -544,7 +544,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
                     attempts = []
                     def fail_once(*args, **kwargs):
                         result = original(*args, **kwargs)
-                        connection = args[0].connection if owner is ArchiveCatalog else args[0]
+                        connection = args[0].connection if owner is ArchiveVersions else args[0]
                         attempts.append(result)
                         if len(attempts) == 1:
                             connection.execute(f"DO $$ BEGIN RAISE EXCEPTION 'shared unit abort' USING ERRCODE='{code}'; END $$")
@@ -749,7 +749,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
         self.assertLessEqual(len(opened), self.THROUGHPUT_MAX_NEW_CONNECTIONS)
 
     def test_forced_post_response_transaction_abort_retries_linkage_without_put(self):
-        original = ArchiveCatalog.link_job_version
+        original = ArchiveVersions.link_job_version
         for code in ("40P01", "40001"):
             jobs = self.seed(prefix=code)
             attempts = []
@@ -762,7 +762,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
                     catalog.connection.execute(f"DO $$ BEGIN RAISE EXCEPTION 'forced transaction abort' USING ERRCODE='{code}'; END $$")
                 return result
 
-            with self.subTest(sqlstate=code), patch.object(ArchiveCatalog, "link_job_version", fail_link_once):
+            with self.subTest(sqlstate=code), patch.object(ArchiveVersions, "link_job_version", fail_link_once):
                 self.assertTrue(self.run_job(jobs[0]))
                 self.assertEqual(len(attempts), 2)
                 self.assert_completed(len(self.provider.puts))
@@ -775,7 +775,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
         with self.database.connect() as connection:
             connection.execute("CREATE TABLE deadlock_gate(id integer PRIMARY KEY, value integer NOT NULL)")
             connection.execute("INSERT INTO deadlock_gate VALUES (1,0),(2,0)")
-        original = ArchiveCatalog.link_job_version
+        original = ArchiveVersions.link_job_version
         attempts = []
         held = threading.Event()
         other_errors = []
@@ -819,7 +819,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
             connection.execute("UPDATE deadlock_gate SET value=value+1 WHERE id=1")
 
         try:
-            with patch.object(ArchiveCatalog, "link_job_version", link_with_cycle):
+            with patch.object(ArchiveVersions, "link_job_version", link_with_cycle):
                 self.assertTrue(self.run_job(jobs[0]))
         finally:
             for thread in threads:
@@ -926,7 +926,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
             LocalCopies(connection).observe_local_copy(vault_id=2, path=path, file_type="regular",
                 size=len(PAYLOAD), mtime_ns=local.stat().st_mtime_ns, observed_at=STAMP)
             jobs = [queue_upload(connection, job["file_id"], total_bytes=len(PAYLOAD), requested_at=STAMP)]
-        original_promote = ArchiveCatalog.promote_replacement
+        original_promote = ArchiveVersions.promote_replacement
         real_unit = storage._upload_catalog_unit
         attempts = {"verify": 0, "cleanup": 0}
 
@@ -951,7 +951,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
                     catalog.connection.execute("DO $$ BEGIN RAISE EXCEPTION 'forced cleanup abort' USING ERRCODE='40P01'; END $$")
             return real_unit(job, record_once, shared=shared)
 
-        with patch.object(ArchiveCatalog, "promote_replacement", promote_once), patch.object(
+        with patch.object(ArchiveVersions, "promote_replacement", promote_once), patch.object(
             storage, "_upload_catalog_unit", side_effect=unit
         ):
             self.assertTrue(self.run_job(jobs[0]))
@@ -964,7 +964,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
             self.assertEqual(connection.execute("SELECT status FROM jobs WHERE id=%s", (jobs[0],)).fetchone()["status"], "completed")
             # The superseded version left the catalog with its cleanup.
             self.assertIsNone(connection.execute("SELECT 1 FROM archive_versions WHERE id=%s", (previous,)).fetchone())
-            current = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, path)["current_version"]
+            current = catalog_probe.get_file_by_path(connection, 2, path)["current_version"]
             self.assertEqual(current["integrity"], "verified")
             self.assertEqual(current["availability"], "available")
 
@@ -1000,7 +1000,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
             attempts.append(1)
             catalog.connection.execute("DO $$ BEGIN RAISE EXCEPTION 'forced exhausted abort' USING ERRCODE='40P01'; END $$")
 
-        with patch.object(ArchiveCatalog, "link_job_version", always_abort):
+        with patch.object(ArchiveVersions, "link_job_version", always_abort):
             self.assertTrue(self.run_job(jobs[0]))
         self.assertEqual(len(attempts), DATABASE_RETRY_MAX_ATTEMPTS)
         self.assertEqual(len(self.provider.puts), 1)

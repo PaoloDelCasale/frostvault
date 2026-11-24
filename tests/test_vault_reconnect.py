@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
 from app.services.local_copies import LocalCopies
 from app.services import source_layout, source_identity, vault_relocation
 from app.services.recovery_kit import kit_status, record_metadata_restore
@@ -52,7 +52,6 @@ MISSING_PROBLEMS = """SELECT COUNT(*) AS n FROM notifications
 
 def landed_current(connection, path, data, *, version):
     """A Current Snapshot written by a landed upload, as a real upload leaves it."""
-    catalog = ArchiveCatalog(connection)
     local_copies = LocalCopies(connection)
     file_id = local_copies.observe_local_copy(vault_id=7, path=path, file_type="regular", size=len(data),
                                          mtime_ns=1, observed_at="2026-11-01T10:00:00+00:00")
@@ -66,10 +65,10 @@ def landed_current(connection, path, data, *, version):
     connection.execute("UPDATE upload_attempts SET send_started_at=now() WHERE id=%s", (attempt,))
     connection.execute("""UPDATE upload_attempts SET settled_at=now(), outcome='landed', landed_version_id=%s
         WHERE id=%s""", (version, attempt))
-    archive = catalog.begin_replacement(file_id, object_key=KEY + path, provider_version_id=version,
+    archive = ArchiveVersions(connection).begin_replacement(file_id, object_key=KEY + path, provider_version_id=version,
         size=len(data), storage_class="STANDARD", created_at="2026-11-01T10:00:00+00:00",
         upload_attempt_id=str(attempt))
-    catalog.promote_replacement(file_id, archive_version_id=archive, plaintext_sha256=digest,
+    ArchiveVersions(connection).promote_replacement(file_id, archive_version_id=archive, plaintext_sha256=digest,
                                 verified_at="2026-11-01T10:00:00+00:00")
     return file_id
 
@@ -361,16 +360,15 @@ class VaultReconnectTests(FrostVaultTestCase):
         (self.new / "conflict.jpg").write_bytes(b"oops")
         old_digest = hashlib.sha256(b"old!").digest()
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             for path in content:
                 local = self.new / path
                 stat = local.stat() if local.exists() else SimpleNamespace(st_size=4, st_mtime_ns=1)
                 file_id = local_copies.observe_local_copy(vault_id=7, path=path, file_type="regular", size=stat.st_size,
                                                      mtime_ns=stat.st_mtime_ns, observed_at="2026-11-01T10:00:00+00:00")
-                version = catalog.begin_replacement(file_id, object_key="vaults/11111111-1111-1111-1111-111111111111/" + path,
+                version = ArchiveVersions(connection).begin_replacement(file_id, object_key="vaults/11111111-1111-1111-1111-111111111111/" + path,
                     provider_version_id="old-" + path, size=4, storage_class="STANDARD", created_at="2026-11-01T10:00:00+00:00")
-                catalog.promote_replacement(file_id, archive_version_id=version, plaintext_sha256=old_digest,
+                ArchiveVersions(connection).promote_replacement(file_id, archive_version_id=version, plaintext_sha256=old_digest,
                                             verified_at="2026-11-01T10:00:00+00:00")
                 connection.execute("UPDATE files SET local_sha256=%s, matched_version_id=current_version_id WHERE id=%s",
                                    (old_digest, file_id))
@@ -383,7 +381,7 @@ class VaultReconnectTests(FrostVaultTestCase):
         self.assertEqual(len(s3.reads), 3)
         self.assertTrue(all(read["VersionId"] == "new-" + read["Key"].rsplit("/", 1)[1] for read in s3.reads))
         with self.database.connect() as connection:
-            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(connection, 7)}
             self.assertEqual(rows["same.jpg"]["state"], "protected")
             self.assertEqual(rows["missing.jpg"]["state"], "cloud_only")
             self.assertEqual(rows["conflict.jpg"]["state"], "problem")
@@ -407,13 +405,12 @@ class VaultReconnectTests(FrostVaultTestCase):
     def test_restore_reconciliation_reads_no_cold_version_then_adopts_unknown_paths(self):
         content = {"known.jpg": b"new!", "unknown.jpg": b"else"}
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             file_id = local_copies.observe_local_copy(vault_id=7, path="known.jpg", file_type="regular", size=4,
                                                  mtime_ns=1, observed_at="2026-11-01T10:00:00+00:00")
-            version = catalog.begin_replacement(file_id, object_key="vaults/11111111-1111-1111-1111-111111111111/known.jpg",
+            version = ArchiveVersions(connection).begin_replacement(file_id, object_key="vaults/11111111-1111-1111-1111-111111111111/known.jpg",
                 provider_version_id="old-known.jpg", size=4, storage_class="STANDARD")
-            catalog.promote_replacement(file_id, archive_version_id=version,
+            ArchiveVersions(connection).promote_replacement(file_id, archive_version_id=version,
                                         plaintext_sha256=hashlib.sha256(b"old!").digest(), verified_at="2026-11-01T10:00:00+00:00")
             record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
         s3 = ListingS3(content)
@@ -461,7 +458,7 @@ class VaultReconnectTests(FrostVaultTestCase):
         self.assertEqual(s3.deleted, [])
         self.assertEqual(sorted(read["VersionId"] for read in s3.reads), sorted("new-" + p for p in content))
         with self.database.connect() as connection:
-            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(connection, 7)}
             self.assertEqual(rows["after/same.bin"]["state"], "protected")
             self.assertEqual(rows["after/gone.bin"]["state"], "cloud_only")
             self.assertEqual(rows["after/other.bin"]["state"], "problem")
@@ -500,7 +497,7 @@ class VaultReconnectTests(FrostVaultTestCase):
         self.scan(s3=s3)
         self.assertEqual(self.row()["lifecycle"], "active")
         with self.database.connect() as connection:
-            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(connection, 7)}
             self.assertEqual(rows["after/cold.bin"]["state"], "protected")
             self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 1)
 
@@ -521,7 +518,7 @@ class VaultReconnectTests(FrostVaultTestCase):
             self.assertEqual([(v["provider_version_id"], v["availability"]) for v in versions],
                              [("new-doc.txt", "available")])
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM cleanup_batches").fetchone()["n"], 0)
-            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(connection, 7)}
             self.assertEqual(rows["doc.txt"]["state"], "protected")
         self.scan(s3=s3)
         with self.database.connect() as connection:
@@ -558,7 +555,7 @@ class VaultReconnectTests(FrostVaultTestCase):
         self.assertEqual(self.row()["lifecycle"], "active")
         with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) AS n FROM archive_versions").fetchone()["n"], 1)
-            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(connection, 7)}
             self.assertEqual(rows["after/new.bin"]["state"], "cloud_only")
             self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 1)
 
@@ -615,15 +612,14 @@ class ManagedVaultReconnectTests(FrostVaultTestCase):
     def restore(self, content):
         digest = hashlib.sha256(b"old!").digest()
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             for path in content:
                 file_id = local_copies.observe_local_copy(vault_id=7, path=path, file_type="regular", size=4,
                                                      mtime_ns=1, observed_at="2026-11-01T10:00:00+00:00")
-                version = catalog.begin_replacement(file_id, object_key=f"vaults/{MANAGED_UUID}/" + path,
+                version = ArchiveVersions(connection).begin_replacement(file_id, object_key=f"vaults/{MANAGED_UUID}/" + path,
                     provider_version_id="old-" + path, size=4, storage_class="STANDARD",
                     created_at="2026-11-01T10:00:00+00:00")
-                catalog.promote_replacement(file_id, archive_version_id=version, plaintext_sha256=digest,
+                ArchiveVersions(connection).promote_replacement(file_id, archive_version_id=version, plaintext_sha256=digest,
                                             verified_at="2026-11-01T10:00:00+00:00")
             record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
 
@@ -658,7 +654,7 @@ class ManagedVaultReconnectTests(FrostVaultTestCase):
         self.assertEqual(s3.deleted, [])
         self.assertEqual(self.row()["lifecycle"], "active")
         with self.database.connect() as connection:
-            rows = {r["path"]: r for r in catalog_probe.list_file_rows(ArchiveCatalog(connection), 7)}
+            rows = {r["path"]: r for r in catalog_probe.list_file_rows(connection, 7)}
             self.assertEqual(connection.execute(
                 "SELECT COUNT(*) AS n FROM metadata_restore_vaults WHERE vault_id=7").fetchone()["n"], 0)
         self.assertEqual(rows["photo.jpg"]["state"], "protected")

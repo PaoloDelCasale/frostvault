@@ -324,7 +324,7 @@ def lock_vaults_in_order(connection: Any, vault_ids: Iterable[int]) -> None:
     Every writer of Vault-scoped derived rows (scanner/worker transactions,
     catalog revisions, aggregate maintenance) must hold the Vault row BEFORE it
     writes ``directory_aggregates`` or ``directory_aggregate_status``. Taking
-    it afterwards inverts the order of ``_vault_lock_touch`` /
+    it afterwards inverts the order of ``catalog_shared.vault_lock_touch`` /
     ``CatalogEventStore._lock_vault`` / ``lock_vault`` and produced the #485
     deadlock (``INSERT INTO directory_aggregates`` vs ``UPDATE vaults``).
 

@@ -16,7 +16,6 @@ from s3transfer.utils import OSUtils
 from watchfiles import Change, awatch
 
 from app import storage
-from app.catalog import ArchiveCatalog
 from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 from tests import test_auto_upload_watcher as watcher
@@ -44,9 +43,8 @@ class FilesystemCatalogTests(watcher.WatcherCase):
         target = self.write(name, content)
         digest = hashlib.sha256(content).hexdigest()
         with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
-            fingerprint(catalog, 2, name, digest)
-            version = str(protect(catalog, 2, name, digest, provider_version_id="exact",
+            fingerprint(connection, 2, name, digest)
+            version = str(protect(connection, 2, name, digest, provider_version_id="exact",
                                   created_at=self.clock.isoformat(), verified_at=self.clock.isoformat()))
         if missing:
             target.unlink()
@@ -329,13 +327,12 @@ class FilesystemCatalogTests(watcher.WatcherCase):
         cloud_backed = f".photo.jpg.restore-{'c' * 32}.tmp.f8Fc29bA"
         self.write(on_disk)
         with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             local_copies.observe_local_copy(vault_id=2, path=on_disk, file_type="regular", size=5, mtime_ns=1, observed_at=self.clock.isoformat())
             local_copies.observe_local_copy(vault_id=2, path=cloud_backed, file_type="regular", size=5, mtime_ns=1, observed_at=self.clock.isoformat())
             digest = hashlib.sha256(b"photo").hexdigest()
-            fingerprint(catalog, 2, cloud_backed, digest)
-            protect(catalog, 2, cloud_backed, digest, provider_version_id="keep")
+            fingerprint(connection, 2, cloud_backed, digest)
+            protect(connection, 2, cloud_backed, digest, provider_version_id="keep")
         storage.scan_tree(self.vault, self.clock.isoformat())
         self.assertEqual({row["path"] for row in self.entries()}, {on_disk, cloud_backed})
         self.assertEqual((self.root / on_disk).read_bytes(), b"photo")
@@ -375,7 +372,7 @@ class LiveWatcherCatalogTests(watcher.WatcherCase):
                 path.write_bytes(b"first")
                 real_apply(self.vault, {(Change.added, str(path))})
             with self.db() as connection:
-                fingerprint(ArchiveCatalog(connection), 2, f"{sibling_dir.name}/existing.jpg",
+                fingerprint(connection, 2, f"{sibling_dir.name}/existing.jpg",
                             hashlib.sha256(b"first").hexdigest())
 
         injected = False

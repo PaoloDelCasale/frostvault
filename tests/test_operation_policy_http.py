@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
 from app.services.local_copies import LocalCopies
 from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 
@@ -60,7 +60,7 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
         self.assertEqual(preview.json()["excluded"], ["tmp/x.txt", "photo.jpg"])
 
     def test_changing_upload_globs_refreshes_excluded_rollups_but_other_fields_do_not(self) -> None:
-        from app.catalog import ArchiveCatalog
+        from app.services.file_listing import FileListing
         from app.services.local_copies import LocalCopies
         from app.services import directory_aggregates as aggregates
         self.sign_in()
@@ -82,7 +82,7 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
         self.assertEqual(status(), "rebuild_required")
         with self.database.connect() as connection:
             aggregates.rebuild_vault_directory_aggregates(connection, self.vault_id)
-            item = ArchiveCatalog(connection).list_files_page(self.vault_id)["items"][0]
+            item = FileListing(connection).list_files_page(self.vault_id)["items"][0]
         self.assertEqual(item["state_counts"], {"excluded": 1})
 
     def test_globs_postgresql_cannot_read_are_refused_with_422_and_supported_ones_saved(self) -> None:
@@ -191,13 +191,12 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
                 self.assertEqual(response.status_code, 422, response.text)
 
     def _archive_version(self, connection, path: str, size: int) -> None:
-        catalog = ArchiveCatalog(connection)
         local_copies = LocalCopies(connection)
         file_id = local_copies.observe_local_copy(
             vault_id=self.vault_id, path=path, file_type="regular", size=size,
             mtime_ns=1, observed_at="2026-07-01T00:00:00+00:00",
         )
-        catalog.begin_replacement(
+        ArchiveVersions(connection).begin_replacement(
             file_id, object_key=f"vaults/x/{path}", provider_version_id=path,
             size=size, storage_class="STANDARD", created_at="2026-07-01T00:00:00+00:00",
         )

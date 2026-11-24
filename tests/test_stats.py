@@ -4,7 +4,8 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
+from app.services.file_listing import FileListing
 from app.services.local_copies import LocalCopies
 from app.routes.browse import stats
 from app.services.runtime_status import runtime_status, snapshot_runtime_status_for_stats
@@ -21,16 +22,15 @@ class StatsTests(FrostVaultTestCase):
         super().setUp()
         with self.database.connect() as connection:
             seed_vault(connection, id=9, source_root="/sources/photos", name="Files")
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             local_copies.observe_local_copy(vault_id=9, path="photo.jpg", file_type="regular", size=12, mtime_ns=1, observed_at="2026-07-21T00:00:00+00:00")
             # Current holds other (older) content: the Local Copy is pending.
-            row = catalog_probe.get_file_by_path(catalog, 9, "photo.jpg")
-            version = catalog.begin_replacement(
+            row = catalog_probe.get_file_by_path(connection, 9, "photo.jpg")
+            version = ArchiveVersions(connection).begin_replacement(
                 row["id"], object_key="vaults/x/photo.jpg", provider_version_id="only-copy",
                 size=44, storage_class="STANDARD", created_at="2026-07-21T00:00:00+00:00",
             )
-            catalog.promote_replacement(
+            ArchiveVersions(connection).promote_replacement(
                 row["id"], archive_version_id=version, plaintext_sha256=sha256_hex(b"older"),
                 verified_at="2026-07-21T00:01:00+00:00", local_generation=row["generation"],
             )
@@ -60,10 +60,9 @@ class StatsTests(FrostVaultTestCase):
 
     def test_summary_is_scoped_and_matches_listing(self):
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
-            rows = catalog_probe.list_file_rows(catalog, 9)
-            summary = catalog.summary(9)
-            empty = catalog.summary(999)
+            rows = catalog_probe.list_file_rows(connection, 9)
+            summary = FileListing(connection).summary(9)
+            empty = FileListing(connection).summary(999)
         self.assertEqual(summary["storage"]["local_bytes"], sum(row["local_size"] for row in rows))
         self.assertEqual(empty["storage"], {"local_bytes": 0, "cloud_bytes": 0})
 

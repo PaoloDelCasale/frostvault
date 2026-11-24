@@ -100,7 +100,7 @@ class UploadCatalog(Protocol):
     def catalog_unit(self, job: dict[str, Any], mutation: Callable[[Any], Any], *,
                      shared: bool = False) -> Any:
         """One claim- and target-fenced DB unit, replayed alone on a
-        serialization failure; ``mutation`` receives the ArchiveCatalog."""
+        serialization failure; ``mutation`` receives the unit's ArchiveVersions."""
 
     def upload_key(self, job: dict[str, Any]) -> str:
         """The object key of the Job's path under its Vault Target's prefix."""

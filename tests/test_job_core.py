@@ -14,7 +14,6 @@ from datetime import datetime, timedelta, timezone
 
 import psycopg
 
-from app.catalog import ArchiveCatalog
 from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 from app.services import job_admission, recovery_approval, vault_pause
@@ -551,11 +550,10 @@ class RestoreApprovalTests(JobCoreFixture):
     def setUp(self) -> None:
         super().setUp()
         with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
             digest = sha256_hex(b"x")
             for name in ("f0.txt", "f1.txt"):
-                fingerprint(catalog, 10, name, digest)
-                protect(catalog, 10, name, digest)
+                fingerprint(connection, 10, name, digest)
+                protect(connection, 10, name, digest)
                 connection.execute(
                     "UPDATE files SET local_presence='missing' WHERE vault_id=10 AND path=%s", (name,))
             connection.execute("UPDATE archive_versions SET storage_class='DEEP_ARCHIVE'")
