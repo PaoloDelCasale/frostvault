@@ -396,6 +396,23 @@ class SchedulerCycleTests(SchedulerCase):
         timed = [[name for name in cycle if name not in SCHEDULED] for cycle in self.submitted()]
         self.assertEqual(timed, [["backup", "backup_verify"], ["scan"], []])
 
+    async def test_only_the_startup_scan_leaves_watched_vaults_to_their_watchers(self) -> None:
+        # #862: the first scan of a loop whose scan age is unknown is the
+        # startup scan; every later one is the periodic scan of every Vault.
+        scans: list[dict] = []
+        self.stack.enter_context(patch.object(
+            storage, "scan_all_vaults", side_effect=lambda **options: scans.append(options)))
+        self.submit.side_effect = lambda name, func: (
+            self.events.append(("submit", name)) or (func() if name == "scan" else None))
+        await self.run_cycles(3, advance=3600.0)
+        self.assertEqual(scans, [{"startup": True}, {"startup": False}, {"startup": False}])
+        # A scan age the host knows makes the first scan a periodic one.
+        scans.clear()
+        self.cycles.clear()
+        self.ages.return_value = {"scan": 3600.0}
+        await self.run_cycles(1)
+        self.assertEqual(scans, [{"startup": False}])
+
     async def test_backups_switched_off_are_never_submitted_and_a_failed_audit_is_retried(self) -> None:
         self.stack.enter_context(override_settings(
             metadata_backup_interval_seconds=0, metadata_backup_verify_interval_seconds=0))
