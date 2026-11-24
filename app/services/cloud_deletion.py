@@ -54,13 +54,14 @@ from psycopg.types.json import Jsonb
 
 from ..errors import DomainError
 from ..i18n import DEFAULT_LOCALE, translate
-from . import retention_lock, source_identity, source_layout, vault_relocation
+from . import retention_lock, source_identity, source_layout, vault_locks, vault_relocation
+from .vault_locks import lock_vaults_in_order
 from .audit_events import record_audit_event
 from .job_queue import OPEN_JOB_SQL, TERMINAL_JOB_STATUSES, open_job_sql
 from .vault_paths import vault_object_prefix
 from .vaults import VAULT_ROW_SQL
 from .component_health import load_vault_health
-from .directory_aggregates import lock_vaults_in_order, mark_paths_dirty
+from .directory_aggregates import mark_paths_dirty
 from .protection_states import (CURRENT_JOIN_SQL, PROTECTED_SQL, STATES, VISIBLE_SQL,
                                 masked_state_sql, observation_is_unconfirmed)
 
@@ -183,9 +184,9 @@ def _aware(value: Any) -> datetime:
 
 
 def lock_vault(connection: Any, vault_id: int) -> dict[str, Any]:
-    row = connection.execute(
-        f"{VAULT_ROW_SQL} WHERE v.id=%s FOR UPDATE OF v", (vault_id,)
-    ).fetchone()
+    row = vault_locks.lock_vault_view(
+        connection, vault_id, vault_locks.UPDATE, view_sql=VAULT_ROW_SQL,
+    )
     if row is None:
         raise VaultNotFound("api.vault_not_found")
     return row

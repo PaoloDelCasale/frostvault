@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from .vault_locks import vault_lock_touch
+
 
 MAX_EVENT_DOMAIN_LENGTH = 64
 MAX_EVENT_SCOPE_LENGTH = 512
@@ -210,10 +212,7 @@ class CatalogEventStore:
         # The existing Vault row is the cross-backend serialization point.  An
         # Even a same-value UPDATE takes a PostgreSQL row lock without
         # changing canonical data.
-        result = self.connection.execute(
-            "UPDATE vaults SET name=name WHERE id=%s",
-            (vault_id,),
-        )
+        result = vault_lock_touch(self.connection, vault_id)
         if result.rowcount != 1:
             raise LookupError(f"Vault {vault_id} does not exist")
 

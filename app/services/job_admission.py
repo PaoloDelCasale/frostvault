@@ -31,6 +31,7 @@ from . import notifications as notification_service
 from . import protection_stop as protection_stop_service
 from . import recovery_approval
 from . import vault_relocation as vault_relocation_service
+from . import vault_locks
 from . import write_access
 from .job_queue import open_job_sql
 from .cost_estimates import CostEstimate, PriceList, estimate_restore_cost, list_prices
@@ -57,10 +58,9 @@ def lock_vault(
     rewriting its row and still lets claims hold their shared ``KEY SHARE``
     fence (ADR-0031).
     """
-    row = connection.execute(
-        "SELECT id, lifecycle FROM vaults WHERE id=%s FOR NO KEY UPDATE",
-        (vault_id,),
-    ).fetchone()
+    row = vault_locks.lock_vault(
+        connection, vault_id, vault_locks.NO_KEY_UPDATE, columns="id, lifecycle",
+    )
     if not row:
         raise LookupError("vault_not_found")
     if row["lifecycle"] != "active":
@@ -77,7 +77,7 @@ def lock_vault_decisions(connection: Any, vault_id: int) -> None:
     The exclusive row lock also waits for a claim's ``KEY SHARE`` fence, so a
     decision and a claim never act on the same Jobs at once.
     """
-    connection.execute("SELECT id FROM vaults WHERE id=%s FOR UPDATE", (vault_id,))
+    vault_locks.lock_vault(connection, vault_id, vault_locks.UPDATE)
 
 
 # -- Admission of Files: the arbiter every request and policy queues through ----

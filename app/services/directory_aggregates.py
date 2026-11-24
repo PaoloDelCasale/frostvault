@@ -35,6 +35,7 @@ from .protection_states import (
     local_copy_matches_current, state_sql,
 )
 from .database_retry import owned_connection, retry_database_unit
+from .vault_locks import lock_vaults_in_order
 
 
 STATUS_READY = "ready"
@@ -316,31 +317,6 @@ def invalidate_for_archive_version_ids(
         ).fetchall()
         for row in rows:
             mark_path_dirty(connection, int(row["vault_id"]), row["path"])
-
-
-def lock_vaults_in_order(connection: Any, vault_ids: Iterable[int]) -> None:
-    """Take the Vault row lock(s) in ascending id order (the repo-wide order).
-
-    Every writer of Vault-scoped derived rows (scanner/worker transactions,
-    catalog revisions, aggregate maintenance) must hold the Vault row BEFORE it
-    writes ``directory_aggregates`` or ``directory_aggregate_status``. Taking
-    it afterwards inverts the order of ``catalog_shared.vault_lock_touch`` /
-    ``CatalogEventStore._lock_vault`` / ``lock_vault`` and produced the #485
-    deadlock (``INSERT INTO directory_aggregates`` vs ``UPDATE vaults``).
-
-    ``FOR NO KEY UPDATE`` is exactly the mode of the ``UPDATE vaults SET
-    name=name`` touch and stays compatible with FK ``KEY SHARE`` inserts. The
-    lock is reentrant inside one transaction, so later touches are free. Several
-    Vaults are locked in one ordered statement so concurrent global flushes
-    cannot cross each other either.
-    """
-    ordered = sorted({int(vault_id) for vault_id in vault_ids})
-    if not ordered:
-        return
-    connection.execute(
-        "SELECT id FROM vaults WHERE id = ANY(%s) ORDER BY id FOR NO KEY UPDATE",
-        (ordered,),
-    ).fetchall()
 
 
 def request_vault_rebuild(connection: Any, vault_id: int) -> None:

@@ -48,6 +48,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from ..errors import DomainError, VaultNotFound
 from . import bucket_provisioning as buckets
 from . import s3
+from . import vault_locks
 from .lifecycle_profiles import LifecycleProfile, profile_from_json
 from .notifications import ProblemFamily, set_problem
 from .s3_lifecycle_rules import vault_bucket_lifecycle_rules
@@ -547,8 +548,8 @@ def cancel_creation(vault_id: int, *, actor: str = "owner",
         raise CancelRefused("busy")
     try:
         with database() as connection:
-            row = connection.execute(
-                f"{_ROW_SQL} WHERE v.id=%s FOR UPDATE OF v", (vault_id,)).fetchone()
+            row = vault_locks.lock_vault_view(
+                connection, vault_id, vault_locks.UPDATE, view_sql=_ROW_SQL)
             if row is None:
                 raise VaultNotFound("api.vault_creation_cancel.not_found")
             if row["lifecycle"] != "provisioning":

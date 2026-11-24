@@ -19,6 +19,7 @@ from typing import Any, Sequence
 
 from ..errors import DomainError, Invalid
 from .job_queue import open_job_sql
+from .vault_locks import vault_lock_touch
 from .path_rules import (
     MAX_GLOBS_PER_POLICY, GlobSet, ParsedPath, UnsafeGlob, any_name_glob, name_matches,
     normalize_globs, path_matches, validate_glob,
@@ -189,7 +190,7 @@ def validate_policy_globs(policy: OperationPolicy, *, stored: OperationPolicy | 
 
 def lock_vault_policy(connection: Any, vault_id: int) -> None:
     """Serialize the read, change and write of one Vault's policy."""
-    connection.execute("UPDATE vaults SET name=name WHERE id=%s", (vault_id,))
+    vault_lock_touch(connection, vault_id)
 
 
 def get_policy(connection: Any, vault_id: int) -> OperationPolicy:
@@ -213,14 +214,7 @@ def set_policy(
     connection: Any, vault_id: int, policy: OperationPolicy
 ) -> OperationPolicy:
     validate_policy(policy)
-    locked = connection.execute(
-        """
-        UPDATE vaults SET name=name
-        WHERE id=%s
-        RETURNING id, lifecycle
-        """,
-        (vault_id,),
-    ).fetchone()
+    locked = vault_lock_touch(connection, vault_id, returning="id, lifecycle").fetchone()
     if not locked:
         raise VaultUnavailable("vault_not_found")
     if locked["lifecycle"] != "active":

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from ..errors import Conflict, VaultNotFound
+from . import vault_locks
 from .operation_policies import get_policy
 
 BATCH_SIZE = 100
@@ -75,7 +76,7 @@ def create(connection: Any, *, vault_id: int, path: str, user_id: int,
     Callers normalize the directory path. A caller-supplied UUID is the stable
     idempotency key and group identifier, including for terminal replays.
     """
-    vault = connection.execute("SELECT * FROM vaults WHERE id=%s FOR NO KEY UPDATE", (vault_id,)).fetchone()
+    vault = vault_locks.lock_vault(connection, vault_id, vault_locks.NO_KEY_UPDATE, columns="*")
     if not vault:
         raise VaultNotFound()
     group_id = str(uuid.UUID(request_id)) if request_id else str(uuid.uuid4())
@@ -149,7 +150,8 @@ def advance(connection: Any, *, vault_id: int, group_id: str, batch_size: int = 
     """
     if not 1 <= batch_size <= BATCH_SIZE:
         raise ValueError("Invalid admission batch size")
-    vault = connection.execute("SELECT * FROM vaults WHERE id=%s FOR NO KEY UPDATE SKIP LOCKED", (vault_id,)).fetchone()
+    vault = vault_locks.lock_vault(connection, vault_id, vault_locks.NO_KEY_UPDATE, columns="*",
+                                   skip_locked=True)
     if not vault:
         return False
     request = connection.execute("SELECT * FROM bulk_upload_admissions WHERE vault_id=%s AND group_id=%s FOR UPDATE",

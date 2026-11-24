@@ -20,6 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from ..errors import DomainError
 from . import root_pins
+from . import vault_locks
 from .database_retry import owned_connection, retry_database_unit
 from .upload_snapshot import MODES, UploadSnapshot
 from . import s3
@@ -301,8 +302,8 @@ def target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
 def _target(connection: Any, job: dict[str, Any], *, key: str, provider: str,
             shared: bool) -> tuple[dict[str, Any], dict[str, Any]]:
     """``target`` and the locked Vault row it was read from."""
-    lock = "SHARE" if shared else "NO KEY UPDATE"
-    vault = connection.execute(f"SELECT * FROM vaults WHERE id=%s FOR {lock}", (job["vault_id"],)).fetchone()
+    lock = vault_locks.SHARE if shared else vault_locks.NO_KEY_UPDATE
+    vault = vault_locks.lock_vault(connection, job["vault_id"], lock, columns="*")
     row = connection.execute(
         f"""SELECT f.path, f.path_since, f.held_version_id, t.bucket, t.region, t.key_layout,
                   j.status AS job_status, j.file_id AS job_file_id, j.vault_id AS job_vault_id,

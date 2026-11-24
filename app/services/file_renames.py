@@ -28,6 +28,7 @@ from .catalog_shared import (
 )
 from .directory_aggregates import invalidate_for_confirmed_rename, mark_paths_dirty
 from .job_queue import open_job_sql
+from . import vault_locks
 
 AUTO_RENAME_WINDOW = timedelta(hours=1)
 
@@ -215,12 +216,9 @@ class FileRenames:
         scanner writes use, while the compare-and-swap writes below still fail
         closed for any writer that does not take it.
         """
-        query = """
-            SELECT id FROM vaults
-            WHERE id=%s AND lifecycle='active'
-            FOR NO KEY UPDATE
-        """
-        if self.connection.execute(query, (vault_id,)).fetchone() is None:
+        if vault_locks.lock_vault(
+            self.connection, vault_id, vault_locks.NO_KEY_UPDATE, active_only=True,
+        ) is None:
             raise VaultFileNotFound()
 
     def _require_one_rename_mutation(self, result: Any) -> None:

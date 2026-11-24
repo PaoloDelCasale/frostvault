@@ -33,7 +33,6 @@ from .catalog_shared import (
     id_text,
     required_timestamp,
     sha256_digest,
-    vault_lock_touch,
 )
 from .directory_aggregates import (
     mark_file_id_dirty,
@@ -41,6 +40,7 @@ from .directory_aggregates import (
     request_vault_rebuild,
 )
 from .job_queue import TERMINAL_JOB_STATUSES
+from .vault_locks import vault_lock_touch
 
 
 class ReplacementInProgress(RuntimeError):
