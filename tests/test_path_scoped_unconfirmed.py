@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.i18n import DEFAULT_LOCALE, translate
 from app.services import directory_aggregates as aggregates
 from app.services.component_health import record_component_health
@@ -49,9 +50,10 @@ class PathScopedDisplayedStateTests(FrostVaultTestCase):
         with self.database.connect() as connection:
             seed_vault(connection, source_root="/source", id=2)
             catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             for index, name in enumerate(FILES):
                 payload = name.encode()
-                catalog.observe_local_copy(
+                local_copies.observe_local_copy(
                     vault_id=2, path=name, file_type="regular", size=len(payload), mtime_ns=1,
                     observed_at="2026-11-15T10:00:00+00:00")
                 fingerprint(catalog, 2, name, sha256_hex(payload))
@@ -138,7 +140,7 @@ class PathScopedDisplayedStateTests(FrostVaultTestCase):
 
     def add_excluded(self, connection) -> None:
         """A fixed-noise file in the blocked folder, never pending work (#711)."""
-        ArchiveCatalog(connection).observe_local_copy(
+        LocalCopies(connection).observe_local_copy(
             vault_id=2, path="priv/secret/.DS_Store", file_type="regular", size=4, mtime_ns=1,
             observed_at="2026-11-15T10:00:00+00:00")
         aggregates.rebuild_vault_directory_aggregates(connection, 2)

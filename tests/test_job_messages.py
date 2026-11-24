@@ -10,7 +10,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.i18n import LOCALE_COOKIE_NAME, present_job_message
 from app.storage import schedule_upload_retry, set_job
@@ -52,7 +52,7 @@ class JobMessagePersistenceTests(FrostVaultTestCase):
         super().setUp()
         with self.database.connect() as connection:
             seed_vault(connection, id=2, source_root="/source")
-            file_id = ArchiveCatalog(connection).observe_local_copy(
+            file_id = LocalCopies(connection).observe_local_copy(
                 vault_id=2,
                 path="a.txt",
                 file_type="regular",
@@ -133,7 +133,7 @@ class JobHttpFixture(FrostVaultTestCase):
         super().setUp()
         with self.database.connect() as connection:
             vault_id = seed_vault(connection, name="Docs", source_root="/source")["id"]
-            file_id = ArchiveCatalog(connection).observe_local_copy(
+            file_id = LocalCopies(connection).observe_local_copy(
                 vault_id=vault_id,
                 path="a.txt",
                 file_type="regular",

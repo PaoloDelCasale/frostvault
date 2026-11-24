@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import Mock
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.services.lifecycle_profiles import GUIDED_PROFILES
 from app.services.lifecycle_policies import load_vault_plan, set_vault_plan, sync_lifecycle_rules_for_bucket
@@ -16,7 +17,8 @@ class VaultStoragePlanTests(unittest.TestCase):
                 for i in [1, 2]:
                     seed_vault(connection, id=i, uuid=f"00000000-0000-4000-8000-00000000000{i}", name=f"Vault {i}", source_root=f"/source-{i}")
                 catalog = ArchiveCatalog(connection)
-                catalog.observe_local_copy(vault_id=1, path="only.txt", file_type="regular", size=5, mtime_ns=1, observed_at="2026-01-01T00:00:00+00:00")
+                local_copies = LocalCopies(connection)
+                local_copies.observe_local_copy(vault_id=1, path="only.txt", file_type="regular", size=5, mtime_ns=1, observed_at="2026-01-01T00:00:00+00:00")
                 fingerprint(catalog, 1, "only.txt", "a" * 64)
                 protect(catalog, 1, "only.txt", "a" * 64, created_at="2026-01-01T00:00:00+00:00", verified_at="2026-01-01T00:01:00+00:00")
                 before = connection.execute("SELECT * FROM archive_versions").fetchall()

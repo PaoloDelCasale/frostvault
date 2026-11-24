@@ -33,8 +33,8 @@ class PeriodicLostEventRecoveryTests(unittest.IsolatedAsyncioTestCase):
             connection.execute.return_value.fetchall.return_value = vaults
             connection.execute.return_value.fetchone.return_value = None
             observed = set()
-            catalog = stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
-            catalog.observe_local_copies_batch.side_effect = lambda **kw: observed.update(
+            local_copies = stack.enter_context(patch("app.storage.LocalCopies")).return_value
+            local_copies.observe_local_copies_batch.side_effect = lambda **kw: observed.update(
                 (kw["vault_id"], entry[0]) for entry in kw["entries"]
             )
             stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(

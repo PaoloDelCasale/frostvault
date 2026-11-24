@@ -29,6 +29,7 @@ from botocore.exceptions import ClientError
 from app import storage
 from app.routes.jobs import retry_failed_uploads
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 from app.config import settings
 from app.services import cloud_preflight_gate as gate, vault_relocation
@@ -63,7 +64,7 @@ class PreflightQueueTests(FrostVaultTestCase):
                     file.write_bytes(b'photo')
                     os.utime(file, (1_500_000_000, 1_500_000_000))
                     stat = file.stat()
-                    ArchiveCatalog(c).observe_local_copy(vault_id=i, path=name, file_type='regular', size=stat.st_size,
+                    LocalCopies(c).observe_local_copy(vault_id=i, path=name, file_type='regular', size=stat.st_size,
                                                          mtime_ns=stat.st_mtime_ns, observed_at=self.observed)
         self.enterContext(patch('app.storage.source_layout.vault_local_access', return_value=SimpleNamespace(
             local_operations_allowed=True, volume_alias=None, volume_health='healthy')))
@@ -154,7 +155,7 @@ class PreflightQueueTests(FrostVaultTestCase):
 
     def test_missing_automatic_copy_does_not_starve_healthy_other_vault(self):
         with self.db() as c:
-            catalog = ArchiveCatalog(c)
+            local_copies = LocalCopies(c)
             missing, _, _ = JobAdmission(c).queue_jobs(
                 vault_id=1, path='a.txt', action='upload', 
                 requested_at=self.observed, group_id=str(uuid.uuid4()), is_directory=False,
@@ -165,7 +166,7 @@ class PreflightQueueTests(FrostVaultTestCase):
                 requested_at=self.observed, group_id=str(uuid.uuid4()), is_directory=False,
             )
             file_id = c.execute("SELECT file_id FROM jobs WHERE id=%s", (missing[0],)).fetchone()["file_id"]
-            catalog.mark_local_copy_missing(str(file_id), observed_at=self.observed)
+            local_copies.mark_local_copy_missing(str(file_id), observed_at=self.observed)
         (self.base / '1' / 'a.txt').unlink()
         processed = []
         def finish(job):
@@ -185,11 +186,11 @@ class PreflightQueueTests(FrostVaultTestCase):
 
     def test_sixteen_simultaneous_auth_failures_wait_and_promptly_invalidate_ready(self):
         with self.db() as c:
-            catalog = ArchiveCatalog(c)
+            local_copies = LocalCopies(c)
             for i in range(16):
                 file = self.base / '1' / f'auth-{i}.txt'
                 file.write_bytes(b'photo')
-                catalog.observe_local_copy(vault_id=1,path=file.name,file_type='regular',size=5,
+                local_copies.observe_local_copy(vault_id=1,path=file.name,file_type='regular',size=5,
                     mtime_ns=file.stat().st_mtime_ns,observed_at=self.observed)
                 JobAdmission(c).queue_jobs(vault_id=1,path=file.name,action='upload',
                     requested_at=self.observed,group_id=str(uuid.uuid4()),is_directory=False)

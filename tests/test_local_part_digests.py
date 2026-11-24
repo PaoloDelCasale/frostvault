@@ -104,6 +104,8 @@ class CatalogSnapshotExecutionTests(unittest.TestCase):
         self.bound = False
         self.fingerprint = self.recorded(BIG_A)
         self.catalog = MagicMock()
+        self.local_copies = MagicMock()
+        self.enterContext(patch.object(execution, "LocalCopies", return_value=self.local_copies))
         worker = fake_worker()
         worker.safe_local_path.return_value = self.source
         worker.prepare_upload_snapshot.side_effect = self.hash
@@ -185,7 +187,7 @@ class CatalogSnapshotExecutionTests(unittest.TestCase):
         self.assertEqual(snapshot, expected)
         self.assertEqual((snapshot.mtime_ns, snapshot.ownership.uid), (MTIME_NS, info.st_uid))
         self.assertEqual((readers, sending), (0, 1), "no reader permit, only the send")
-        self.catalog.retire_local_fingerprint.assert_not_called()
+        self.local_copies.retire_local_fingerprint.assert_not_called()
         self.worker.set_job.assert_called_once_with(1, "uploading", message_key="job.plain_upload")
 
     def test_a_part_that_contradicts_them_retires_the_fingerprint(self) -> None:
@@ -194,14 +196,14 @@ class CatalogSnapshotExecutionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "changed since fingerprinting"):
             self.run_job()
         self.assertEqual(self.reads, [])
-        self.catalog.retire_local_fingerprint.assert_called_once_with(
+        self.local_copies.retire_local_fingerprint.assert_called_once_with(
             "file", generation=7, plaintext_sha256=hashlib.sha256(BIG_A).digest(),
             size=len(BIG_A), mtime_ns=MTIME_NS)
 
     def test_failed_retirement_keeps_the_send_error(self) -> None:
         self.source.write_bytes(BIG_B)
         os.utime(self.source, ns=(MTIME_NS, MTIME_NS))
-        self.catalog.retire_local_fingerprint.side_effect = _Stop("database down")
+        self.local_copies.retire_local_fingerprint.side_effect = _Stop("database down")
         with self.assertRaisesRegex(RuntimeError, "changed since fingerprinting"):
             self.run_job()
 
@@ -209,7 +211,7 @@ class CatalogSnapshotExecutionTests(unittest.TestCase):
         self.worker.upload_s3_file.side_effect = RuntimeError("provider down")
         with self.assertRaisesRegex(RuntimeError, "provider down"):
             self.run_job()
-        self.catalog.retire_local_fingerprint.assert_not_called()
+        self.local_copies.retire_local_fingerprint.assert_not_called()
 
     def test_a_bound_job_or_an_unusable_fingerprint_hashes_the_file(self) -> None:
         cases = {
@@ -238,7 +240,7 @@ class CatalogSnapshotExecutionTests(unittest.TestCase):
                     self.fingerprint.update(local_part_size=None, local_part_sha256=None)
                 self.assertEqual(self.run_job().status, "completed")
                 self.assertEqual(self.reads, [1], "one preparation read, under its permit")
-                self.catalog.retire_local_fingerprint.assert_not_called()
+                self.local_copies.retire_local_fingerprint.assert_not_called()
 
     def test_a_whole_read_contradicting_recorded_parts_retires_them(self) -> None:
         # A retry bound to its snapshot rehashes; the stale fingerprint goes
@@ -248,7 +250,7 @@ class CatalogSnapshotExecutionTests(unittest.TestCase):
         os.utime(self.source, ns=(MTIME_NS, MTIME_NS))
         self.assertEqual(self.run_job().status, "completed")
         self.assertEqual(self.reads, [1])
-        self.catalog.retire_local_fingerprint.assert_called_once_with(
+        self.local_copies.retire_local_fingerprint.assert_called_once_with(
             "file", generation=7, plaintext_sha256=hashlib.sha256(BIG_A).digest(),
             size=len(BIG_A), mtime_ns=MTIME_NS)
         self.assertEqual(self.sent[0][0].plaintext_sha256, hashlib.sha256(BIG_B).hexdigest())
@@ -307,7 +309,7 @@ class ScanPartDigestTests(_ScanFixture, _AdoptionFixture):
         self.assertIsNone(photo["local_part_sha256"])
 
     def test_every_change_of_the_digest_clears_the_parts(self) -> None:
-        from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
         from app.storage import now_iso
         vault = self._vault()
         self._scan(vault)
@@ -316,7 +318,7 @@ class ScanPartDigestTests(_ScanFixture, _AdoptionFixture):
         def reset() -> dict:
             row = self._rows(vault_id)["movie.mkv"]
             with self.database.connect() as connection:
-                self.assertTrue(ArchiveCatalog(connection).publish_local_fingerprint(
+                self.assertTrue(LocalCopies(connection).publish_local_fingerprint(
                     str(row["id"]), generation=row["generation"],
                     plaintext_sha256=hashlib.sha256(BIG_A).digest(), size=row["local_size"],
                     mtime_ns=row["local_mtime_ns"], parts=(MULTIPART_THRESHOLD, _parts(BIG_A))))
@@ -331,14 +333,14 @@ class ScanPartDigestTests(_ScanFixture, _AdoptionFixture):
         row = reset()
         with self.database.connect() as connection:
             # The same digest without parts: the same bytes, the parts stay.
-            ArchiveCatalog(connection).publish_local_fingerprint(
+            LocalCopies(connection).publish_local_fingerprint(
                 str(row["id"]), generation=row["generation"],
                 plaintext_sha256=hashlib.sha256(BIG_A).digest(), size=row["local_size"],
                 mtime_ns=row["local_mtime_ns"])
         self.assertIsNotNone(parts()[1])
         with self.database.connect() as connection:
             # Another digest without parts: they described other bytes.
-            ArchiveCatalog(connection).publish_local_fingerprint(
+            LocalCopies(connection).publish_local_fingerprint(
                 str(row["id"]), generation=row["generation"],
                 plaintext_sha256=hashlib.sha256(BIG_B).digest(), size=row["local_size"],
                 mtime_ns=row["local_mtime_ns"])
@@ -347,7 +349,7 @@ class ScanPartDigestTests(_ScanFixture, _AdoptionFixture):
         row = reset()
         with self.database.connect() as connection:
             # A new size or mtime forgets the digest and its parts.
-            ArchiveCatalog(connection).observe_local_copy(
+            LocalCopies(connection).observe_local_copy(
                 vault_id=vault_id, path="movie.mkv", file_type="regular",
                 size=row["local_size"], mtime_ns=row["local_mtime_ns"] + 1, observed_at=now_iso())
         self.assertEqual(parts(), (None, None))
@@ -355,7 +357,7 @@ class ScanPartDigestTests(_ScanFixture, _AdoptionFixture):
         row = reset()
         with self.database.connect() as connection:
             # A content event with the same stat forgets them too.
-            ArchiveCatalog(connection).observe_local_copy(
+            LocalCopies(connection).observe_local_copy(
                 vault_id=vault_id, path="movie.mkv", file_type="regular",
                 size=row["local_size"], mtime_ns=row["local_mtime_ns"], observed_at=now_iso(),
                 invalidate_content=True)
@@ -369,22 +371,22 @@ class ScanPartDigestTests(_ScanFixture, _AdoptionFixture):
         self.assertEqual(parts(), (None, None))
 
     def test_retirement_is_a_compare_and_swap_on_the_observation_and_digest(self) -> None:
-        from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
         vault = self._vault()
         self._scan(vault)
         row = self._rows(int(vault["id"]))["movie.mkv"]
         stale = dict(generation=row["generation"], size=row["local_size"],
                      mtime_ns=row["local_mtime_ns"])
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
-            self.assertFalse(catalog.retire_local_fingerprint(
+            local_copies = LocalCopies(connection)
+            self.assertFalse(local_copies.retire_local_fingerprint(
                 str(row["id"]), plaintext_sha256=hashlib.sha256(BIG_B).digest(), **stale))
-            self.assertFalse(catalog.retire_local_fingerprint(
+            self.assertFalse(local_copies.retire_local_fingerprint(
                 str(row["id"]), plaintext_sha256=hashlib.sha256(BIG_A).digest(),
                 **{**stale, "generation": row["generation"] + 1}))
         self.assertIsNotNone(self._rows(int(vault["id"]))["movie.mkv"]["local_part_sha256"])
         with self.database.connect() as connection:
-            self.assertTrue(ArchiveCatalog(connection).retire_local_fingerprint(
+            self.assertTrue(LocalCopies(connection).retire_local_fingerprint(
                 str(row["id"]), plaintext_sha256=hashlib.sha256(BIG_A).digest(), **stale))
         retired = self._rows(int(vault["id"]))["movie.mkv"]
         self.assertEqual((retired["local_sha256"], retired["local_part_size"],
@@ -444,13 +446,13 @@ class CatalogPartSnapshotWorkerTests(worker_fixtures.UploadProvenanceWorkerCase)
 
     def scan_fingerprint(self, *, with_parts: bool = True) -> None:
         """What the scan verification publishes for the current observation."""
-        from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
         parts = PartDigests()
         digest, info = hash_stable_regular_file(self.file, parts=parts)
         with self.database.connect() as connection:
             generation = connection.execute(
                 "SELECT generation FROM files WHERE id=%s", (self.file_id,)).fetchone()["generation"]
-            self.assertTrue(ArchiveCatalog(connection).publish_local_fingerprint(
+            self.assertTrue(LocalCopies(connection).publish_local_fingerprint(
                 self.file_id, generation=generation, plaintext_sha256=digest, size=info.st_size,
                 mtime_ns=info.st_mtime_ns, parts=parts.record(info.st_size) if with_parts else None))
 

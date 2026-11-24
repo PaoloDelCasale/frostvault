@@ -36,7 +36,7 @@ from unittest.mock import patch
 import psycopg
 
 from app import storage
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 from app.services import cloud_deletion, protection_stop
 from app.services.recovery_kit import record_metadata_restore
@@ -153,7 +153,7 @@ class CloudDeletionTests(CloudDeletionFixture):
         present.write_bytes(b"local")
         with self.db() as connection:
             stat = present.stat()
-            ArchiveCatalog(connection).observe_local_copy(
+            LocalCopies(connection).observe_local_copy(
                 vault_id=2, path="album_1/present.jpg", file_type="regular", size=stat.st_size,
                 mtime_ns=stat.st_mtime_ns, observed_at=storage.now_iso())
         # A folder covers its eligible files only (#723): the present one is skipped.
@@ -207,7 +207,7 @@ class CloudDeletionTests(CloudDeletionFixture):
         self.file.write_bytes(A)
         stat = self.file.stat()
         with self.db() as connection:
-            ArchiveCatalog(connection).observe_local_copies_batch(
+            LocalCopies(connection).observe_local_copies_batch(
                 vault_id=2, entries=[("report.txt", "regular", stat.st_size, stat.st_mtime_ns,
                                       storage.now_iso())])
         self.assertEqual(self.statuses(scheduled.group_id), ["cancelled", "cancelled"])

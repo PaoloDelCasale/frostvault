@@ -14,6 +14,7 @@ from unittest.mock import patch
 import psycopg
 
 from app.catalog import ArchiveCatalog, ReplacementInProgress, StaleReplacement
+from app.services.local_copies import LocalCopies
 from app.services.file_renames import FileRenames
 from tests.catalog_support import fingerprint, protect, sha256_hex
 from tests import catalog_probe
@@ -35,10 +36,11 @@ class _Fixture(FrostVaultTestCase):
         self.addCleanup(self.connection.close)
         seed_vault(self.connection, id=2, source_root="/source")
         self.catalog = ArchiveCatalog(self.connection)
+        self.local_copies = LocalCopies(self.connection)
 
     def observe(self, path: str = "a.txt", *, size: int = 9, mtime_ns: int = 100,
                 at: str = T0, **extra) -> str:
-        return self.catalog.observe_local_copy(
+        return self.local_copies.observe_local_copy(
             vault_id=2, path=path, file_type=extra.pop("file_type", "regular"),
             size=size, mtime_ns=mtime_ns, observed_at=at, **extra,
         )
@@ -92,29 +94,29 @@ class LocalCopyTests(_Fixture):
         )
         file_id = self.observe()
         self.assertTrue(fingerprint(self.catalog, 2, "a.txt", DIGEST_A))
-        self.catalog.mark_local_copy_missing(file_id, observed_at=T1)
+        self.local_copies.mark_local_copy_missing(file_id, observed_at=T1)
         missing = self.file()["local_copy"]
         self.assertEqual(missing["presence"], "missing")
         # Missing keeps the last known content fingerprint.
         self.assertEqual(missing["plaintext_sha256"], DIGEST_A)
         # Absence has nothing to mark missing.
-        self.catalog.mark_local_copy_missing(self.file("cloud.txt")["id"], observed_at=T1)
+        self.local_copies.mark_local_copy_missing(self.file("cloud.txt")["id"], observed_at=T1)
         self.assertIsNone(self.file("cloud.txt")["local_copy"])
 
     def test_unsupported_entries_are_observed_without_fingerprint(self) -> None:
         self.observe("link", file_type="symlink", size=0)
         self.assertEqual(self.file("link")["local_copy"]["presence"], "unsupported")
-        self.assertEqual(self.catalog.local_copies_to_fingerprint(2), [])
+        self.assertEqual(self.local_copies.local_copies_to_fingerprint(2), [])
 
     def test_a_confirming_observation_keeps_the_generation_a_change_does_not(self) -> None:
         file_id = self.observe()
-        before_hash = self.catalog.local_copies_to_fingerprint(2)[0]
+        before_hash = self.local_copies.local_copies_to_fingerprint(2)[0]
         # A scan re-observes the same stat while the hash runs (#619): the
         # content observation is unchanged, so the hash still publishes.
         self.observe(at=T1)
         self.assertEqual(self.file()["generation"], before_hash["generation"])
         self.assertEqual(self.file()["local_copy"]["observed_at"].isoformat(), T1)
-        self.assertTrue(self.catalog.publish_local_fingerprint(
+        self.assertTrue(self.local_copies.publish_local_fingerprint(
             file_id, generation=before_hash["generation"], plaintext_sha256=DIGEST_A,
             size=9, mtime_ns=100,
         ))
@@ -127,14 +129,14 @@ class LocalCopyTests(_Fixture):
                 self.observe(at=T2, **change)
                 after = self.file()
                 self.assertGreater(after["generation"], token)
-                self.assertFalse(self.catalog.publish_local_fingerprint(
+                self.assertFalse(self.local_copies.publish_local_fingerprint(
                     file_id, generation=token, plaintext_sha256=DIGEST_A,
                     size=after["local_copy"]["size"],
                     mtime_ns=after["local_copy"]["mtime_ns"],
                 ))
         # Reappearing after missing is a new observation too.
         token = self.file()["generation"]
-        self.catalog.mark_local_copy_missing(file_id, observed_at=T2)
+        self.local_copies.mark_local_copy_missing(file_id, observed_at=T2)
         missing = self.file()["generation"]
         self.assertGreater(missing, token)
         self.observe(at="2026-07-21T13:00:00+00:00")
@@ -146,7 +148,7 @@ class LocalCopyTests(_Fixture):
         self.observe("grown.txt")
         before = {path: self.file(path)["generation"]
                   for path in ("same.txt", "event.txt", "grown.txt")}
-        self.catalog.observe_local_copies_batch(
+        self.local_copies.observe_local_copies_batch(
             vault_id=2,
             entries=[("same.txt", "regular", 9, 100, T1),
                      ("event.txt", "regular", 9, 100, T1),
@@ -159,19 +161,19 @@ class LocalCopyTests(_Fixture):
 
     def test_publication_requires_the_stat_the_hash_saw(self) -> None:
         file_id = self.observe()
-        token = self.catalog.local_copies_to_fingerprint(2)[0]
+        token = self.local_copies.local_copies_to_fingerprint(2)[0]
         # The file changed under the hash: its stable stat differs from the
         # observation, so the digest belongs to no recorded observation.
-        self.assertFalse(self.catalog.publish_local_fingerprint(
+        self.assertFalse(self.local_copies.publish_local_fingerprint(
             file_id, generation=token["generation"], plaintext_sha256=DIGEST_A,
             size=10, mtime_ns=101,
         ))
-        self.assertTrue(self.catalog.publish_local_fingerprint(
+        self.assertTrue(self.local_copies.publish_local_fingerprint(
             file_id, generation=token["generation"], plaintext_sha256=DIGEST_A,
             size=9, mtime_ns=100,
         ))
         with self.assertRaises(ValueError):
-            self.catalog.publish_local_fingerprint(
+            self.local_copies.publish_local_fingerprint(
                 file_id, generation=token["generation"], plaintext_sha256="abc",
                 size=9, mtime_ns=100,
             )
@@ -201,14 +203,14 @@ class LocalCopyTests(_Fixture):
 
     def test_unseen_local_copies_become_missing_only_for_this_scan(self) -> None:
         scan = "2026-07-21T10:00:00+00:00"
-        self.catalog.observe_local_copies_batch(
+        self.local_copies.observe_local_copies_batch(
             vault_id=2, entries=[("seen.txt", "regular", 1, 1, scan)], seen_at=scan,
         )
         self.observe("unseen.txt", at="2026-07-21T09:00:00+00:00")
         # A watcher observed this one after the scan started.
         self.observe("newer.txt", at="2026-07-21T10:30:00+00:00")
         generation = self.file("unseen.txt")["generation"]
-        self.catalog.mark_unseen_local_copies_missing(
+        self.local_copies.mark_unseen_local_copies_missing(
             vault_id=2, seen_at=scan, observed_at=T1, scan_started_at=scan,
         )
         self.assertEqual(self.file("seen.txt")["local_copy"]["presence"], "present")
@@ -223,7 +225,7 @@ class LocalCopyTests(_Fixture):
     def test_a_directory_removal_marks_every_descendant_missing(self) -> None:
         for path in ("dir/a.txt", "dir/sub/b.txt", "dir_x/c.txt", "dir"):
             self.observe(path)
-        self.catalog.mark_local_path_missing(vault_id=2, path="dir", observed_at=T1)
+        self.local_copies.mark_local_path_missing(vault_id=2, path="dir", observed_at=T1)
         presences = {
             path: self.file(path)["local_copy"]["presence"]
             for path in ("dir/a.txt", "dir/sub/b.txt", "dir_x/c.txt", "dir")
@@ -244,7 +246,7 @@ class LocalCopyTests(_Fixture):
         for path in ("backups/a.zip", "backups/old/b.zip", "photos/cache/t.jpg",
                      "backups", "photos/gone.jpg", "backups_x/c.txt"):
             self.observe(path, at="2026-07-21T09:00:00+00:00")
-        self.catalog.mark_unseen_local_copies_missing(
+        self.local_copies.mark_unseen_local_copies_missing(
             vault_id=2, seen_at=scan, observed_at=T1, scan_started_at=scan,
             excluded_folders=folders,
         )
@@ -262,7 +264,7 @@ class LocalCopyTests(_Fixture):
         # A removed parent folder does not take the excluded rows with it.
         self.observe("photos/cache/u.jpg")
         self.observe("photos/v.jpg")
-        self.catalog.mark_local_path_missing(
+        self.local_copies.mark_local_path_missing(
             vault_id=2, path="photos", observed_at=T2, excluded_folders=folders,
         )
         self.assertEqual(self.file("photos/cache/u.jpg")["local_copy"]["presence"], "present")
@@ -291,7 +293,7 @@ class LocalCopyTests(_Fixture):
             "INSERT INTO jobs(vault_id, file_id, action, status, origin) "
             "VALUES (2, %s, 'upload', 'queued', 'automatic')", (third,),
         )
-        self.catalog.mark_local_copy_missing(first, observed_at=T1)
+        self.local_copies.mark_local_copy_missing(first, observed_at=T1)
         self.observe("a.txt", at=T2)
         statuses = [row["status"] for row in self.connection.execute(
             "SELECT status FROM jobs ORDER BY id"
@@ -376,7 +378,7 @@ class ExplicitStateTests(_Fixture):
         version = self.catalog.begin_replacement(
             file_id, object_key="vaults/x/a.txt", provider_version_id="v1", size=9,
         )
-        self.catalog.observe_local_copies_batch(
+        self.local_copies.observe_local_copies_batch(
             vault_id=2, entries=[("a.txt", "regular", 9, 100, T1)], seen_at=T1,
         )
         matched = self.catalog.promote_replacement(
@@ -449,7 +451,7 @@ class ExplicitStateTests(_Fixture):
         file_id = self.observe()
         fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
         keeper = protect(self.catalog, 2, "a.txt", DIGEST_A)
-        self.catalog.mark_local_copy_missing(file_id, observed_at=T1)
+        self.local_copies.mark_local_copy_missing(file_id, observed_at=T1)
         # Same stat, but reappeared bytes do not inherit the old fingerprint.
         self.observe(at=T2)
         held = self.file()
@@ -470,7 +472,7 @@ class ExplicitStateTests(_Fixture):
         file_id = self.observe()
         fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
         protect(self.catalog, 2, "a.txt", DIGEST_A)
-        self.catalog.mark_local_copy_missing(file_id, observed_at=T1)
+        self.local_copies.mark_local_copy_missing(file_id, observed_at=T1)
         self.observe(at=T2, recovered_at=T2)
         state = self.file()
         self.assertIsNone(state["held_version_id"])
@@ -484,7 +486,7 @@ class ExplicitStateTests(_Fixture):
         fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
         keeper = protect(self.catalog, 2, "a.txt", DIGEST_A)
         generation = self.file()["generation"]
-        self.catalog.observe_replaced_local_copy(
+        self.local_copies.observe_replaced_local_copy(
             file_id, file_type="regular", size=12, mtime_ns=5, observed_at=T1,
         )
         state = self.file()
@@ -495,11 +497,11 @@ class ExplicitStateTests(_Fixture):
     def test_pending_timers_are_continuous_and_explicit(self) -> None:
         first = self.observe("a.txt")
         second = self.observe("b.txt")
-        durable = self.catalog.record_pending_files(2, {first: T0, second: T0})
+        durable = self.local_copies.record_pending_files(2, {first: T0, second: T0})
         self.assertEqual({key: value.isoformat() for key, value in durable.items()},
                          {first: T0, second: T0})
         # A later observation of the same pending file never resets its timer.
-        durable = self.catalog.record_pending_files(2, {first: T2})
+        durable = self.local_copies.record_pending_files(2, {first: T2})
         self.assertEqual(durable[first].isoformat(), T0)
         self.assertIsNone(self.file("b.txt")["pending_since"])
         fingerprint(self.catalog, 2, "a.txt", DIGEST_A)
@@ -511,7 +513,7 @@ class ExplicitStateTests(_Fixture):
         """A long queue costs no write per call (#622): only starts and ends."""
         first = self.observe("a.txt")
         second = self.observe("b.txt")
-        self.catalog.record_pending_files(2, {first: T0, second: T0})
+        self.local_copies.record_pending_files(2, {first: T0, second: T0})
         self.connection.commit()
         before = self.connection.execute(
             "SELECT id, xmin::text AS xmin FROM files WHERE vault_id=2 ORDER BY id").fetchall()
@@ -522,7 +524,7 @@ class ExplicitStateTests(_Fixture):
             statements.append(" ".join(str(sql).split()))
             return execute(connection, sql, *args, **kwargs)
         with patch.object(psycopg.Connection, "execute", counting):
-            durable = self.catalog.record_pending_files(2, {first: T2, second: T2})
+            durable = self.local_copies.record_pending_files(2, {first: T2, second: T2})
         self.connection.commit()
         self.assertEqual({key: value.isoformat() for key, value in durable.items()},
                          {first: T0, second: T0})
@@ -533,10 +535,10 @@ class ExplicitStateTests(_Fixture):
 
     def test_reconciliation_block_is_explicit(self) -> None:
         file_id = self.observe()
-        self.catalog.block_reconciliation(file_id, reason="ambiguous_send", at=T1)
+        self.local_copies.block_reconciliation(file_id, reason="ambiguous_send", at=T1)
         self.assertEqual(self.file()["reconciliation_block"]["reason"], "ambiguous_send")
         self.rejects("UPDATE files SET reconciliation_blocked_at=NULL WHERE id=%s", (file_id,))
-        self.catalog.clear_reconciliation_block(file_id)
+        self.local_copies.clear_reconciliation_block(file_id)
         self.assertIsNone(self.file()["reconciliation_block"])
 
     def test_identity_and_cloud_history_are_permanent(self) -> None:
@@ -558,16 +560,17 @@ class ExplicitStateTests(_Fixture):
 
     def test_no_current_version_is_derived_by_ordering(self) -> None:
         methods = (
-            "_observe", "observe_replaced_local_copy", "publish_local_fingerprint",
             "begin_replacement", "promote_replacement", "abandon_replacement",
             "mark_unseen_archive_versions_missing",
         )
+        observations = ("_observe", "observe_replaced_local_copy", "publish_local_fingerprint")
         renames = ("list_rename_candidates", "confirm_file_rename", "rename_file")
-        import app.catalog as catalog_module
+        import app.services.local_copies as local_copies_module
 
         sources = [inspect.getsource(getattr(ArchiveCatalog, name)) for name in methods]
+        sources.extend(inspect.getsource(getattr(LocalCopies, name)) for name in observations)
         sources.extend(inspect.getsource(getattr(FileRenames, name)) for name in renames)
-        sources.append(inspect.getsource(catalog_module._only_cloud_copy_sql))
+        sources.append(inspect.getsource(local_copies_module._only_cloud_copy_sql))
         sources.extend(inspect.getsource(probe) for probe in (
             catalog_probe.get_file, catalog_probe.get_file_by_path))
         sources.append(catalog_probe._FILE_JOINS_SQL)

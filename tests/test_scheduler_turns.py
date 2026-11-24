@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 import uuid
 
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.job_queue import effective_priority, job_priority, select_fair_jobs
 from tests.test_job_scheduler import SchedulerCase
 from app.services.job_queue import JobQueue
@@ -401,9 +401,9 @@ class CrossVaultUploadTierDbTests(SchedulerCase):
     def add_jobs(self, vault_id, count, origin):
         ids = []
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             for index in range(count):
-                file_id = catalog.observe_local_copy(
+                file_id = local_copies.observe_local_copy(
                     vault_id=vault_id, path=f'{origin}/{index:03d}.bin', file_type='regular',
                     size=1, mtime_ns=1, observed_at='2026-07-01T00:00:00+00:00')
                 requested = f'2026-11-13T18:{0 if origin == "manual" else 54}:{index % 60:02d}+00:00'

@@ -18,7 +18,7 @@ import unittest
 
 
 from app import storage
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.job_admission import (
     AdmissionRefused,
     confirm_cloud_only_replacement,
@@ -44,7 +44,7 @@ class CloudOnlyPathConflictTests(worker.UploadWorkerCase):
         self.original = self.assert_current(first, A)
         self.file.unlink()
         with self.db() as connection:
-            ArchiveCatalog(connection).mark_local_copy_missing(
+            LocalCopies(connection).mark_local_copy_missing(
                 self.file_id, observed_at=storage.now_iso())
             set_policy(connection, 2, OperationPolicy(auto_upload=True, stability_seconds=0))
 
@@ -173,10 +173,10 @@ class CloudOnlyPathConflictTests(worker.UploadWorkerCase):
         renamed = self.source / "report-new.txt"
         os.replace(self.file, renamed)
         with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
-            catalog.mark_local_path_missing(vault_id=2, path=PATH, observed_at=storage.now_iso())
+            local_copies = LocalCopies(connection)
+            local_copies.mark_local_path_missing(vault_id=2, path=PATH, observed_at=storage.now_iso())
             stat = renamed.stat()
-            catalog.observe_local_copy(vault_id=2, path="report-new.txt", file_type="regular",
+            local_copies.observe_local_copy(vault_id=2, path="report-new.txt", file_type="regular",
                                        size=stat.st_size, mtime_ns=stat.st_mtime_ns,
                                        observed_at=storage.now_iso())
         self.assertEqual(self.scan(), 1)

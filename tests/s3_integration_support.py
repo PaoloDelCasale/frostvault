@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.services.s3_prefix_cleanup import cleanup_prefix_versions
 from app.storage import s3_client
@@ -79,7 +79,7 @@ def prepare_plain_vault(
         )["uuid"]
         from app.services.vault_relocation import enroll_vault_root_identity
         enroll_vault_root_identity(connection, 2, str(source))
-        ArchiveCatalog(connection).observe_local_copy(
+        LocalCopies(connection).observe_local_copy(
             vault_id=2, path=relative_path, file_type="regular", size=len(payload),
             mtime_ns=target.stat().st_mtime_ns, observed_at="2026-07-22T12:00:00+00:00",
         )

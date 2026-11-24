@@ -523,13 +523,13 @@ class LocalOpsGateTests(FrostVaultTestCase):
             queue_jobs("note.txt", "upload", self.vault_id)
 
     def test_scan_tree_skips_mass_missing_when_mount_lost(self) -> None:
-        from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
         from app.storage import scan_tree
 
         source_layout.note_mount_lost("photos")
         (self.vault_root / "a.txt").write_text("a", encoding="utf-8")
         with self.database.connect() as connection:
-            ArchiveCatalog(connection).observe_local_copy(
+            LocalCopies(connection).observe_local_copy(
                 vault_id=self.vault_id,
                 path="gone.txt",
                 file_type="regular",

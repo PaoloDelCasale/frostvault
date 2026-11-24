@@ -104,8 +104,8 @@ def observe_vault(connection: Any, vault: Mapping[str, Any], *, now: datetime) -
     candidates = {row[0]: row for row in rows.fetchall() if included(row[1])}
     # One durable continuous timer per included pending file, on its files row.
     # Existing timers never reset on writes; files no longer pending lose theirs.
-    from ..catalog import ArchiveCatalog
-    ages = ArchiveCatalog(connection).record_pending_files(
+    from .local_copies import LocalCopies
+    ages = LocalCopies(connection).record_pending_files(
         vault_id, {file_id: row[4] for file_id, row in candidates.items()},
     )
     # A candidate protected since it was read has no timer: it is not pending.

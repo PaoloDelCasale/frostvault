@@ -27,6 +27,7 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.storage import CLOUD_SCAN_WRITE_BATCH_SIZE, scan_cloud
 from tests.catalog_support import fingerprint, sha256_hex
@@ -50,7 +51,8 @@ def _known_version(
 ) -> str:
     """A version the catalog already knows by its exact key and VersionId."""
     catalog = ArchiveCatalog(connection)
-    catalog.observe_local_copy(
+    local_copies = LocalCopies(connection)
+    local_copies.observe_local_copy(
         vault_id=2, path=path, file_type="regular", size=1, mtime_ns=1,
         observed_at="2026-07-20T10:00:00+00:00",
     )

@@ -124,6 +124,7 @@ from .services import audit_events as audit_event_store
 from .services.restore_estimates import estimate_restore
 from .services import job_queue
 from .services.job_admission import JobAdmission
+from .services.local_copies import LocalCopies
 from .services.job_queue import (
     TERMINAL_JOB_STATUSES, JobLeaseLost, JobQueue, job_cancelled, job_priority,
     select_fair_jobs,
@@ -440,7 +441,7 @@ def _scan_tree(
         if pending:
             lock_vaults_in_order(connection, [vault_id])
         written = time.monotonic()
-        catalog = ArchiveCatalog(connection)
+        local_copies = LocalCopies(connection)
         # Issue #242: one Vault row-lock touch, one bulk identity lookup, and
         # one bulk upsert replace the per-file round-trips that pinned Postgres
         # CPU on large Vaults.  The batch is semantically identical to the
@@ -448,7 +449,7 @@ def _scan_tree(
         # dirty ancestors).
         # Directory replacement can preserve size/mtime. A watcher subtree
         # invalidates real changes, not independently verified file echoes.
-        catalog.observe_local_copies_batch(
+        local_copies.observe_local_copies_batch(
             vault_id=vault_id,
             entries=pending,
             seen_at=scan_id,
@@ -743,7 +744,7 @@ def _scan_tree(
     if finalize_missing and not incomplete and safe_scan_result and (
         alias is None or source_layout.should_emit_local_copy_removals(alias)
     ):
-        ArchiveCatalog(connection).mark_unseen_local_copies_missing(
+        LocalCopies(connection).mark_unseen_local_copies_missing(
             vault_id=vault_id,
             seen_at=scan_id,
             observed_at=now_iso(),
@@ -1052,7 +1053,7 @@ def _apply_filesystem_changes(
     # observation as an accidental side effect of a later subtree flush.
     paths.sort(key=lambda entry: (not (entry.is_dir() and not entry.is_symlink()), str(entry)))
     with db() as connection:
-        catalog = ArchiveCatalog(connection)
+        local_copies = LocalCopies(connection)
         # A rename emits one directory event, not an event for each child.
         # Coalesce overlapping prefixes and stream bounded scan-write batches;
         # never finalize missing copies outside the affected subtree.
@@ -1124,7 +1125,7 @@ def _apply_filesystem_changes(
                 file_type, entry_stat = inspected
                 # Even a same-size write with a restored mtime restarts the
                 # window. Persist the event, not an in-memory debounce timer.
-                catalog.observe_local_copy(
+                local_copies.observe_local_copy(
                     vault_id=vault["id"],
                     path=relative,
                     file_type=file_type,
@@ -1152,7 +1153,7 @@ def _apply_filesystem_changes(
             if access.local_operations_allowed and (
                 alias is None or source_layout.should_emit_local_copy_removals(alias)
             ):
-                catalog.mark_local_path_missing(
+                local_copies.mark_local_path_missing(
                     vault_id=vault["id"],
                     path=relative,
                     observed_at=now_iso(),
@@ -1693,7 +1694,7 @@ def _scan_generation_is_current(vault_id: int, scan_id: str) -> bool:
 
 def _unfingerprinted_local_rows(vault_id: int) -> list[dict[str, Any]]:
     with db() as connection:
-        rows = ArchiveCatalog(connection).local_copies_to_fingerprint(vault_id)
+        rows = LocalCopies(connection).local_copies_to_fingerprint(vault_id)
         excluded = excluded_folder_rules.load(connection, vault_id)
     # Files in an Excluded Folder keep their last known state (ADR-0044).
     return [row for row in rows if not excluded.contains_path(row["path"])] if excluded else rows
@@ -1957,7 +1958,7 @@ def _apply_local_fingerprint_updates(
                 _current_verified_scan_row(connection, vault)
                 if not _scan_generation_is_current(int(vault["id"]), scan_id):
                     raise _ScanRootMismatch("Local scan was superseded")
-            catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             for update in batch:
                 # A watcher may have replaced the file after hashing, or the
                 # file changed while it was hashed: the generation and stat
@@ -1967,7 +1968,7 @@ def _apply_local_fingerprint_updates(
                     update["old_size"], update["old_mtime_ns"],
                 ):
                     continue
-                catalog.publish_local_fingerprint(
+                local_copies.publish_local_fingerprint(
                     str(update["vault_file_id"]),
                     generation=int(update["generation"]),
                     plaintext_sha256=update["digest"],
@@ -2235,7 +2236,7 @@ def _verified_local_scan(
                     final_access.volume_alias
                 )
             ):
-                ArchiveCatalog(connection).mark_unseen_local_copies_missing(
+                LocalCopies(connection).mark_unseen_local_copies_missing(
                     vault_id=int(vault["id"]),
                     seen_at=scan_id,
                     observed_at=now_iso(),
@@ -2731,9 +2732,10 @@ def _apply_auto_renames(
     summary = {"hashed": 0, "confirmed": 0, "queued": 0}
     confirmed_paths: list[str] = []
     catalog = ArchiveCatalog(connection)
+    local_copies = LocalCopies(connection)
     from .services.catalog_incidents import settle_cloud_only_copies
     if hash_missing:
-        for row in catalog.local_copies_to_fingerprint(int(vault["id"])):
+        for row in local_copies.local_copies_to_fingerprint(int(vault["id"])):
             try:
                 local_path = safe_local_path(str(root), row["path"])
                 if not local_path.is_file():
@@ -2751,7 +2753,7 @@ def _apply_auto_renames(
             if (stat_result.st_size, stat_result.st_mtime_ns) != (row["size"], row["mtime_ns"]):
                 # Changed while hashed: the next observation hashes it again.
                 continue
-            if catalog.publish_local_fingerprint(
+            if local_copies.publish_local_fingerprint(
                 row["vault_file_id"], generation=row["generation"],
                 plaintext_sha256=digest, size=row["size"], mtime_ns=row["mtime_ns"],
             ):
@@ -2849,7 +2851,7 @@ def _identify_new_local_copies(
     summary = {"hashed": 0, "confirmed": 0, "queued": 0}
     with db() as connection:
         policy = get_policy(connection, vault_id)
-        rows = ArchiveCatalog(connection).local_copies_to_identify(vault_id)
+        rows = LocalCopies(connection).local_copies_to_identify(vault_id)
     updates: list[dict[str, Any]] = []
     for row in rows:
         if row["mtime_ns"] is None or not file_is_stable(
@@ -2883,9 +2885,10 @@ def _identify_new_local_copies(
         if "root_identity" in vault:
             _current_verified_scan_row(connection, vault)
         catalog = ArchiveCatalog(connection)
+        local_copies = LocalCopies(connection)
         published: list[dict[str, Any]] = []
         for update in updates:
-            if catalog.publish_local_fingerprint(
+            if local_copies.publish_local_fingerprint(
                 update["vault_file_id"], generation=update["generation"],
                 plaintext_sha256=update["digest"], size=update["size"],
                 mtime_ns=update["mtime_ns"],
@@ -3050,7 +3053,7 @@ def _record_upload_reconciliation_block(job: dict[str, Any], reason: str) -> Non
     def persist() -> None:
         with owned_connection(db()) as connection:
             # The Job's own failure keeps the block as open Remediation work.
-            ArchiveCatalog(connection).block_reconciliation(job["file_id"], reason=reason, at=now_iso())
+            LocalCopies(connection).block_reconciliation(job["file_id"], reason=reason, at=now_iso())
     persist()
     # Notifications use Owner locks separately from attempt/receipt publication.
     # Retry the complete owned notification unit too, never the provider work.
@@ -3181,7 +3184,7 @@ def _reconcile_recover_job(
     # the same savepoint: a live worker that renewed the lease, or a newer
     # observation, wins and nothing is committed for this Job.
     connection.execute("SAVEPOINT recover_adoption")
-    published = ArchiveCatalog(connection).publish_recovered_local_copy(
+    published = LocalCopies(connection).publish_recovered_local_copy(
         str(exact["file_id"]),
         generation=int(exact["local_generation"]),
         archive_version_id=archive_version_id,
@@ -3475,7 +3478,7 @@ def _reconcile_interrupted_job(connection: Any, job: dict[str, Any], *, timestam
                     )
                     outcome = "failed"
                 else:
-                    ArchiveCatalog(connection).mark_local_copy_missing(
+                    LocalCopies(connection).mark_local_copy_missing(
                         job["file_id"], observed_at=timestamp
                     )
                     message = "Local space freed (reconciled after restart)"
@@ -3765,7 +3768,7 @@ def _automatic_upload_state(job: dict[str, Any]) -> str:
         if (stat_result.st_size, stat_result.st_mtime_ns) != (
             local["local_size"], local["local_mtime_ns"]
         ):
-            ArchiveCatalog(connection).observe_local_copy(
+            LocalCopies(connection).observe_local_copy(
                 vault_id=int(job["vault_id"]), path=job["path"], file_type="regular",
                 size=stat_result.st_size, mtime_ns=stat_result.st_mtime_ns, observed_at=now_iso(),
             )
@@ -4279,19 +4282,19 @@ def _repair_failed_local_release(
     with db() as connection:
         if "root_identity" in vault:
             _current_verified_scan_row(connection, vault)
-        catalog = ArchiveCatalog(connection)
+        local_copies = LocalCopies(connection)
         observed_at = now_iso()
         if replacement:
             # Content that replaced the claimed original: Current may be the
             # only copy now, so it is held unless it proves identical.
-            catalog.observe_replaced_local_copy(
+            local_copies.observe_replaced_local_copy(
                 file_id, file_type=file_type, size=info.st_size,
                 mtime_ns=info.st_mtime_ns, observed_at=observed_at,
             )
         else:
             # New bytes (a different digest) restart the content window and
             # never inherit the released copy's fingerprint or match.
-            catalog.observe_local_copy(
+            local_copies.observe_local_copy(
                 vault_id=job["vault_id"], path=job["path"], file_type=file_type,
                 size=info.st_size, mtime_ns=info.st_mtime_ns, observed_at=observed_at,
                 invalidate_content=digest != target["local_sha256"],
@@ -4300,7 +4303,7 @@ def _repair_failed_local_release(
             observed = connection.execute(
                 "SELECT generation FROM files WHERE id=%s", (file_id,),
             ).fetchone()
-            catalog.publish_local_fingerprint(
+            local_copies.publish_local_fingerprint(
                 file_id, generation=int(observed["generation"]), plaintext_sha256=digest,
                 size=info.st_size, mtime_ns=info.st_mtime_ns, match_current=True,
             )
@@ -4391,9 +4394,9 @@ def _process_free_space(job: dict[str, Any]) -> None:
             job,
             "Freeing local space claim was lost",
         )
-        catalog = ArchiveCatalog(connection)
+        local_copies = LocalCopies(connection)
         if replacement_stat is None:
-            catalog.mark_local_copy_missing(
+            local_copies.mark_local_copy_missing(
                 target["vault_file_id"],
                 observed_at=now_iso(),
             )
@@ -4404,7 +4407,7 @@ def _process_free_space(job: dict[str, Any]) -> None:
                 file_type = "symlink"
             else:
                 file_type = "other"
-            catalog.observe_replaced_local_copy(
+            local_copies.observe_replaced_local_copy(
                 target["vault_file_id"],
                 file_type=file_type,
                 size=replacement_stat.st_size,
@@ -4797,7 +4800,7 @@ def process_recover(job: dict[str, Any]) -> None:
             with db() as connection:
                 ensure_job_claim_owned_in_transaction(connection, job, "Recovery claim was lost")
                 catalog = ArchiveCatalog(connection)
-                published = catalog.publish_recovered_local_copy(
+                published = LocalCopies(connection).publish_recovered_local_copy(
                     str(target["file_id"]),
                     generation=generation,
                     archive_version_id=archive_version_id,

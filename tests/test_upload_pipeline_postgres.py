@@ -20,6 +20,7 @@ import psycopg
 
 from app import database, storage
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.job_admission import queue_jobs
 from app.services import upload_pipeline as pipeline, upload_provenance as provenance
 from app.services.vault_pause import set_paused
@@ -47,7 +48,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         source = self.worker.source / path
         source.write_bytes(worker_tests.A)
         with self.worker.database.connect() as connection:
-            ArchiveCatalog(connection).observe_local_copy(vault_id=2, path=path,
+            LocalCopies(connection).observe_local_copy(vault_id=2, path=path,
                 file_type="regular", size=source.stat().st_size, mtime_ns=source.stat().st_mtime_ns,
                 observed_at=storage.now_iso())
         queued = queue_jobs(path, "upload", 2)
@@ -64,7 +65,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
         with self.worker.database.connect() as connection:
             seed_vault(connection, id=3, name="Other", source_root=str(source), bucket="bucket")
             enroll_vault_root_identity(connection, 3, str(source))
-            ArchiveCatalog(connection).observe_local_copy(vault_id=3, path="other.txt", file_type="regular",
+            LocalCopies(connection).observe_local_copy(vault_id=3, path="other.txt", file_type="regular",
                 size=file.stat().st_size, mtime_ns=file.stat().st_mtime_ns, observed_at=storage.now_iso())
         queue_jobs("other.txt", "upload", 3)
         with self.worker.database.connect() as connection:
@@ -214,7 +215,7 @@ class UploadPipelinePostgresTests(unittest.TestCase):
                 # different content generation, with the old keeper retained.
                 self.worker.file.write_bytes(self.worker.file.read_bytes() + b"next")
                 with self.worker.database.connect() as connection:
-                    ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular",
+                    LocalCopies(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular",
                         size=self.worker.file.stat().st_size, mtime_ns=self.worker.file.stat().st_mtime_ns,
                         observed_at=storage.now_iso())
                     # No stale claimed Job may block admission of the next

@@ -397,6 +397,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         import hashlib
         import os
         from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
         from app.services.operation_policies import OperationPolicy, set_policy
         from app.storage import scan_tree, scan_vault
 
@@ -404,6 +405,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
         scan_tree(dict(vault), "2026-11-02T00:00:00+00:00")
         with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             digest = hashlib.sha256(b"jpeg-bytes").hexdigest()
             row = catalog_probe.get_file_by_path(catalog, vault["id"], "photo.jpg")
             file_id = row["id"]
@@ -415,7 +417,7 @@ class VaultAdoptionScanTests(_AdoptionFixture):
                 file_id, archive_version_id=version_id, plaintext_sha256=digest,
                 verified_at="2026-11-03T00:00:00+00:00", local_generation=row["generation"],
             )
-            catalog.mark_local_copy_missing(file_id, observed_at="2026-11-03T00:00:00+00:00")
+            local_copies.mark_local_copy_missing(file_id, observed_at="2026-11-03T00:00:00+00:00")
             set_policy(connection, vault["id"], OperationPolicy(auto_upload=True, stability_seconds=0))
         (self.albums / "photo.jpg").write_bytes(b"different content")
         (self.albums / "denied.jpg").write_bytes(b"unreadable")

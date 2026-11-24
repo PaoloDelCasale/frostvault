@@ -17,6 +17,7 @@ from unittest.mock import patch
 import psycopg
 
 from app.catalog import ArchiveCatalog, VaultFileNotFound
+from app.services.local_copies import LocalCopies
 from app.services.file_renames import FileRenames
 from tests.catalog_support import fingerprint, protect, sha256_hex
 from tests import catalog_probe
@@ -52,7 +53,8 @@ class _CatalogFixture(FrostVaultTestCase):
         new_seen: str = "2026-07-21T11:00:00+00:00",
         protected: bool = False,
     ) -> tuple[str, str]:
-        old_id = catalog.observe_local_copy(
+        local_copies = LocalCopies(catalog.connection)
+        old_id = local_copies.observe_local_copy(
             vault_id=2, path=old_path, file_type="regular", size=old_size,
             mtime_ns=100, observed_at=old_seen,
         )
@@ -60,8 +62,8 @@ class _CatalogFixture(FrostVaultTestCase):
         if protected:
             protect(catalog, 2, old_path, old_digest,
                     provider_version_id=f"rename-{uuid.uuid4()}")
-        catalog.mark_local_copy_missing(old_id, observed_at=gone_at)
-        new_id = catalog.observe_local_copy(
+        local_copies.mark_local_copy_missing(old_id, observed_at=gone_at)
+        new_id = local_copies.observe_local_copy(
             vault_id=2, path=new_path, file_type="regular", size=new_size,
             mtime_ns=100, observed_at=new_seen,
         )
@@ -143,17 +145,18 @@ class RenameMatchingTests(_CatalogFixture):
     def test_ambiguous_equal_digest_candidates_are_never_auto_merged(self) -> None:
         with self.connect() as connection:
             catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             missing_ids = []
             for path in ("a/one.txt", "a/two.txt"):
-                file_id = catalog.observe_local_copy(
+                file_id = local_copies.observe_local_copy(
                     vault_id=2, path=path, file_type="regular", size=9, mtime_ns=100,
                     observed_at="2026-07-21T10:00:00+00:00",
                 )
                 fingerprint(catalog, 2, path, DIGEST_A)
-                catalog.mark_local_copy_missing(file_id, observed_at="2026-07-21T11:00:00+00:00")
+                local_copies.mark_local_copy_missing(file_id, observed_at="2026-07-21T11:00:00+00:00")
                 missing_ids.append(file_id)
             for path in ("b/one.txt", "b/two.txt"):
-                catalog.observe_local_copy(
+                local_copies.observe_local_copy(
                     vault_id=2, path=path, file_type="regular", size=9, mtime_ns=100,
                     observed_at="2026-07-21T11:00:00+00:00",
                 )
@@ -173,12 +176,13 @@ class RenameMatchingTests(_CatalogFixture):
     def test_size_and_mtime_alone_never_produce_automatic_match(self) -> None:
         with self.connect() as connection:
             catalog = ArchiveCatalog(connection)
-            old_id = catalog.observe_local_copy(
+            local_copies = LocalCopies(connection)
+            old_id = local_copies.observe_local_copy(
                 vault_id=2, path="reports/old-name.txt", file_type="regular", size=42,
                 mtime_ns=1_750_000_000_000_000_000, observed_at="2026-07-21T10:00:00+00:00",
             )
-            catalog.mark_local_copy_missing(old_id, observed_at="2026-07-21T11:00:00+00:00")
-            new_id = catalog.observe_local_copy(
+            local_copies.mark_local_copy_missing(old_id, observed_at="2026-07-21T11:00:00+00:00")
+            new_id = local_copies.observe_local_copy(
                 vault_id=2, path="reports/new-name.txt", file_type="regular", size=42,
                 mtime_ns=1_750_000_000_000_000_000, observed_at="2026-07-21T11:00:00+00:00",
             )
@@ -329,10 +333,11 @@ class RenameSafetyTests(_CatalogFixture):
     def test_rename_revokes_deletion_consent_and_invalidates_aggregates_atomically(self) -> None:
         with self.connect() as connection:
             catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             old_id, _ = self.seed_rename(
                 catalog, old_path="trip/day1/a.jpg", new_path="album/b.jpg", protected=True,
             )
-            sibling = catalog.observe_local_copy(
+            sibling = local_copies.observe_local_copy(
                 vault_id=2, path="trip/day1/c.jpg", file_type="regular", size=1, mtime_ns=1,
                 observed_at="2026-07-21T10:00:00+00:00",
             )
@@ -379,15 +384,16 @@ class RenameSafetyTests(_CatalogFixture):
     def test_rename_invalidates_the_previous_observation(self) -> None:
         with self.connect() as connection:
             catalog = ArchiveCatalog(connection)
-            file_id = catalog.observe_local_copy(
+            local_copies = LocalCopies(connection)
+            file_id = local_copies.observe_local_copy(
                 vault_id=2, path="a.txt", file_type="regular", size=3, mtime_ns=7,
                 observed_at="2026-07-21T10:00:00+00:00",
             )
-            token = catalog.local_copies_to_fingerprint(2)[0]
+            token = local_copies.local_copies_to_fingerprint(2)[0]
             catalog.rename_file(
                 file_id, new_path="b.txt", changed_at="2026-07-21T10:30:00+00:00", vault_id=2,
             )
-            published = catalog.publish_local_fingerprint(
+            published = local_copies.publish_local_fingerprint(
                 file_id, generation=token["generation"], plaintext_sha256=DIGEST_A,
                 size=3, mtime_ns=7,
             )
@@ -398,11 +404,12 @@ class RenameSafetyTests(_CatalogFixture):
     def test_rename_onto_an_occupied_path_is_refused(self) -> None:
         with self.connect() as connection:
             catalog = ArchiveCatalog(connection)
-            first = catalog.observe_local_copy(
+            local_copies = LocalCopies(connection)
+            first = local_copies.observe_local_copy(
                 vault_id=2, path="a.txt", file_type="regular", size=1, mtime_ns=1,
                 observed_at="2026-07-21T10:00:00+00:00",
             )
-            catalog.observe_local_copy(
+            local_copies.observe_local_copy(
                 vault_id=2, path="b.txt", file_type="regular", size=1, mtime_ns=1,
                 observed_at="2026-07-21T10:00:00+00:00",
             )
@@ -420,7 +427,8 @@ class RenameSafetyTests(_CatalogFixture):
     def test_path_history_rows_are_immutable(self) -> None:
         with self.connect() as connection:
             catalog = ArchiveCatalog(connection)
-            file_id = catalog.observe_local_copy(
+            local_copies = LocalCopies(connection)
+            file_id = local_copies.observe_local_copy(
                 vault_id=2, path="a.txt", file_type="regular", size=1, mtime_ns=1,
                 observed_at="2026-07-21T10:00:00+00:00",
             )

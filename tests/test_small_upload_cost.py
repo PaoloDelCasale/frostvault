@@ -45,6 +45,7 @@ from psycopg.pq import TransactionStatus
 
 from app import storage
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services import cloud_preflight_gate
 from tests import test_upload_worker as worker_fixture
 from tests.fixtures import override_settings
@@ -274,7 +275,7 @@ class SmallUploadCostTests(worker_fixture.UploadWorkerCase):
         (self.source / "report.txt").write_bytes(worker_fixture.B)
         stat = (self.source / "report.txt").stat()
         with self.db() as connection:
-            ArchiveCatalog(connection).observe_local_copy(
+            LocalCopies(connection).observe_local_copy(
                 vault_id=2, path="report.txt", file_type="regular", size=stat.st_size,
                 mtime_ns=stat.st_mtime_ns, observed_at=storage.now_iso())
         phases = self.listings_by_phase()
@@ -339,7 +340,7 @@ class SmallUploadCostTests(worker_fixture.UploadWorkerCase):
             (self.source / "report.txt").write_bytes(worker_fixture.B)
             stat = (self.source / "report.txt").stat()
             with self.db() as connection:
-                ArchiveCatalog(connection).observe_local_copy(
+                LocalCopies(connection).observe_local_copy(
                     vault_id=2, path="report.txt", file_type="regular", size=stat.st_size,
                     mtime_ns=stat.st_mtime_ns, observed_at=storage.now_iso())
             self.upload()
@@ -427,7 +428,7 @@ class SmallUploadCostTests(worker_fixture.UploadWorkerCase):
         target.write_bytes(worker_fixture.A)
         stat = target.stat()
         with self.db() as connection:
-            ArchiveCatalog(connection).observe_local_copy(
+            LocalCopies(connection).observe_local_copy(
                 vault_id=2, path=path, file_type="regular", size=stat.st_size,
                 mtime_ns=stat.st_mtime_ns, observed_at=storage.now_iso())
 
@@ -442,14 +443,14 @@ class SmallUploadCostTests(worker_fixture.UploadWorkerCase):
             (self.source / path).write_bytes(worker_fixture.B + bytes([index]))
             stat = (self.source / path).stat()
             with self.db() as connection:
-                ArchiveCatalog(connection).observe_local_copy(
+                LocalCopies(connection).observe_local_copy(
                     vault_id=2, path=path, file_type="regular", size=stat.st_size,
                     mtime_ns=stat.st_mtime_ns, observed_at=storage.now_iso())
             self.upload(path)
         with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             for index in range(files):
-                catalog.observe_local_copy(
+                local_copies.observe_local_copy(
                     vault_id=2, path=f"history/old/{index:04d}.txt", file_type="regular", size=1,
                     mtime_ns=1, observed_at=storage.now_iso())
             connection.execute(

@@ -29,6 +29,7 @@ from unittest.mock import patch
 
 from app import storage
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.job_admission import queue_jobs
 from app.services import upload_provenance as provenance
 from app.services import upload_remediation
@@ -83,7 +84,7 @@ class UploadProvenanceWorkerCase(FrostVaultTestCase):
             self.assertTrue(connection.execute("SHOW server_version_num").fetchone()["server_version_num"].startswith("16"))
             seed_vault(connection, id=2, source_root=str(self.source))
             enroll_vault_root_identity(connection, 2, str(self.source))
-            self.file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular", size=len(A), mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
+            self.file_id = LocalCopies(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular", size=len(A), mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
             self.uuid = connection.execute("SELECT uuid FROM vaults WHERE id=2").fetchone()["uuid"]
         self.key = f"vaults/{self.uuid}/report.txt"
         self.enterContext(patch("app.storage.validate_cloud_vault"))
@@ -153,7 +154,7 @@ class UploadProvenanceWorkerCase(FrostVaultTestCase):
         if mtime_ns is not None:
             os.utime(self.file, ns=(mtime_ns, mtime_ns))
         with self.database.connect() as connection:
-            ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular", size=len(payload), mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
+            LocalCopies(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular", size=len(payload), mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
 
 
 class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
@@ -170,12 +171,13 @@ class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
         os.utime(renamed, ns=(original + 1000, original + 1000))
         with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             timestamp = storage.now_iso()
             catalog.rename_file(self.file_id, new_path="renamed.txt", changed_at=timestamp, vault_id=2)
-            catalog.observe_local_copy(vault_id=2, path="renamed.txt", file_type="regular",
+            local_copies.observe_local_copy(vault_id=2, path="renamed.txt", file_type="regular",
                 size=len(A), mtime_ns=renamed.stat().st_mtime_ns, observed_at=timestamp)
             generation = connection.execute("SELECT generation FROM files WHERE id=%s", (self.file_id,)).fetchone()["generation"]
-            self.assertTrue(catalog.publish_local_fingerprint(self.file_id, generation=generation,
+            self.assertTrue(local_copies.publish_local_fingerprint(self.file_id, generation=generation,
                 plaintext_sha256=hashlib.sha256(A).hexdigest(), size=len(A),
                 mtime_ns=renamed.stat().st_mtime_ns, match_current=True))
         def process(action):
@@ -685,8 +687,9 @@ class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
         self.file.rename(renamed)
         with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             catalog.rename_file(self.file_id, new_path="renamed.txt", changed_at=storage.now_iso(), vault_id=2)
-            catalog.observe_local_copy(vault_id=2, path="renamed.txt", file_type="regular", size=len(A),
+            local_copies.observe_local_copy(vault_id=2, path="renamed.txt", file_type="regular", size=len(A),
                 mtime_ns=renamed.stat().st_mtime_ns, observed_at=storage.now_iso())
         with self.database.connect() as connection:
             self.assertEqual(len(queue_rename_job(connection, 2, "renamed.txt")), 1)
@@ -734,14 +737,15 @@ class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
         self.file.rename(renamed)
         with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             catalog.rename_file(self.file_id, new_path="renamed.txt", changed_at=storage.now_iso(), vault_id=2)
-            catalog.observe_local_copy(vault_id=2, path="renamed.txt", file_type="regular", size=len(A),
+            local_copies.observe_local_copy(vault_id=2, path="renamed.txt", file_type="regular", size=len(A),
                 mtime_ns=renamed.stat().st_mtime_ns, observed_at=storage.now_iso())
         # Another file now lives at the old path with identical bytes and its
         # own landed keeper at the same key.
         self.file.write_bytes(A)
         with self.database.connect() as connection:
-            foreign = ArchiveCatalog(connection).observe_local_copy(vault_id=2,path="report.txt",file_type="regular",size=len(A),mtime_ns=self.file.stat().st_mtime_ns,observed_at=storage.now_iso())
+            foreign = LocalCopies(connection).observe_local_copy(vault_id=2,path="report.txt",file_type="regular",size=len(A),mtime_ns=self.file.stat().st_mtime_ns,observed_at=storage.now_iso())
         self.assertNotEqual(str(foreign), str(self.file_id))
         foreign_job = self.queue_path("report.txt")
         self.run_job(foreign_job)
@@ -873,7 +877,7 @@ class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
                     connection.execute("DROP TRIGGER receipt_commit_fault ON upload_receipts")
                     # A fresh local generation earns ordinary upload admission.
                     self.file.write_bytes(B if code == "40P01" else A)
-                    ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular", size=self.file.stat().st_size, mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
+                    LocalCopies(connection).observe_local_copy(vault_id=2, path="report.txt", file_type="regular", size=self.file.stat().st_size, mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
 
     def queue_path(self, path):
         queued = queue_jobs(path, "upload", 2)

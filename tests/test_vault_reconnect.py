@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services import source_layout, source_identity, vault_relocation
 from app.services.recovery_kit import kit_status, record_metadata_restore
 from tests.fixtures import FrostVaultTestCase, seed_vault
@@ -52,7 +53,8 @@ MISSING_PROBLEMS = """SELECT COUNT(*) AS n FROM notifications
 def landed_current(connection, path, data, *, version):
     """A Current Snapshot written by a landed upload, as a real upload leaves it."""
     catalog = ArchiveCatalog(connection)
-    file_id = catalog.observe_local_copy(vault_id=7, path=path, file_type="regular", size=len(data),
+    local_copies = LocalCopies(connection)
+    file_id = local_copies.observe_local_copy(vault_id=7, path=path, file_type="regular", size=len(data),
                                          mtime_ns=1, observed_at="2026-11-01T10:00:00+00:00")
     digest = hashlib.sha256(data).digest()
     snapshot = connection.execute("""INSERT INTO upload_snapshots(vault_id,file_id,path,path_since,source_root,
@@ -201,7 +203,7 @@ class VaultReconnectTests(FrostVaultTestCase):
 
     def test_active_job_and_stopped_protection_block_reconnect(self):
         with self.database.connect() as connection:
-            file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="a", file_type="regular", size=1, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
+            file_id = LocalCopies(connection).observe_local_copy(vault_id=7, path="a", file_type="regular", size=1, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
             connection.execute("INSERT INTO jobs(vault_id,file_id,action,status) VALUES (7,%s,'upload','queued')", (file_id,))
         with self.assertRaises(vault_relocation.VaultRelocationError) as error: self.reconnect()
         self.assertEqual(error.exception.reason, "active_jobs")
@@ -286,7 +288,7 @@ class VaultReconnectTests(FrostVaultTestCase):
     def test_scan_mutations_roll_back_after_root_changes_during_walk(self):
         self.reconnect()
         def mutate_then_swap(connection, vault, scan_id, **kwargs):
-            ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="unrelated.txt", file_type="regular", size=9, mtime_ns=1, seen_at=scan_id, observed_at=scan_id)
+            LocalCopies(connection).observe_local_copy(vault_id=7, path="unrelated.txt", file_type="regular", size=9, mtime_ns=1, seen_at=scan_id, observed_at=scan_id)
             self.new.rename(self.volume / "original"); self.new.mkdir()
             return 1, None
         with patch("app.storage._scan_tree", side_effect=mutate_then_swap): result = self.scan()
@@ -298,7 +300,7 @@ class VaultReconnectTests(FrostVaultTestCase):
     def test_finalization_mutations_roll_back_after_late_root_change(self):
         self.reconnect()
         def mutate_then_swap(connection, vault, **kwargs):
-            file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="unrelated.txt", file_type="regular", size=9, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
+            file_id = LocalCopies(connection).observe_local_copy(vault_id=7, path="unrelated.txt", file_type="regular", size=9, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
             connection.execute("INSERT INTO jobs(vault_id,file_id,action,status) VALUES (7,%s,'upload','queued')", (file_id,))
             self.new.rename(self.volume / "original"); self.new.mkdir()
             return {"hashed": 1, "confirmed": 0, "queued": 1}
@@ -312,7 +314,7 @@ class VaultReconnectTests(FrostVaultTestCase):
     def test_manual_restore_invalidates_local_authority_and_stale_jobs(self):
         from app.storage import scan_vault
         with self.database.connect() as connection:
-            file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="a", file_type="regular", size=1, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
+            file_id = LocalCopies(connection).observe_local_copy(vault_id=7, path="a", file_type="regular", size=1, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
             connection.execute("INSERT INTO jobs(vault_id,file_id,action,status) VALUES (7,%s,'recover','queued')", (file_id,))
             record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
             job = connection.execute("SELECT status, finished_at FROM jobs").fetchone()
@@ -329,7 +331,7 @@ class VaultReconnectTests(FrostVaultTestCase):
 
     def test_manual_restore_withdraws_deletion_consent_without_starving_later_uploads(self):
         with self.database.connect() as connection:
-            file_id = ArchiveCatalog(connection).observe_local_copy(vault_id=7, path="a", file_type="regular", size=1, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
+            file_id = LocalCopies(connection).observe_local_copy(vault_id=7, path="a", file_type="regular", size=1, mtime_ns=1, observed_at="2026-11-03T00:00:00Z")
             group = connection.execute("INSERT INTO job_groups(vault_id) VALUES (7) RETURNING id").fetchone()["id"]
             connection.execute("INSERT INTO cloud_purge_requests(group_id, reason) VALUES (%s, 'no longer needed')", (group,))
             connection.execute("""INSERT INTO jobs(vault_id,file_id,group_id,action,status,run_after)
@@ -360,10 +362,11 @@ class VaultReconnectTests(FrostVaultTestCase):
         old_digest = hashlib.sha256(b"old!").digest()
         with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             for path in content:
                 local = self.new / path
                 stat = local.stat() if local.exists() else SimpleNamespace(st_size=4, st_mtime_ns=1)
-                file_id = catalog.observe_local_copy(vault_id=7, path=path, file_type="regular", size=stat.st_size,
+                file_id = local_copies.observe_local_copy(vault_id=7, path=path, file_type="regular", size=stat.st_size,
                                                      mtime_ns=stat.st_mtime_ns, observed_at="2026-11-01T10:00:00+00:00")
                 version = catalog.begin_replacement(file_id, object_key="vaults/11111111-1111-1111-1111-111111111111/" + path,
                     provider_version_id="old-" + path, size=4, storage_class="STANDARD", created_at="2026-11-01T10:00:00+00:00")
@@ -405,7 +408,8 @@ class VaultReconnectTests(FrostVaultTestCase):
         content = {"known.jpg": b"new!", "unknown.jpg": b"else"}
         with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
-            file_id = catalog.observe_local_copy(vault_id=7, path="known.jpg", file_type="regular", size=4,
+            local_copies = LocalCopies(connection)
+            file_id = local_copies.observe_local_copy(vault_id=7, path="known.jpg", file_type="regular", size=4,
                                                  mtime_ns=1, observed_at="2026-11-01T10:00:00+00:00")
             version = catalog.begin_replacement(file_id, object_key="vaults/11111111-1111-1111-1111-111111111111/known.jpg",
                 provider_version_id="old-known.jpg", size=4, storage_class="STANDARD")
@@ -612,8 +616,9 @@ class ManagedVaultReconnectTests(FrostVaultTestCase):
         digest = hashlib.sha256(b"old!").digest()
         with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             for path in content:
-                file_id = catalog.observe_local_copy(vault_id=7, path=path, file_type="regular", size=4,
+                file_id = local_copies.observe_local_copy(vault_id=7, path=path, file_type="regular", size=4,
                                                      mtime_ns=1, observed_at="2026-11-01T10:00:00+00:00")
                 version = catalog.begin_replacement(file_id, object_key=f"vaults/{MANAGED_UUID}/" + path,
                     provider_version_id="old-" + path, size=4, storage_class="STANDARD",

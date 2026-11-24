@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app import storage
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services import cloud_deletion, duplicate_cleanup, history_retention
 from app.services.cloud_deletion import load_vault_health, observation_is_unconfirmed
 from tests.test_cloud_deletion_safety import simulated_mount
@@ -312,7 +312,7 @@ class ExecutionTests(DuplicateCleanupFixture):
         target.write_bytes(VIDEO)
         stat = target.stat()
         with self.db() as connection:
-            ArchiveCatalog(connection).observe_local_copies_batch(
+            LocalCopies(connection).observe_local_copies_batch(
                 vault_id=2, entries=[("old/video.mp4", "regular", stat.st_size, stat.st_mtime_ns,
                                       storage.now_iso())])
         self.assertEqual(self.path_statuses(group), {"old/photo.jpg": "pending_delay", "old/video.mp4": "cancelled"})

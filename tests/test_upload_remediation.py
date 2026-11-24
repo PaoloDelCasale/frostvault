@@ -16,7 +16,7 @@ from unittest.mock import patch
 import psycopg
 
 from app import storage
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 from app.services import upload_failure_problems
 from app.services import upload_provenance as provenance
@@ -297,7 +297,7 @@ class UploadRemediationTests(worker.UploadWorkerCase):
         self.sweep()
         resumed = self.admitted()
         with self.db() as connection:
-            ArchiveCatalog(connection).block_reconciliation(
+            LocalCopies(connection).block_reconciliation(
                 str(self.file_id), reason="inventory_changed", at=storage.now_iso())
         self.assertTrue(storage.set_job(resumed, "failed", "inventory changed"))
         episode = self.episode()
@@ -327,7 +327,7 @@ class UploadRemediationTests(worker.UploadWorkerCase):
             other_root = self.root / "other"
             other_root.mkdir()
             seed_vault(connection, id=3, source_root=str(other_root))
-            other = ArchiveCatalog(connection).observe_local_copy(
+            other = LocalCopies(connection).observe_local_copy(
                 vault_id=3, path="other.txt", file_type="regular", size=1, mtime_ns=1,
                 observed_at=storage.now_iso())
             past = datetime.now(timezone.utc) - timedelta(seconds=5)

@@ -56,6 +56,7 @@ def _seed(paths: dict[str, Path]) -> dict:
     # Import after the isolated PostgreSQL DSN and filesystem env are prepared.
     sys.path.insert(0, str(REPO_ROOT))
     from app.catalog import ArchiveCatalog
+    from app.services.local_copies import LocalCopies
     from tests import catalog_probe
     from app.database import db
     from app.security import hash_password
@@ -83,6 +84,7 @@ def _seed(paths: dict[str, Path]) -> dict:
         secondary_id = vault(SECONDARY_UUID, "Secondary Archive", paths["source_secondary"])
         prefixes = {primary_id: f"vaults/{PRIMARY_UUID}/", secondary_id: f"vaults/{SECONDARY_UUID}/"}
         catalog = ArchiveCatalog(connection)
+        local_copies = LocalCopies(connection)
 
         def cloud_file(vault_id: int, path: str) -> str:
             """A Vault File known only from the cloud (no Local Copy observed)."""
@@ -106,7 +108,7 @@ def _seed(paths: dict[str, Path]) -> dict:
             return version_id
 
         readme = paths["source_primary"] / "reports" / "readme.txt"
-        readme_id = catalog.observe_local_copy(
+        readme_id = local_copies.observe_local_copy(
             vault_id=primary_id,
             path="reports/old-readme.txt",
             file_type="regular",
@@ -125,7 +127,7 @@ def _seed(paths: dict[str, Path]) -> dict:
 
         note_path = paths["source_primary"] / "note.txt"
         note_stat = note_path.stat()
-        note_id = catalog.observe_local_copy(
+        note_id = local_copies.observe_local_copy(
             vault_id=primary_id,
             path="note.txt",
             file_type="regular",
@@ -135,13 +137,13 @@ def _seed(paths: dict[str, Path]) -> dict:
         )
         note_digest = hashlib.sha256(note_path.read_bytes()).hexdigest()
         note = catalog_probe.get_file(catalog, note_id, vault_id=primary_id)
-        catalog.publish_local_fingerprint(
+        local_copies.publish_local_fingerprint(
             note_id, generation=note["generation"], plaintext_sha256=note_digest,
             size=note_stat.st_size, mtime_ns=note_stat.st_mtime_ns,
         )
         protect(note_id, primary_id, "note.txt", version="v-note-1", size=note_stat.st_size,
                 digest=note_digest, generation=note["generation"])
-        catalog.observe_local_copy(
+        local_copies.observe_local_copy(
             vault_id=secondary_id,
             path="hello.txt",
             file_type="regular",
@@ -164,13 +166,13 @@ def _seed(paths: dict[str, Path]) -> dict:
         conflict_file = cloud_file(primary_id, "incoming/conflict.jpg")
         protect(conflict_file, primary_id, "incoming/conflict.jpg", version="held-only-copy",
                 size=12, digest="b" * 64)
-        catalog.observe_local_copy(
+        local_copies.observe_local_copy(
             vault_id=primary_id, path='incoming/conflict.jpg', file_type='regular',
             size=conflict_path.stat().st_size, mtime_ns=conflict_path.stat().st_mtime_ns,
             observed_at='2026-07-01T13:00:00Z',
         )
         conflict = catalog_probe.get_file(catalog, conflict_file, vault_id=primary_id)
-        catalog.publish_local_fingerprint(
+        local_copies.publish_local_fingerprint(
             conflict_file, generation=conflict["generation"],
             plaintext_sha256=hashlib.sha256(conflict_path.read_bytes()).hexdigest(),
             size=conflict_path.stat().st_size, mtime_ns=conflict_path.stat().st_mtime_ns,

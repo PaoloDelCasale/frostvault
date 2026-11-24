@@ -16,7 +16,7 @@ for _flag, _value in (
     if not hasattr(os, _flag):
         setattr(os, _flag, _value)
 
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.services import health as health_service
 from app.storage import (
@@ -44,8 +44,8 @@ class WorkerLoopDecouplingTests(FrostVaultTestCase):
         self.enterContext(patch('app.storage.sweep_source_volume_problems', return_value=0))
         with self.database.connect() as connection:
             seed_vault(connection, id=10, source_root="/source/alpha", name="alpha")
-            catalog = ArchiveCatalog(connection)
-            catalog.observe_local_copy(
+            local_copies = LocalCopies(connection)
+            local_copies.observe_local_copy(
                 vault_id=10,
                 path="slow.txt",
                 file_type="regular",
@@ -53,7 +53,7 @@ class WorkerLoopDecouplingTests(FrostVaultTestCase):
                 mtime_ns=1,
                 observed_at="2026-07-01T00:00:00+00:00",
             )
-            catalog.observe_local_copy(
+            local_copies.observe_local_copy(
                 vault_id=10,
                 path="fast.txt",
                 file_type="regular",

@@ -14,6 +14,7 @@ from cryptography.fernet import Fernet
 from fastapi.routing import APIRoute
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.routes import browse
 from app.services import directory_aggregates as aggregates
 from app.services import notifications
@@ -92,7 +93,8 @@ class BrowseResponsesTests(FrostVaultTestCase):
     @staticmethod
     def seed(catalog: ArchiveCatalog, path: str, *, archive: bool = False, local: bool = True) -> None:
         """A Vault File at ``path``; ``archive`` gives it a verified Current."""
-        file_id = catalog.observe_local_copy(
+        local_copies = LocalCopies(catalog.connection)
+        file_id = local_copies.observe_local_copy(
             vault_id=9, path=path, file_type="regular", size=12, mtime_ns=1, observed_at=T)
         if archive:
             fingerprint(catalog, 9, path, "a" * 64)
@@ -103,7 +105,7 @@ class BrowseResponsesTests(FrostVaultTestCase):
                 file_id, archive_version_id=version, plaintext_sha256="a" * 64, verified_at=T,
                 local_generation=catalog_probe.get_file_by_path(catalog, 9, path)["generation"])
         if not local:
-            catalog.mark_local_copy_missing(file_id, observed_at=T)
+            local_copies.mark_local_copy_missing(file_id, observed_at=T)
 
     def answer(self, method: str, url: str, **options: Any) -> Any:
         response = self.client.request(method, url, **options)

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from app import storage
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services import duplicate_cleanup, mirror_cleanup
 from app.services.lifecycle_profiles import GUIDED_PROFILES
 from app.services.lifecycle_policies import set_vault_plan
@@ -266,7 +266,7 @@ class ExecutionTests(MirrorCleanupFixture):
         target.write_bytes(OTHER)
         stat = target.stat()
         with self.db() as connection:
-            ArchiveCatalog(connection).observe_local_copies_batch(
+            LocalCopies(connection).observe_local_copies_batch(
                 vault_id=2, entries=[("backup/b.tar.zst", "regular", stat.st_size, stat.st_mtime_ns,
                                       storage.now_iso())])
         self.assertEqual(self.path_statuses(group), {"backup/a.tar.zst": "pending_delay",

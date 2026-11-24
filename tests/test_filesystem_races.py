@@ -17,6 +17,7 @@ from watchfiles import Change, awatch
 
 from app import storage
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 from tests import test_auto_upload_watcher as watcher
 from tests.catalog_support import fingerprint, protect
@@ -308,9 +309,9 @@ class FilesystemCatalogTests(watcher.WatcherCase):
     def test_existing_restore_ghosts_are_hidden_but_real_user_names_are_preserved(self):
         target, version, _ = self.archive()
         with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             for name in (f".photo.jpg.restore-{'a' * 32}.tmp.f8Fc29bA", "photo.jpg.tmp.f8Fc29bA", "user.tmp.f8Fc29bA"):
-                catalog.observe_local_copy(vault_id=2, path=name, file_type="regular", size=5, mtime_ns=1, observed_at=self.clock.isoformat())
+                local_copies.observe_local_copy(vault_id=2, path=name, file_type="regular", size=5, mtime_ns=1, observed_at=self.clock.isoformat())
             # The completed Recover whose window covers the legacy residue.
             connection.execute("""INSERT INTO jobs(vault_id, file_id, action, status, origin, requested_at,
                 updated_at, archive_version_id) SELECT 2, f.id, 'recover', 'completed', 'manual',
@@ -329,8 +330,9 @@ class FilesystemCatalogTests(watcher.WatcherCase):
         self.write(on_disk)
         with self.db() as connection:
             catalog = ArchiveCatalog(connection)
-            catalog.observe_local_copy(vault_id=2, path=on_disk, file_type="regular", size=5, mtime_ns=1, observed_at=self.clock.isoformat())
-            catalog.observe_local_copy(vault_id=2, path=cloud_backed, file_type="regular", size=5, mtime_ns=1, observed_at=self.clock.isoformat())
+            local_copies = LocalCopies(connection)
+            local_copies.observe_local_copy(vault_id=2, path=on_disk, file_type="regular", size=5, mtime_ns=1, observed_at=self.clock.isoformat())
+            local_copies.observe_local_copy(vault_id=2, path=cloud_backed, file_type="regular", size=5, mtime_ns=1, observed_at=self.clock.isoformat())
             digest = hashlib.sha256(b"photo").hexdigest()
             fingerprint(catalog, 2, cloud_backed, digest)
             protect(catalog, 2, cloud_backed, digest, provider_version_id="keep")

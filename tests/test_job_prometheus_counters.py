@@ -14,7 +14,7 @@ for _flag, _value in (
     if not hasattr(os, _flag):
         setattr(os, _flag, _value)
 
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.services import metrics as metrics_service
 from app.storage import (
@@ -36,8 +36,8 @@ class JobPrometheusCounterTests(FrostVaultTestCase):
         metrics_service.reset_for_tests()
         with self.database.connect() as connection:
             seed_vault(connection, id=2, source_root="/source")
-            catalog = ArchiveCatalog(connection)
-            self.file_id = catalog.observe_local_copy(
+            local_copies = LocalCopies(connection)
+            self.file_id = local_copies.observe_local_copy(
                 vault_id=2,
                 path="a.txt",
                 file_type="regular",

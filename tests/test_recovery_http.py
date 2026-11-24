@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.storage import process_jobs_once
 from tests.catalog_support import fingerprint, protect
 from tests.fixtures import FrostVaultTestCase, seed_vault
@@ -36,8 +37,9 @@ class RecoveryHttpTests(FrostVaultTestCase):
         with self.database.connect() as connection:
             self.vault_id = seed_vault(connection, source_root=str(self.source))["id"]
             catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             payload = b"http-recover"
-            self.file_id = catalog.observe_local_copy(
+            self.file_id = local_copies.observe_local_copy(
                 vault_id=self.vault_id,
                 path="docs/note.txt",
                 file_type="regular",
@@ -49,7 +51,7 @@ class RecoveryHttpTests(FrostVaultTestCase):
             self.version_id = protect(catalog, self.vault_id, "docs/note.txt", _sha(payload))
             connection.execute("UPDATE archive_versions SET storage_class='GLACIER' WHERE id=%s",
                                (self.version_id,))
-            catalog.mark_local_copy_missing(
+            local_copies.mark_local_copy_missing(
                 self.file_id, observed_at="2026-07-21T11:00:00+00:00"
             )
 

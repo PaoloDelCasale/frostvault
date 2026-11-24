@@ -15,6 +15,7 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.services.catalog_audit import audit_vault_catalog
 from app.services.component_health import (
@@ -39,7 +40,8 @@ class CatalogIncidentTests(FrostVaultTestCase):
                 "SELECT id, uuid FROM vaults WHERE id=1"
             ).fetchone(), s3_bucket="bucket", s3_key_layout="vault_prefix")
             catalog = ArchiveCatalog(connection)
-            catalog.observe_local_copy(
+            local_copies = LocalCopies(connection)
+            local_copies.observe_local_copy(
                 vault_id=1, path="docs/report.pdf", file_type="regular",
                 size=10, mtime_ns=1, observed_at="2026-01-01T00:00:00+00:00",
             )

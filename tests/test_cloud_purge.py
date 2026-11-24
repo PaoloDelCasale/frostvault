@@ -24,7 +24,7 @@ from unittest.mock import patch
 import psycopg
 
 from app import storage
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services import cloud_deletion, protection_stop, upload_remediation
 from app.services import notifications as inbox
 from app.services import protection_notifications as monitor
@@ -47,7 +47,7 @@ class CloudPurgeCase(fixtures.UploadWorkerCase):
         current = self.assert_current(job_id, payload)
         self.file.unlink()
         with self.db() as connection:
-            ArchiveCatalog(connection).mark_local_copy_missing(
+            LocalCopies(connection).mark_local_copy_missing(
                 self.file_id, observed_at=storage.now_iso())
         return current
 
@@ -57,7 +57,7 @@ class CloudPurgeCase(fixtures.UploadWorkerCase):
         path.write_bytes(B)
         with self.db() as connection:
             stat = path.stat()
-            file_id = ArchiveCatalog(connection).observe_local_copy(
+            file_id = LocalCopies(connection).observe_local_copy(
                 vault_id=2, path=name, file_type="regular", size=stat.st_size,
                 mtime_ns=stat.st_mtime_ns, observed_at=storage.now_iso())
             job = connection.execute(
@@ -71,7 +71,7 @@ class CloudPurgeCase(fixtures.UploadWorkerCase):
         self.assertEqual(self.job(int(job["id"]))["status"], "completed")
         path.unlink()
         with self.db() as connection:
-            ArchiveCatalog(connection).mark_local_copy_missing(file_id, observed_at=storage.now_iso())
+            LocalCopies(connection).mark_local_copy_missing(file_id, observed_at=storage.now_iso())
         return str(file_id)
 
     def schedule(self, paths=("report.txt",), *, requested_at: str = PAST,
@@ -229,7 +229,7 @@ class CloudPurgeTests(CloudPurgeCase):
         self.assertEqual(row["held_version_id"], current["id"], "different content is held")
         self.file.unlink()
         with self.db() as connection:
-            ArchiveCatalog(connection).mark_local_copy_missing(self.file_id, observed_at=storage.now_iso())
+            LocalCopies(connection).mark_local_copy_missing(self.file_id, observed_at=storage.now_iso())
         with self.db() as connection, self.assertRaises(cloud_deletion.CloudDeletionError):
             cloud_deletion.preview_selection(connection, vault_id=2, paths=["report.txt"])
         self.assert_untouched(current)

@@ -21,7 +21,7 @@ from unittest.mock import patch
 import psycopg
 
 from app import storage
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services import upload_provenance as provenance
 from app.services.vault_relocation import enroll_vault_root_identity
 from tests.fixtures import FrostVaultTestCase, seed_vault
@@ -106,7 +106,7 @@ class UploadWorkerCase(FrostVaultTestCase):
 
     def observe(self, connection) -> str:
         stat = self.file.stat()
-        return ArchiveCatalog(connection).observe_local_copy(
+        return LocalCopies(connection).observe_local_copy(
             vault_id=2, path="report.txt", file_type="regular", size=stat.st_size,
             mtime_ns=stat.st_mtime_ns, observed_at=storage.now_iso())
 
@@ -483,7 +483,7 @@ class UploadWorkerTests(UploadWorkerCase):
         nested.write_bytes(B)
         with self.db() as connection:
             stat = nested.stat()
-            ArchiveCatalog(connection).observe_local_copy(
+            LocalCopies(connection).observe_local_copy(
                 vault_id=2, path="docs/a.txt", file_type="regular", size=stat.st_size,
                 mtime_ns=stat.st_mtime_ns, observed_at=storage.now_iso())
             connection.execute(
@@ -493,7 +493,7 @@ class UploadWorkerTests(UploadWorkerCase):
         self.assertEqual((status["status"], status["selected_count"]), ("pending", 2))
         with self.db() as connection:
             # Created after acceptance: outside this admission.
-            ArchiveCatalog(connection).observe_local_copy(
+            LocalCopies(connection).observe_local_copy(
                 vault_id=2, path="later.txt", file_type="regular", size=1, mtime_ns=1,
                 observed_at=storage.now_iso())
         with self.db() as connection:

@@ -5,6 +5,7 @@ import unittest
 from app.errors import Invalid
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.routes.browse import list_files
 from app.routes.deps import normalize_directory
@@ -220,7 +221,8 @@ class FileBrowserTests(unittest.TestCase):
             with database.connect() as connection:
                 seed_vault(connection, id=2, name="Docs", source_root="/source")
                 catalog = ArchiveCatalog(connection)
-                file_id = catalog.observe_local_copy(
+                local_copies = LocalCopies(connection)
+                file_id = local_copies.observe_local_copy(
                     vault_id=2,
                     path="reports/annual.txt",
                     file_type="regular",

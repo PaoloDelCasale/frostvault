@@ -19,7 +19,7 @@ Module owns the Archive Version rows behind them and nothing else writes them:
   :meth:`ArchiveVersions.record_verification_evidence`,
   :meth:`ArchiveVersions.update_restore_state`).
 
-The observation of Local Copies stays with the catalog; what an upload, a
+The observation of Local Copies belongs to ``local_copies``; what an upload, a
 verification or a restore does in the cloud belongs to the worker.
 """
 from __future__ import annotations

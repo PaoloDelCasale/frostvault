@@ -29,6 +29,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.routes.jobs import cancel_job_group
 from app.services.job_admission import queue_jobs
@@ -123,7 +124,8 @@ def _add_cloud_only_version(
     """One more file of Vault 2 whose verified Current is its only copy."""
     with database.connect() as connection:
         catalog = ArchiveCatalog(connection)
-        file_id = catalog.observe_local_copy(
+        local_copies = LocalCopies(connection)
+        file_id = local_copies.observe_local_copy(
             vault_id=2,
             path=relative_path,
             file_type="regular",
@@ -141,7 +143,7 @@ def _add_cloud_only_version(
             file_id, archive_version_id=version_id, plaintext_sha256=_sha256_hex(payload),
             verified_at="2026-07-21T10:01:00+00:00", local_generation=generation,
         )
-        catalog.mark_local_copy_missing(file_id, observed_at="2026-07-21T11:00:00+00:00")
+        local_copies.mark_local_copy_missing(file_id, observed_at="2026-07-21T11:00:00+00:00")
     return version_id
 
 

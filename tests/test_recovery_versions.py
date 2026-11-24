@@ -12,6 +12,7 @@ import hashlib
 import unittest
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 
 from tests.catalog_support import fingerprint, protect
@@ -28,7 +29,8 @@ class VersionSelectionTests(FrostVaultTestCase):
         with self.database.connect() as connection:
             seed_vault(connection, source_root=str(self.tmp_path / "source"), id=2)
             catalog = ArchiveCatalog(connection)
-            file_id = catalog.observe_local_copy(
+            local_copies = LocalCopies(connection)
+            file_id = local_copies.observe_local_copy(
                 vault_id=2, path="notes.txt", file_type="regular", size=4, mtime_ns=1,
                 observed_at="2026-07-20T09:00:00+00:00")
             ids = {}
@@ -41,7 +43,7 @@ class VersionSelectionTests(FrostVaultTestCase):
                 file_id, object_key="vaults/x/notes.txt", provider_version_id="v-bad", size=4,
                 storage_class="STANDARD", created_at="2026-07-22T10:00:00+00:00")
             # Recovery restores a file whose Local Copy is gone.
-            catalog.mark_local_copy_missing(file_id, observed_at="2026-07-22T11:00:00+00:00")
+            local_copies.mark_local_copy_missing(file_id, observed_at="2026-07-22T11:00:00+00:00")
             self.file_id = file_id
         return ids
 

@@ -14,6 +14,7 @@ import unittest
 import psycopg
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from tests import catalog_probe
 from tests.fixtures import FrostVaultTestCase, seed_vault
@@ -26,9 +27,9 @@ class SinglePathLookupPlanTests(FrostVaultTestCase):
         super().setUp()
         with self.database.connect() as connection:
             seed_vault(connection, id=1, source_root="/source")
-            catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             for index in range(50):
-                catalog.observe_local_copy(
+                local_copies.observe_local_copy(
                     vault_id=1,
                     path=f"folder/file-{index:03d}.txt",
                     file_type="regular",
@@ -47,6 +48,7 @@ class SinglePathLookupPlanTests(FrostVaultTestCase):
     def test_path_lookups_search_files_by_vault_and_path(self) -> None:
         with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             captured: list[tuple[str, tuple]] = []
             original = connection.execute
 
@@ -56,11 +58,11 @@ class SinglePathLookupPlanTests(FrostVaultTestCase):
 
             connection.execute = recording  # type: ignore[method-assign]
             catalog_probe.get_file_by_path(catalog, 1, "folder/file-010.txt")
-            catalog.mark_local_path_missing(
+            local_copies.mark_local_path_missing(
                 vault_id=1, path="folder/file-011.txt",
                 observed_at="2026-09-30T00:00:01+00:00",
             )
-            catalog.observe_local_copy(
+            local_copies.observe_local_copy(
                 vault_id=1,
                 path="folder/file-010.txt",
                 file_type="regular",

@@ -43,6 +43,7 @@ from typing import Any, Callable
 from . import upload_provenance as provenance
 from .database_retry import owned_connection, retry_database_unit
 from .directory_aggregates import mark_path_dirty
+from .local_copies import LocalCopies
 from .s3 import (
     full_object_sha256_checksum, head_object_with_checksum, restore_header_state, sha256_version,
     storage_class_requires_restore,
@@ -444,7 +445,7 @@ def _local_generation(w: CopyWorker, job: dict[str, Any], state: dict[str, Any],
         return None
 
     def publish(catalog: Any) -> bool:
-        return catalog.publish_local_fingerprint(
+        return LocalCopies(catalog.connection).publish_local_fingerprint(
             job["file_id"], generation=generation, plaintext_sha256=digest,
             size=info.st_size, mtime_ns=info.st_mtime_ns)
 
