@@ -92,7 +92,7 @@ describe("Overview «Protected files» tile", () => {
       if (url.startsWith("/api/general/vaults")) return jsonResponse({ items: [] });
       return jsonResponse({}, 404);
     }) });
-    const vaults = Object.keys(stats).map((id) => ({ id: Number(id), uuid: `v${id}`, name: `Vault ${id}` }));
+    const vaults = Object.keys(stats).map((id) => ({ id: Number(id), uuid: `v${id}`, name: `Vault ${id}`, paused: false, lifecycle: "active" as const }));
     renderWithQueryClient(<I18nProvider><OverviewPage vaults={vaults} /></I18nProvider>);
   }
 

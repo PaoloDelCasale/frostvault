@@ -1803,80 +1803,144 @@ export interface components {
         /** ArchiveListItem */
         ArchiveListItem: components["schemas"]["VaultFileListItem"] | components["schemas"]["DirectoryListItem"];
         AuthMethod: string | null;
-        /** @description The AWS Data Exports (CUR 2.0) billing export and every known bucket's Billed Cost (#738). Never a Cost Explorer figure. */
+        /**
+         * BilledCategories
+         * @description Billed amounts by category, in the billing currency; every category is present.
+         */
+        BilledCategories: {
+            /** Storage */
+            storage: number;
+            /** Requests */
+            requests: number;
+            /** Transitions */
+            transitions: number;
+            /** Retrievals */
+            retrievals: number;
+            /** Data Transfer */
+            data_transfer: number;
+            /** Other */
+            other: number;
+            /**
+             * Credits
+             * @description Credits, refunds and discounts of the bucket (negative).
+             */
+            credits: number;
+        };
+        /** BilledInstallationBucket */
+        BilledInstallationBucket: {
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "system" | "shared";
+            /** Bucket */
+            bucket: string;
+            /** Total */
+            total: number;
+            categories: components["schemas"]["BilledCategories"];
+        };
+        /** BilledVaultBucket */
+        BilledVaultBucket: {
+            /** Vault Id */
+            vault_id: number;
+            /** Name */
+            name: string | null;
+            /** Bucket */
+            bucket: string;
+            /** Total */
+            total: number;
+            categories: components["schemas"]["BilledCategories"];
+        };
+        /** BillingExportPeriod */
+        BillingExportPeriod: {
+            /**
+             * Period
+             * @description YYYY-MM
+             */
+            period: string;
+            /**
+             * Total
+             * @description Every row of the period: Vaults and installation.
+             */
+            total: number;
+            /**
+             * Vaults Total
+             * @description The Vault rows only: FrostVault's Vault Buckets, not the whole AWS bill.
+             */
+            vaults_total: number;
+            /** Vaults */
+            vaults: components["schemas"]["BilledVaultBucket"][];
+            /**
+             * Installation
+             * @description The System Bucket and shared buckets of older Vaults: not attributed to one Vault.
+             */
+            installation: components["schemas"]["BilledInstallationBucket"][];
+        };
+        /**
+         * BillingExportStatus
+         * @description The AWS Data Exports (CUR 2.0) billing export and every known bucket's Billed Cost (#738). Never a Cost Explorer figure.
+         */
         BillingExportStatus: {
             /**
+             * State
              * @description unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code).
              * @enum {string}
              */
             state: "unavailable" | "checking" | "not_configured" | "waiting" | "ok" | "error";
-            /** @description The System Bucket the export is delivered to. */
+            /**
+             * Bucket
+             * @description The System Bucket the export is delivered to.
+             */
             bucket: string | null;
-            /** @description The S3 path prefix of the export in the System Bucket. */
+            /**
+             * Prefix
+             * @description The S3 path prefix of the export in the System Bucket.
+             */
             prefix: string;
+            /** Checked At */
             checked_at: string | null;
+            /** Next Check At */
             next_check_at: string | null;
-            /** @description When FrostVault last read the export (only when ok). */
+            /**
+             * Read At
+             * @description When FrostVault last read the export (only when ok).
+             */
             read_at: string | null;
-            /** @description When AWS delivered the newest manifest that was read. */
+            /**
+             * Exported At
+             * @description When AWS delivered the newest manifest that was read.
+             */
             exported_at: string | null;
-            /** @description The newest usage end in the export, never after exported_at. */
+            /**
+             * Data Through
+             * @description The newest usage end in the export, never after exported_at.
+             */
             data_through: string | null;
-            /** @description The billing currency (ISO 4217). */
+            /**
+             * Currency
+             * @description The billing currency (ISO 4217).
+             */
             currency: string | null;
-            /** @description ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd. */
+            /**
+             * Stale
+             * @description ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd.
+             */
             stale: boolean;
             /**
+             * Error Code
              * @description Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day.
-             * @enum {string|null}
              */
-            error_code: "s3_unreachable" | "s3_throttled" | "s3_server_error" | "credentials" | "access_denied" | "s3_refused" | "parquet" | "missing_column" | "not_gzip_csv" | "short_row" | "cost_not_number" | "currency_missing" | "mixed_currencies" | "manifest_invalid" | "manifest_too_large" | "manifest_foreign_bucket" | "manifest_outside_folder" | "no_data_files" | "internal" | null;
-            /** @description An S3 action and AWS error code, column or currency names: never a provider message. */
+            error_code: ("s3_unreachable" | "s3_throttled" | "s3_server_error" | "credentials" | "access_denied" | "s3_refused" | "parquet" | "missing_column" | "not_gzip_csv" | "short_row" | "cost_not_number" | "currency_missing" | "mixed_currencies" | "manifest_invalid" | "manifest_too_large" | "manifest_foreign_bucket" | "manifest_outside_folder" | "no_data_files" | "internal") | null;
+            /**
+             * Error Detail
+             * @description An S3 action and AWS error code, column or currency names: never a provider message.
+             */
             error_detail: string | null;
-            /** @description Billing periods read, newest first; empty unless state is ok. */
-            periods: {
-                /** @description YYYY-MM */
-                period: string;
-                /** @description Every row of the period: Vaults and installation. */
-                total: number;
-                /** @description The Vault rows only: FrostVault's Vault Buckets, not the whole AWS bill. */
-                vaults_total: number;
-                vaults: {
-                    vault_id: number;
-                    name: string | null;
-                    bucket: string;
-                    total: number;
-                    /** @description Billed amounts by category, in the billing currency; every category is present. */
-                    categories: {
-                        storage: number;
-                        requests: number;
-                        transitions: number;
-                        retrievals: number;
-                        data_transfer: number;
-                        other: number;
-                        /** @description Credits, refunds and discounts of the bucket (negative). */
-                        credits: number;
-                    };
-                }[];
-                /** @description The System Bucket and shared buckets of older Vaults: not attributed to one Vault. */
-                installation: {
-                    /** @enum {string} */
-                    role: "system" | "shared";
-                    bucket: string;
-                    total: number;
-                    /** @description Billed amounts by category, in the billing currency; every category is present. */
-                    categories: {
-                        storage: number;
-                        requests: number;
-                        transitions: number;
-                        retrievals: number;
-                        data_transfer: number;
-                        other: number;
-                        /** @description Credits, refunds and discounts of the bucket (negative). */
-                        credits: number;
-                    };
-                }[];
-            }[];
+            /**
+             * Periods
+             * @description Billing periods read, newest first; empty unless state is ok.
+             */
+            periods: components["schemas"]["BillingExportPeriod"][];
         };
         /** BulkUploadAdmissionActivity */
         BulkUploadAdmissionActivity: {
@@ -1915,6 +1979,82 @@ export interface components {
             vault_id: number;
         } & {
             [key: string]: unknown;
+        };
+        /** CleanupAmount */
+        CleanupAmount: {
+            /** Count */
+            count: number;
+            /** Bytes */
+            bytes: number;
+        };
+        /** CleanupLastOutcome */
+        CleanupLastOutcome: {
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "scheduled" | "none" | "capped" | "skipped";
+            /** At */
+            at: string;
+            /** File Count */
+            file_count?: number;
+            /** Byte Count */
+            byte_count?: number;
+            /** Group Id */
+            group_id?: string;
+            /** Run After */
+            run_after?: string;
+            /** Waiting Count */
+            waiting_count?: number;
+            /** Waiting Bytes */
+            waiting_bytes?: number;
+            /** Unseen Count */
+            unseen_count?: number;
+            /** Held Count */
+            held_count?: number;
+            /** Held Bytes */
+            held_bytes?: number;
+            /** Minimum Count */
+            minimum_count?: number;
+            /** Minimum Bytes */
+            minimum_bytes?: number;
+            /** Minimum Cost */
+            minimum_cost?: number;
+            /** Savings From */
+            savings_from?: string | null;
+        };
+        /** CleanupPendingGroup */
+        CleanupPendingGroup: {
+            /** Group Id */
+            group_id: string;
+            /** File Count */
+            file_count: number;
+            /** Byte Count */
+            byte_count: number;
+            /** Run After */
+            run_after: string | null;
+            /** Cancellable */
+            cancellable: boolean;
+        };
+        /** CleanupTotals */
+        CleanupTotals: {
+            /** Deleted Count */
+            deleted_count: number;
+            /** Deleted Bytes */
+            deleted_bytes: number;
+            /** Last Deleted At */
+            last_deleted_at: string | null;
+        };
+        /** CleanupWaiting */
+        CleanupWaiting: {
+            /** Count */
+            count: number;
+            /** Bytes */
+            bytes: number;
+            /** First Eligible At */
+            first_eligible_at: string | null;
+            /** Earliest Deletion At */
+            earliest_deletion_at: string | null;
         };
         /**
          * CloudDeletionListing
@@ -2042,6 +2182,135 @@ export interface components {
             /** Fingerprint */
             fingerprint?: string | null;
         };
+        /** CloudUsageDay */
+        CloudUsageDay: {
+            /** Day */
+            day: string;
+            /** Bytes */
+            bytes: number;
+            /** Overhead Bytes */
+            overhead_bytes: number;
+            /** Object Count */
+            object_count: number | null;
+        };
+        /**
+         * CloudUsageEstimate
+         * @description The catalog's versions not known to be missing, by class, with a Cost Estimate from AWS list prices.
+         */
+        CloudUsageEstimate: {
+            /** Versions */
+            versions: number;
+            /** Bytes */
+            bytes: number;
+            /** Monthly Cost */
+            monthly_cost: number;
+            /** Currency */
+            currency: string;
+            /** Region */
+            region: string;
+            /** Pricing Effective At */
+            pricing_effective_at: string;
+            /** By Storage Class */
+            by_storage_class: components["schemas"]["CloudUsageEstimateClass"][];
+        };
+        /** CloudUsageEstimateClass */
+        CloudUsageEstimateClass: {
+            /** Storage Class */
+            storage_class: string;
+            /** Versions */
+            versions: number;
+            /** Bytes */
+            bytes: number;
+            /** Monthly Cost */
+            monthly_cost: number;
+        };
+        /**
+         * CloudUsageMeasured
+         * @description Daily S3 storage metrics read from CloudWatch GetMetricStatistics (#737).
+         */
+        CloudUsageMeasured: {
+            /**
+             * Status
+             * @description available: a data point is saved. pending: not read yet. no_data, access_denied, failed: the last read's outcome, with nothing saved. shared_bucket: an older Vault on a shared bucket, never read. provisioning: the Vault Bucket is being created.
+             * @enum {string}
+             */
+            status: "available" | "pending" | "no_data" | "access_denied" | "failed" | "shared_bucket" | "provisioning";
+            last_read?: components["schemas"]["CloudUsageRead"] | null;
+            /**
+             * Next Read After
+             * @description When the Vault Bucket is read again: 24 hours after an ok read, 6 hours after any other outcome.
+             */
+            next_read_after?: string | null;
+            /**
+             * History
+             * @description Saved daily totals, newest first.
+             */
+            history?: components["schemas"]["CloudUsageDay"][];
+            /**
+             * Day
+             * @description UTC day of the newest data point.
+             */
+            day?: string;
+            /** Read At */
+            read_at?: string;
+            /** Object Count */
+            object_count?: number | null;
+            /** Bytes */
+            bytes?: number;
+            /** Overhead Bytes */
+            overhead_bytes?: number;
+            /** By Storage Class */
+            by_storage_class?: components["schemas"]["CloudUsageMeasuredClass"][];
+        };
+        /** CloudUsageMeasuredClass */
+        CloudUsageMeasuredClass: {
+            /** Storage Class */
+            storage_class: string;
+            /**
+             * Bytes
+             * @description The objects' own bytes in this class.
+             */
+            bytes: number;
+            /**
+             * Overhead Bytes
+             * @description Bytes AWS bills on top of the objects of this class.
+             */
+            overhead_bytes: number;
+            /** Overhead */
+            overhead: components["schemas"]["CloudUsageOverhead"][];
+        };
+        /** CloudUsageOverhead */
+        CloudUsageOverhead: {
+            /**
+             * Storage Type
+             * @description The CloudWatch StorageType dimension value.
+             */
+            storage_type: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "object_overhead" | "size_overhead" | "staging";
+            /**
+             * Billed As
+             * @description The storage class whose price AWS applies to these bytes.
+             */
+            billed_as: string;
+            /** Bytes */
+            bytes: number;
+        };
+        /** CloudUsageRead */
+        CloudUsageRead: {
+            /** Attempted At */
+            attempted_at: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "ok" | "no_data" | "access_denied" | "failed";
+            /** Error Code */
+            error_code: string | null;
+        };
         /**
          * DirectoryListItem
          * @description Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed.
@@ -2087,72 +2356,41 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** DuplicateCleanupStatus */
         DuplicateCleanupStatus: {
+            /** Enabled */
             enabled: boolean;
+            /** Grace Days */
             grace_days: number;
+            /** Cap Files */
             cap_files: number;
+            /** Cap Bytes */
             cap_bytes: number;
+            /** Grace Days Min */
             grace_days_min: number;
+            /** Grace Days Max */
             grace_days_max: number;
+            /** Last Run At */
             last_run_at: string | null;
+            /** Next Run At */
             next_run_at: string | null;
-            last_outcome: {
-                /** @enum {string} */
-                outcome: "scheduled" | "none" | "capped" | "skipped";
-                at: string;
-                file_count?: number;
-                byte_count?: number;
-                group_id?: string;
-                run_after?: string;
-                waiting_count?: number;
-                waiting_bytes?: number;
-                unseen_count?: number;
-                held_count?: number;
-                held_bytes?: number;
-                minimum_count?: number;
-                minimum_bytes?: number;
-                minimum_cost?: number;
-                savings_from?: string | null;
-            } | null;
-            pending: {
-                group_id: string;
-                file_count: number;
-                byte_count: number;
-                run_after: string | null;
-                cancellable: boolean;
-            }[];
-            current: {
-                count: number;
-                bytes: number;
-            } | null;
-            waiting: {
-                count: number;
-                bytes: number;
-                first_eligible_at: string | null;
-                earliest_deletion_at: string | null;
-            } | null;
-            ready: {
-                count: number;
-                bytes: number;
-            } | null;
-            unseen: {
-                count: number;
-                bytes: number;
-            } | null;
-            totals: {
-                deleted_count: number;
-                deleted_bytes: number;
-                last_deleted_at: string | null;
-            } | null;
-            /** @description Schedule only duplicates beyond their Minimum Storage Duration (#731). */
+            last_outcome: components["schemas"]["CleanupLastOutcome"] | null;
+            /** Pending */
+            pending: components["schemas"]["CleanupPendingGroup"][];
+            current: components["schemas"]["CleanupAmount"] | null;
+            waiting: components["schemas"]["CleanupWaiting"] | null;
+            ready: components["schemas"]["CleanupAmount"] | null;
+            unseen: components["schemas"]["CleanupAmount"] | null;
+            totals: components["schemas"]["CleanupTotals"] | null;
+            /**
+             * Beyond Minimum
+             * @description Schedule only duplicates beyond their Minimum Storage Duration (#731).
+             */
             beyond_minimum: boolean;
             /** @description With beyond_minimum on: duplicates the next run keeps until their minimum ends. */
-            held: {
-                count: number;
-                bytes: number;
-            } | null;
+            held: components["schemas"]["CleanupAmount"] | null;
             minimum_storage: components["schemas"]["MinimumStorageDeletion"] | null;
-            retention_lock?: components["schemas"]["RetentionLockPreview"] | null;
+            retention_lock: components["schemas"]["RetentionLockPreview"] | null;
         };
         /**
          * DuplicateCleanupUpdate
@@ -2332,19 +2570,57 @@ export interface components {
              */
             lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
         };
-        GeneralVaultReconnectResponse: {
-            full_scan_required: boolean;
-            /** @enum {string} */
-            reconnect_state: "scan_required" | "ready";
+        /** GeneralVault */
+        GeneralVault: {
+            /** Id */
+            id: number;
+            /** Uuid */
+            uuid: string;
+            /** Name */
+            name: string;
+            /** Source Root */
             source_root: string;
-            vault_id: number;
-        } & {
-            [key: string]: unknown;
+            /** S3 Bucket */
+            s3_bucket: string;
+            /** S3 Region */
+            s3_region: string;
+            /** S3 Prefix */
+            s3_prefix: string;
+            /**
+             * Lifecycle
+             * @enum {string}
+             */
+            lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
+            /** Paused */
+            paused: boolean;
+            /** Root Released At */
+            root_released_at: string | null;
+            /** Dedicated Bucket */
+            dedicated_bucket: boolean;
+            /** Retention Lock Days */
+            retention_lock_days: number | null;
+            /** Vault Deletion Status */
+            vault_deletion_status: ("pending" | "running" | "failed") | null;
+            bucket_provisioning: components["schemas"]["VaultBucketStatus"] | null;
         };
+        /** GeneralVaultReconnectResponse */
+        GeneralVaultReconnectResponse: {
+            /** Vault Id */
+            vault_id: number;
+            /** Source Root */
+            source_root: string;
+            /**
+             * Reconnect State
+             * @constant
+             */
+            reconnect_state: "reconnect_required";
+            /** Full Scan Required */
+            full_scan_required: boolean;
+        };
+        /** GeneralVaultsResponse */
         GeneralVaultsResponse: {
+            /** Items */
             items: components["schemas"]["GeneralVault"][];
-        } & {
-            [key: string]: unknown;
         };
         /** GlobPreviewRequest */
         GlobPreviewRequest: {
@@ -2666,115 +2942,154 @@ export interface components {
             /** Updated Files */
             updated_files: number;
         };
-        /** @description Minimum Storage Duration of a Vault's versions (#731): a Cost Estimate from AWS list prices. */
-        MinimumStorageSummary: {
-            vault_id: number;
-            by_storage_class: {
-                storage_class: string;
-                minimum_days: number;
-                /** @description Versions still within the Minimum Storage Duration. */
-                within: {
-                    count: number;
-                    bytes: number;
-                };
-                /** @description Versions beyond it, or in a class without one. */
-                beyond: {
-                    count: number;
-                    bytes: number;
-                };
-                remaining_cost: number;
-                estimated_count: number;
-            }[];
+        /** MinimumStorageClass */
+        MinimumStorageClass: {
+            /** Storage Class */
+            storage_class: string;
+            /** Minimum Days */
+            minimum_days: number;
+            /** @description Versions still within the Minimum Storage Duration. */
+            within: components["schemas"]["MinimumStorageVersions"];
+            /** @description Versions beyond it, or in a class without one. */
+            beyond: components["schemas"]["MinimumStorageVersions"];
+            /** Remaining Cost */
             remaining_cost: number;
-            /** @description Month by month (YYYY-MM, UTC), the versions whose Minimum Storage Duration ends. */
-            releases: {
-                month: string;
-                count: number;
-                bytes: number;
-            }[];
-            /** @description Versions with a minimum whose Class Entry is estimated from the Storage Plan. */
+            /** Estimated Count */
             estimated_count: number;
+        };
+        /**
+         * MinimumStorageDeletion
+         * @description Files of a deletion still within their Minimum Storage Duration when it executes, and what deleting them then still bills: a Cost Estimate from AWS list prices (#731).
+         */
+        MinimumStorageDeletion: {
+            /** Count */
+            count: number;
+            /** Bytes */
+            bytes: number;
+            /** Remaining Cost */
+            remaining_cost: number;
+            /**
+             * Savings From
+             * @description When the last Minimum Storage Duration of these files ends: deleting from then saves.
+             */
+            savings_from: string | null;
+            /**
+             * Estimated Count
+             * @description How many of them have an estimated Class Entry.
+             */
+            estimated_count: number;
+            /** By Storage Class */
+            by_storage_class: components["schemas"]["MinimumStorageDeletionClass"][];
+            /** Currency */
             currency: string;
+            /** Pricing Effective At */
             pricing_effective_at: string;
+            /** Region */
             region: string;
-            disclaimer?: string | null;
+            /** Disclaimer */
+            disclaimer: string | null;
+            /** Evaluated At */
             evaluated_at: string;
         };
+        /** MinimumStorageDeletionClass */
+        MinimumStorageDeletionClass: {
+            /** Storage Class */
+            storage_class: string;
+            /** Minimum Days */
+            minimum_days: number;
+            /** Count */
+            count: number;
+            /** Bytes */
+            bytes: number;
+            /** Remaining Cost */
+            remaining_cost: number;
+        };
+        /** MinimumStorageRelease */
+        MinimumStorageRelease: {
+            /** Month */
+            month: string;
+            /** Count */
+            count: number;
+            /** Bytes */
+            bytes: number;
+        };
+        /**
+         * MinimumStorageSummary
+         * @description Minimum Storage Duration of a Vault's versions (#731): a Cost Estimate from AWS list prices.
+         */
+        MinimumStorageSummary: {
+            /** Vault Id */
+            vault_id: number;
+            /** By Storage Class */
+            by_storage_class: components["schemas"]["MinimumStorageClass"][];
+            /** Remaining Cost */
+            remaining_cost: number;
+            /**
+             * Releases
+             * @description Month by month (YYYY-MM, UTC), the versions whose Minimum Storage Duration ends.
+             */
+            releases: components["schemas"]["MinimumStorageRelease"][];
+            /**
+             * Estimated Count
+             * @description Versions with a minimum whose Class Entry is estimated from the Storage Plan.
+             */
+            estimated_count: number;
+            /** Currency */
+            currency: string;
+            /** Pricing Effective At */
+            pricing_effective_at: string;
+            /** Region */
+            region: string;
+            /** Disclaimer */
+            disclaimer: string | null;
+            /** Evaluated At */
+            evaluated_at: string;
+        };
+        /** MinimumStorageVersions */
+        MinimumStorageVersions: {
+            /** Count */
+            count: number;
+            /** Bytes */
+            bytes: number;
+        };
+        /** MirrorCleanupStatus */
         MirrorCleanupStatus: {
+            /** Enabled */
             enabled: boolean;
+            /** Grace Days */
             grace_days: number;
+            /** Cap Files */
             cap_files: number;
+            /** Cap Bytes */
             cap_bytes: number;
-            folders: string[];
+            /** Grace Days Min */
             grace_days_min: number;
+            /** Grace Days Max */
             grace_days_max: number;
+            /** Last Run At */
             last_run_at: string | null;
+            /** Next Run At */
             next_run_at: string | null;
-            last_outcome: {
-                /** @enum {string} */
-                outcome: "scheduled" | "none" | "capped" | "skipped";
-                at: string;
-                file_count?: number;
-                byte_count?: number;
-                group_id?: string;
-                run_after?: string;
-                waiting_count?: number;
-                waiting_bytes?: number;
-                unseen_count?: number;
-                held_count?: number;
-                held_bytes?: number;
-                minimum_count?: number;
-                minimum_bytes?: number;
-                minimum_cost?: number;
-                savings_from?: string | null;
-            } | null;
-            cloud_life: {
-                days_after_disappearance: number;
-                storage_class: string;
-                class_from_day: number;
-                minimum_days: number;
-                minimum_until_day: number | null;
-                beyond_minimum: boolean;
-            };
-            pending: {
-                group_id: string;
-                file_count: number;
-                byte_count: number;
-                run_after: string | null;
-                cancellable: boolean;
-            }[];
-            current: {
-                count: number;
-                bytes: number;
-            } | null;
-            waiting: {
-                count: number;
-                bytes: number;
-                first_eligible_at: string | null;
-                earliest_deletion_at: string | null;
-            } | null;
-            ready: {
-                count: number;
-                bytes: number;
-            } | null;
-            unseen: {
-                count: number;
-                bytes: number;
-            } | null;
-            totals: {
-                deleted_count: number;
-                deleted_bytes: number;
-                last_deleted_at: string | null;
-            } | null;
-            /** @description Schedule only duplicates beyond their Minimum Storage Duration (#731). */
+            last_outcome: components["schemas"]["CleanupLastOutcome"] | null;
+            /** Pending */
+            pending: components["schemas"]["CleanupPendingGroup"][];
+            current: components["schemas"]["CleanupAmount"] | null;
+            waiting: components["schemas"]["CleanupWaiting"] | null;
+            ready: components["schemas"]["CleanupAmount"] | null;
+            unseen: components["schemas"]["CleanupAmount"] | null;
+            totals: components["schemas"]["CleanupTotals"] | null;
+            /**
+             * Beyond Minimum
+             * @description Schedule only duplicates beyond their Minimum Storage Duration (#731).
+             */
             beyond_minimum: boolean;
             /** @description With beyond_minimum on: duplicates the next run keeps until their minimum ends. */
-            held: {
-                count: number;
-                bytes: number;
-            } | null;
+            held: components["schemas"]["CleanupAmount"] | null;
             minimum_storage: components["schemas"]["MinimumStorageDeletion"] | null;
-            retention_lock?: components["schemas"]["RetentionLockPreview"] | null;
+            retention_lock: components["schemas"]["RetentionLockPreview"] | null;
+            /** Folders */
+            folders: string[];
+            cloud_life: components["schemas"]["MirrorCloudLife"];
         };
         /**
          * MirrorCleanupUpdate
@@ -2793,6 +3108,21 @@ export interface components {
             folders?: string[] | null;
             /** Beyond Minimum */
             beyond_minimum?: boolean | null;
+        };
+        /** MirrorCloudLife */
+        MirrorCloudLife: {
+            /** Days After Disappearance */
+            days_after_disappearance: number;
+            /** Storage Class */
+            storage_class: string;
+            /** Class From Day */
+            class_from_day: number;
+            /** Minimum Days */
+            minimum_days: number;
+            /** Minimum Until Day */
+            minimum_until_day: number | null;
+            /** Beyond Minimum */
+            beyond_minimum: boolean;
         };
         /** NotificationItem */
         NotificationItem: {
@@ -3036,26 +3366,75 @@ export interface components {
              */
             is_directory?: boolean;
         };
-        /** @description A Vault's Governance Retention Lock, fixed at creation (#736), and the superseded versions it holds back until their RetainUntilDate. */
+        /** RetainedVersions */
+        RetainedVersions: {
+            /** Count */
+            count: number;
+            /** Bytes */
+            bytes: number;
+            /** Deletable From */
+            deletable_from: string | null;
+            /** Deletable Until */
+            deletable_until: string | null;
+            /**
+             * Failed Count
+             * @description Retained Versions whose last deletion failed (#749).
+             */
+            failed_count: number;
+            /**
+             * Failed Attempts
+             * @description The most consecutive failed deletions of one of them.
+             */
+            failed_attempts: number;
+            /**
+             * Last Error
+             * @description The S3 error code of the most recent failure.
+             */
+            last_error: string | null;
+            /** Last Attempt At */
+            last_attempt_at: string | null;
+            /** Next Attempt At */
+            next_attempt_at: string | null;
+        };
+        /**
+         * RetentionLockPreview
+         * @description Files of a deletion a Governance Retention Lock still holds when it executes (#736). Dates are estimates: each version's creation plus the bucket default days. They are deleted from that date, never earlier.
+         */
+        RetentionLockPreview: {
+            /** Days */
+            days: number;
+            /**
+             * Mode
+             * @constant
+             */
+            mode: "GOVERNANCE";
+            /** Locked Count */
+            locked_count: number;
+            /** Locked Bytes */
+            locked_bytes: number;
+            /**
+             * Locked From
+             * @description When the first of them can be deleted.
+             */
+            locked_from: string | null;
+            /**
+             * Locked Until
+             * @description When the last of them can be deleted.
+             */
+            locked_until: string | null;
+        };
+        /**
+         * RetentionLockStatus
+         * @description A Vault's Governance Retention Lock, fixed at creation (#736), and the superseded versions it holds back until their RetainUntilDate.
+         */
         RetentionLockStatus: {
+            /** Vault Id */
             vault_id: number;
+            /** Days */
             days: number | null;
-            /** @enum {string|null} */
+            /** Mode */
             mode: "GOVERNANCE" | null;
-            retained: {
-                count: number;
-                bytes: number;
-                deletable_from: string | null;
-                deletable_until: string | null;
-                /** @description Retained Versions whose last deletion failed (#749). */
-                failed_count: number;
-                /** @description The most consecutive failed deletions of one of them. */
-                failed_attempts: number;
-                /** @description The S3 error code of the most recent failure. */
-                last_error: string | null;
-                last_attempt_at: string | null;
-                next_attempt_at: string | null;
-            } | null;
+            retained: components["schemas"]["RetainedVersions"] | null;
         };
         RetryFailedUploadsResponse: {
             item_count: number;
@@ -3108,17 +3487,58 @@ export interface components {
              */
             bytes_per_second: number | null;
         };
+        /** SourceDirectoryBrowseResponse */
         SourceDirectoryBrowseResponse: {
-            items: components["schemas"]["SourceDirectoryEntry"][];
-            relative_path: string;
+            /** Volume Alias */
             volume_alias: string;
-        } & {
-            [key: string]: unknown;
+            /** Relative Path */
+            relative_path: string;
+            /** Items */
+            items: components["schemas"]["SourceDirectoryEntry"][];
         };
+        /** SourceDirectoryEntry */
+        SourceDirectoryEntry: {
+            /** Name */
+            name: string;
+            /** Relative Path */
+            relative_path: string;
+            /** Navigable */
+            navigable: boolean;
+            /** Selectable */
+            selectable: boolean;
+            occupation: components["schemas"]["SourceDirectoryOccupation"] | null;
+        };
+        /** SourceDirectoryOccupation */
+        SourceDirectoryOccupation: {
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "vault";
+            /** Vault Name */
+            vault_name: string;
+        };
+        /** SourceVolumeInventoryItem */
+        SourceVolumeInventoryItem: {
+            /** Alias */
+            alias: string;
+            /** Path */
+            path: string;
+            /** Access */
+            access: string;
+            /** Health */
+            health: string;
+            /** Vault Count */
+            vault_count: number;
+            /** Diagnostic */
+            diagnostic: string | null;
+            /** Diagnostic Code */
+            diagnostic_code: string | null;
+        };
+        /** SourceVolumeInventoryResponse */
         SourceVolumeInventoryResponse: {
+            /** Items */
             items: components["schemas"]["SourceVolumeInventoryItem"][];
-        } & {
-            [key: string]: unknown;
         };
         /** StatsResponse */
         StatsResponse: {
@@ -3151,6 +3571,15 @@ export interface components {
             /** Local Operations Allowed */
             local_operations_allowed: boolean;
         };
+        /** StopProtectionJob */
+        StopProtectionJob: {
+            /** Id */
+            id: number;
+            /** Status */
+            status: string;
+            /** Pending Until */
+            pending_until: string | null;
+        };
         /** StopProtectionRequest */
         StopProtectionRequest: {
             /** Cloud Disposition */
@@ -3160,22 +3589,31 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        /** StopProtectionStatus */
         StopProtectionStatus: {
+            /** Vault Id */
             vault_id: number;
+            /** Vault Name */
             vault_name: string;
+            /** Stopped */
             stopped: boolean;
+            /** Root Released */
             root_released: boolean;
-            /** @enum {string} */
+            /**
+             * Cloud Disposition
+             * @enum {string}
+             */
             cloud_disposition: "keep" | "delete";
+            /** Group Id */
             group_id: string | null;
+            /** Cancellable */
             cancellable: boolean;
+            /** Pending Until */
             pending_until: string | null;
+            /** Local Files Blocking Cloud Delete */
             local_files_blocking_cloud_delete: number;
-            jobs: {
-                id: number;
-                status: string;
-                pending_until: string | null;
-            }[];
+            /** Jobs */
+            jobs: components["schemas"]["StopProtectionJob"][];
         };
         /**
          * StorageEstimateRequest
@@ -3371,187 +3809,236 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
-        /** @description A Vault's Billed Cost from the billing export (#738), a block of its cloud usage next to the Cost Estimate (#737). */
+        /**
+         * VaultBilledCost
+         * @description A Vault's Billed Cost from the billing export (#738), a block of its cloud usage next to the Cost Estimate (#737).
+         */
         VaultBilledCost: {
             /**
+             * State
              * @description unavailable: no System Bucket; checking: the first look is running; not_configured: nothing under the prefix; waiting: the export exists without a first manifest; ok: read; error: unreadable (see error_code).
              * @enum {string}
              */
             state: "unavailable" | "checking" | "not_configured" | "waiting" | "ok" | "error";
-            /** @description The System Bucket the export is delivered to. */
+            /**
+             * Bucket
+             * @description The System Bucket the export is delivered to.
+             */
             bucket: string | null;
-            /** @description The S3 path prefix of the export in the System Bucket. */
+            /**
+             * Prefix
+             * @description The S3 path prefix of the export in the System Bucket.
+             */
             prefix: string;
+            /** Checked At */
             checked_at: string | null;
+            /** Next Check At */
             next_check_at: string | null;
-            /** @description When FrostVault last read the export (only when ok). */
+            /**
+             * Read At
+             * @description When FrostVault last read the export (only when ok).
+             */
             read_at: string | null;
-            /** @description When AWS delivered the newest manifest that was read. */
+            /**
+             * Exported At
+             * @description When AWS delivered the newest manifest that was read.
+             */
             exported_at: string | null;
-            /** @description The newest usage end in the export, never after exported_at. */
+            /**
+             * Data Through
+             * @description The newest usage end in the export, never after exported_at.
+             */
             data_through: string | null;
-            /** @description The billing currency (ISO 4217). */
+            /**
+             * Currency
+             * @description The billing currency (ISO 4217).
+             */
             currency: string | null;
-            /** @description ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd. */
+            /**
+             * Stale
+             * @description ok but not up to date: the export AWS delivered is over 3 days old, or the current month is missing after the 3rd.
+             */
             stale: boolean;
             /**
+             * Error Code
              * @description Why the export could not be read (state error); the UI translates it. s3_unreachable, s3_throttled and s3_server_error are retried after 6 hours, the others after a day.
-             * @enum {string|null}
              */
-            error_code: "s3_unreachable" | "s3_throttled" | "s3_server_error" | "credentials" | "access_denied" | "s3_refused" | "parquet" | "missing_column" | "not_gzip_csv" | "short_row" | "cost_not_number" | "currency_missing" | "mixed_currencies" | "manifest_invalid" | "manifest_too_large" | "manifest_foreign_bucket" | "manifest_outside_folder" | "no_data_files" | "internal" | null;
-            /** @description An S3 action and AWS error code, column or currency names: never a provider message. */
+            error_code: ("s3_unreachable" | "s3_throttled" | "s3_server_error" | "credentials" | "access_denied" | "s3_refused" | "parquet" | "missing_column" | "not_gzip_csv" | "short_row" | "cost_not_number" | "currency_missing" | "mixed_currencies" | "manifest_invalid" | "manifest_too_large" | "manifest_foreign_bucket" | "manifest_outside_folder" | "no_data_files" | "internal") | null;
+            /**
+             * Error Detail
+             * @description An S3 action and AWS error code, column or currency names: never a provider message.
+             */
             error_detail: string | null;
+            /** Vault Id */
             vault_id: number;
+            /** Vault Bucket */
             vault_bucket: string;
-            /** @description The Vault is in a shared bucket: it has no Billed Cost of its own and periods is empty; the bucket is an installation row of GET /api/billing-export. */
+            /**
+             * Shared
+             * @description The Vault is in a shared bucket: it has no Billed Cost of its own and periods is empty; the bucket is an installation row of GET /api/billing-export.
+             */
             shared: boolean;
-            /** @description Newest first; empty unless state is ok, and for a shared bucket. */
-            periods: {
-                /** @description YYYY-MM */
-                period: string;
-                total: number;
-                /** @description Billed amounts by category, in the billing currency; every category is present. */
-                categories: {
-                    storage: number;
-                    requests: number;
-                    transitions: number;
-                    retrievals: number;
-                    data_transfer: number;
-                    other: number;
-                    /** @description Credits, refunds and discounts of the bucket (negative). */
-                    credits: number;
-                };
-            }[];
+            /**
+             * Periods
+             * @description Newest first; empty unless state is ok, and for a shared bucket.
+             */
+            periods: components["schemas"]["VaultBilledPeriod"][];
         };
-        /** @description A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation: creating, failed, or settling (verified, active at active_at, 15 minutes after the verification). */
+        /** VaultBilledPeriod */
+        VaultBilledPeriod: {
+            /**
+             * Period
+             * @description YYYY-MM
+             */
+            period: string;
+            /** Total */
+            total: number;
+            categories: components["schemas"]["BilledCategories"];
+        };
+        /**
+         * VaultBucketStatus
+         * @description A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation: creating, failed, or settling (verified, active at active_at, 15 minutes after the verification).
+         */
         VaultBucketStatus: {
+            /** Vault Id */
             vault_id: number;
+            /** Bucket */
             bucket: string;
+            /** Region */
             region: string;
+            /** Dedicated */
             dedicated: boolean;
-            /** @enum {string} */
+            /**
+             * State
+             * @enum {string}
+             */
             state: "creating" | "failed" | "settling" | "ready";
-            /** @enum {string|null} */
-            stage: "reserved" | "created" | "configured" | "verified" | null;
+            /** Stage */
+            stage: ("reserved" | "created" | "configured" | "verified") | null;
+            /** Attempts */
             attempts: number;
+            /** Last Attempt At */
             last_attempt_at: string | null;
+            /** Error */
             error: string | null;
+            /** Retention Lock Days */
             retention_lock_days: number | null;
-            /** @description When a verified bucket's Vault becomes active (settling only). */
+            /**
+             * Active At
+             * @description When a verified bucket's Vault becomes active (settling only).
+             */
             active_at: string | null;
-            /** @description Seconds until active_at, never negative (settling only). */
+            /**
+             * Active In Seconds
+             * @description Seconds until active_at, never negative (settling only).
+             */
             active_in_seconds: number | null;
         };
-        /** @description A Vault's cloud usage (#737): the catalog's Cost Estimate next to the CloudWatch sizes of its Vault Bucket. */
+        /**
+         * VaultCloudUsage
+         * @description A Vault's cloud usage (#737): the catalog's Cost Estimate next to the CloudWatch sizes of its Vault Bucket.
+         */
         VaultCloudUsage: {
+            /** Vault Id */
             vault_id: number;
+            /** Bucket */
             bucket: string;
+            /** Region */
             region: string;
+            /** Dedicated Bucket */
             dedicated_bucket: boolean;
-            /** @description The catalog's versions not known to be missing, by class, with a Cost Estimate from AWS list prices. */
-            estimate: {
-                versions: number;
-                bytes: number;
-                monthly_cost: number;
-                currency: string;
-                region: string;
-                pricing_effective_at: string;
-                by_storage_class: {
-                    storage_class: string;
-                    versions: number;
-                    bytes: number;
-                    monthly_cost: number;
-                }[];
-            };
-            /** @description Daily S3 storage metrics read from CloudWatch GetMetricStatistics (#737). */
-            measured: {
-                /**
-                 * @description available: a data point is saved. pending: not read yet. no_data, access_denied, failed: the last read's outcome, with nothing saved. shared_bucket: an older Vault on a shared bucket, never read. provisioning: the Vault Bucket is being created.
-                 * @enum {string}
-                 */
-                status: "available" | "pending" | "no_data" | "access_denied" | "failed" | "shared_bucket" | "provisioning";
-                last_read?: {
-                    attempted_at: string;
-                    /** @enum {string} */
-                    outcome: "ok" | "no_data" | "access_denied" | "failed";
-                    error_code: string | null;
-                } | null;
-                /** @description When the Vault Bucket is read again: 24 hours after an ok read, 6 hours after any other outcome. */
-                next_read_after?: string | null;
-                /** @description Saved daily totals, newest first. */
-                history?: {
-                    day: string;
-                    bytes: number;
-                    overhead_bytes: number;
-                    object_count: number | null;
-                }[];
-                /** @description UTC day of the newest data point. */
-                day?: string;
-                read_at?: string;
-                object_count?: number | null;
-                bytes?: number;
-                overhead_bytes?: number;
-                by_storage_class?: {
-                    storage_class: string;
-                    /** @description The objects' own bytes in this class. */
-                    bytes: number;
-                    /** @description Bytes AWS bills on top of the objects of this class. */
-                    overhead_bytes: number;
-                    overhead: {
-                        /** @description The CloudWatch StorageType dimension value. */
-                        storage_type: string;
-                        /** @enum {string} */
-                        kind: "object_overhead" | "size_overhead" | "staging";
-                        /** @description The storage class whose price AWS applies to these bytes. */
-                        billed_as: string;
-                        bytes: number;
-                    }[];
-                }[];
-            };
+            estimate: components["schemas"]["CloudUsageEstimate"];
+            measured: components["schemas"]["CloudUsageMeasured"];
         };
+        /** VaultCreateResponse */
         VaultCreateResponse: {
-            creation_mode?: components["schemas"]["VaultCreationMode"];
+            /** Id */
             id: number;
-            name: string;
+            /** Uuid */
             uuid: string;
-            /** @enum {string} */
+            /** Name */
+            name: string;
+            creation_mode: components["schemas"]["VaultCreationMode"];
+            /**
+             * Lifecycle
+             * @enum {string}
+             */
             lifecycle: "provisioning" | "active";
             bucket: components["schemas"]["VaultBucketStatus"];
         };
-        /** @description A cancelled Vault creation (#735). The Vault left the catalog; a bucket already created is not deleted: bucket_left says whether it was created (created) or an attempt may have reached AWS (possible). */
+        /**
+         * VaultCreationCancelled
+         * @description A cancelled Vault creation (#735). The Vault left the catalog; a bucket already created is not deleted: bucket_left says whether it was created (created) or an attempt may have reached AWS (possible).
+         */
         VaultCreationCancelled: {
+            /** Vault Id */
             vault_id: number;
+            /** Vault Name */
             vault_name: string;
+            /** Bucket */
             bucket: string;
+            /** Region */
             region: string;
-            /** @enum {string} */
+            /**
+             * Bucket Left
+             * @enum {string}
+             */
             bucket_left: "created" | "possible";
         };
-        VaultDeletionPreview: {
-            prefix: string;
-            object_count: number;
+        /** @enum {string} */
+        VaultCreationMode: "empty" | "adopt";
+        /** VaultDeletionClass */
+        VaultDeletionClass: {
+            /** Storage Class */
+            storage_class: string;
+            /** Version Count */
             version_count: number;
-            delete_marker_count: number;
-            multipart_upload_count: number;
+            /** Byte Count */
             byte_count: number;
-            by_storage_class: {
-                storage_class: string;
-                version_count: number;
-                byte_count: number;
-                early_deletion_cost: number;
-                early_deletion_version_count: number;
-                minimum_days: number;
-                early_deletion_byte_count?: number;
-            }[];
+            /** Early Deletion Cost */
             early_deletion_cost: number;
-            currency: string;
-            pricing_effective_at: string;
-            region: string;
-            executes_at: string;
-            delay_seconds: number;
-            early_deletion_version_count?: number;
+            /** Early Deletion Version Count */
+            early_deletion_version_count: number;
+            /** Minimum Days */
+            minimum_days: number;
+            /** Early Deletion Byte Count */
             early_deletion_byte_count?: number;
+        };
+        /** VaultDeletionPreview */
+        VaultDeletionPreview: {
+            /** Prefix */
+            prefix: string;
+            /** Object Count */
+            object_count: number;
+            /** Version Count */
+            version_count: number;
+            /** Delete Marker Count */
+            delete_marker_count: number;
+            /** Multipart Upload Count */
+            multipart_upload_count: number;
+            /** Byte Count */
+            byte_count: number;
+            /** By Storage Class */
+            by_storage_class: components["schemas"]["VaultDeletionClass"][];
+            /** Early Deletion Cost */
+            early_deletion_cost: number;
+            /** Currency */
+            currency: string;
+            /** Pricing Effective At */
+            pricing_effective_at: string;
+            /** Region */
+            region: string;
+            /** Executes At */
+            executes_at: string;
+            /** Delay Seconds */
+            delay_seconds: number;
+            /** Early Deletion Version Count */
+            early_deletion_version_count?: number;
+            /** Early Deletion Byte Count */
+            early_deletion_byte_count?: number;
+            /** Savings From */
             savings_from?: string | null;
+            /** Early Deletion Estimated Count */
             early_deletion_estimated_count?: number;
             retention_lock?: components["schemas"]["RetentionLockPreview"] | null;
         };
@@ -3567,36 +4054,69 @@ export interface components {
              */
             delete_bucket?: boolean;
         };
-        VaultDeletionStatus: {
-            vault_id: number;
-            vault_name: string;
-            /** @enum {string} */
-            lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
-            deletable: boolean;
-            local_files: number;
-            request: {
-                /** @enum {string} */
-                status: "pending" | "running" | "failed";
-                requested_at: string;
-                pending_until: string;
-                reason: string;
-                attempts: number;
-                failed_at: string | null;
-                failure: {
-                    [key: string]: unknown;
-                } | null;
-                preview: components["schemas"]["VaultDeletionPreview"];
-                cancellable: boolean;
-                retryable: boolean;
-                /** @description Locked versions left after a run (#736): the request waits for them. */
-                retained_count?: number | null;
-                /** @description When the last of them can be deleted. */
-                retained_until?: string | null;
-                /** @description When the deletion runs again for them. */
-                next_attempt_at?: string | null;
-                /** @description The Owner asked to delete the empty Vault Bucket too (#739). */
-                delete_bucket?: boolean;
+        /** VaultDeletionRequestState */
+        VaultDeletionRequestState: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "running" | "failed";
+            /** Requested At */
+            requested_at: string;
+            /** Pending Until */
+            pending_until: string;
+            /** Reason */
+            reason: string;
+            /** Attempts */
+            attempts: number;
+            /** Failed At */
+            failed_at: string | null;
+            /** Failure */
+            failure: {
+                [key: string]: unknown;
             } | null;
+            preview: components["schemas"]["VaultDeletionPreview"];
+            /** Cancellable */
+            cancellable: boolean;
+            /** Retryable */
+            retryable: boolean;
+            /**
+             * Retained Count
+             * @description Locked versions left after a run (#736): the request waits for them.
+             */
+            retained_count: number | null;
+            /**
+             * Retained Until
+             * @description When the last of them can be deleted.
+             */
+            retained_until: string | null;
+            /**
+             * Next Attempt At
+             * @description When the deletion runs again for them.
+             */
+            next_attempt_at: string | null;
+            /**
+             * Delete Bucket
+             * @description The Owner asked to delete the empty Vault Bucket too (#739).
+             */
+            delete_bucket: boolean;
+        };
+        /** VaultDeletionStatus */
+        VaultDeletionStatus: {
+            /** Vault Id */
+            vault_id: number;
+            /** Vault Name */
+            vault_name: string;
+            /**
+             * Lifecycle
+             * @enum {string}
+             */
+            lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
+            /** Deletable */
+            deletable: boolean;
+            /** Local Files */
+            local_files: number;
+            request: components["schemas"]["VaultDeletionRequestState"] | null;
         };
         /**
          * VaultFileListItem
@@ -3744,6 +4264,22 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** VaultListItem */
+        VaultListItem: {
+            /** Id */
+            id: number;
+            /** Uuid */
+            uuid: string;
+            /** Name */
+            name: string;
+            /** Paused */
+            paused: boolean;
+            /**
+             * Lifecycle
+             * @enum {string}
+             */
+            lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
+        };
         VaultMovePreview: {
             vault_id: number;
             targets: components["schemas"]["VaultMoveEstimate"][];
@@ -3858,10 +4394,12 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** VaultSelectResponse */
         VaultSelectResponse: {
-            vault_id: number;
-        } & {
-            [key: string]: unknown;
+            /** Message */
+            message: string;
+            /** Message Key */
+            message_key: string;
         };
         /** VaultSelection */
         VaultSelection: {
@@ -3900,10 +4438,10 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** VaultsResponse */
         VaultsResponse: {
+            /** Items */
             items: components["schemas"]["VaultListItem"][];
-        } & {
-            [key: string]: unknown;
         };
         /** VerificationPhaseSpeed */
         VerificationPhaseSpeed: {
@@ -3925,24 +4463,6 @@ export interface components {
             pricing_effective_at: string;
             region: string;
             assumptions: string;
-        };
-        GeneralVault: {
-            paused?: boolean;
-            id: number;
-            name: string;
-            root_released_at?: string | null;
-            s3_bucket?: string;
-            s3_prefix: string;
-            source_root: string;
-            uuid: string;
-            /** @enum {string} */
-            lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
-            /** @enum {string|null} */
-            vault_deletion_status?: "pending" | "running" | "failed" | null;
-            s3_region?: string;
-            dedicated_bucket?: boolean;
-            bucket_provisioning?: components["schemas"]["VaultBucketStatus"] | null;
-            retention_lock_days?: number | null;
         };
         ApiErrorResponse: {
             /** @enum {string} */
@@ -4087,79 +4607,6 @@ export interface components {
             tier: string;
         } & {
             [key: string]: unknown;
-        };
-        SourceDirectoryEntry: {
-            name: string;
-            navigable: boolean;
-            occupation: components["schemas"]["SourceDirectoryOccupation"] | null;
-            relative_path: string;
-            selectable: boolean;
-        } & {
-            [key: string]: unknown;
-        };
-        SourceDirectoryOccupation: {
-            /** @constant */
-            kind: "vault";
-            vault_name: string;
-        } & {
-            [key: string]: unknown;
-        };
-        SourceVolumeInventoryItem: {
-            access: string;
-            alias: string;
-            diagnostic: string | null;
-            diagnostic_code?: string | null;
-            health: string;
-            path: string;
-            vault_count: number;
-        } & {
-            [key: string]: unknown;
-        };
-        /** @enum {string} */
-        VaultCreationMode: "empty" | "adopt";
-        VaultListItem: {
-            paused?: boolean;
-            id: number;
-            name: string;
-            uuid: string;
-            /** @enum {string} */
-            lifecycle?: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
-        } & {
-            [key: string]: unknown;
-        };
-        /** @description Files of a deletion still within their Minimum Storage Duration when it executes, and what deleting them then still bills: a Cost Estimate from AWS list prices (#731). */
-        MinimumStorageDeletion: {
-            count: number;
-            bytes: number;
-            remaining_cost: number;
-            /** @description When the last Minimum Storage Duration of these files ends: deleting from then saves. */
-            savings_from: string | null;
-            /** @description How many of them have an estimated Class Entry. */
-            estimated_count: number;
-            by_storage_class: {
-                storage_class: string;
-                minimum_days: number;
-                count: number;
-                bytes: number;
-                remaining_cost: number;
-            }[];
-            currency: string;
-            pricing_effective_at: string;
-            region: string;
-            disclaimer?: string | null;
-            evaluated_at: string;
-        };
-        /** @description Files of a deletion a Governance Retention Lock still holds when it executes (#736). Dates are estimates: each version's creation plus the bucket default days. They are deleted from that date, never earlier. */
-        RetentionLockPreview: {
-            days: number;
-            /** @enum {string} */
-            mode: "GOVERNANCE";
-            locked_count: number;
-            locked_bytes: number;
-            /** @description When the first of them can be deleted. */
-            locked_from: string | null;
-            /** @description When the last of them can be deleted. */
-            locked_until: string | null;
         };
         ExcludedFolder: {
             name: string;

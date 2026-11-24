@@ -12,7 +12,7 @@ const uuid = "11111111-1111-1111-1111-111111111111";
 const root = `/sources/managed/${uuid}`;
 type Lifecycle = "active" | "reconnect_required";
 function vault(lifecycle: Lifecycle): GeneralVault {
-  return { id: 7, uuid, name: "Photos", paused: false, lifecycle, source_root: root, s3_prefix: `vaults/${uuid}/` };
+  return { id: 7, uuid, name: "Photos", paused: false, lifecycle, source_root: root, s3_bucket: "frostvault-test", s3_region: "eu-south-1", s3_prefix: `vaults/${uuid}/`, root_released_at: null, dedicated_bucket: false, retention_lock_days: null, vault_deletion_status: null, bucket_provisioning: null };
 }
 function fetcher(lifecycle: Lifecycle, locale: "en" | "it") {
   return createVaultAccessFetch({

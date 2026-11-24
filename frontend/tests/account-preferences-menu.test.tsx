@@ -14,6 +14,8 @@ const shellCapabilities: ShellCapabilities = {
       id: 1,
       uuid: "owner-admin",
       name: "Owner Admin Archive",
+      paused: false,
+      lifecycle: "active",
     },
   ],
   currentVaultId: 1,

@@ -164,7 +164,7 @@ describe("foundation endpoint helpers", () => {
       jsonResponse({
         vault_id: 7,
         source_root: "/sources/photos/new-name",
-        reconnect_state: "scan_required",
+        reconnect_state: "reconnect_required",
         full_scan_required: true,
       }),
     );

@@ -41,7 +41,7 @@ function setup(retryState: "failed" | "ready" = "failed", bucket: Record<string,
     return jsonResponse({}, 404);
   }) });
   renderWithQueryClient(<I18nProvider>
-    <OverviewPage vaults={[{ id: 1, uuid: "v1", name: "Photos" }]} />
+    <OverviewPage vaults={[{ id: 1, uuid: "v1", name: "Photos", paused: false, lifecycle: "active" }]} />
   </I18nProvider>);
   return { calls, messages };
 }

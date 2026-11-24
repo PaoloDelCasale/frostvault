@@ -13,7 +13,7 @@ import { renderWithQueryClient } from "./support/queryClient";
 const messages = JSON.parse(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../app/locales/en.json"), "utf8"));
 const uuid = "11111111-1111-1111-1111-111111111111";
 function vault(sourceRoot: string): GeneralVault {
-  return { id: 7, uuid, name: "Photos", lifecycle: "reconnect_required", source_root: sourceRoot, s3_prefix: `vaults/${uuid}/` };
+  return { id: 7, uuid, name: "Photos", paused: false, lifecycle: "reconnect_required", source_root: sourceRoot, s3_bucket: "frostvault-test", s3_region: "eu-south-1", s3_prefix: `vaults/${uuid}/`, root_released_at: null, dedicated_bucket: false, retention_lock_days: null, vault_deletion_status: null, bucket_provisioning: null };
 }
 const browsed: string[] = [];
 function setup(target: GeneralVault) {

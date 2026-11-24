@@ -144,7 +144,7 @@ class OpenApiResponseContractTests(unittest.TestCase):
             self.assertEqual(path["post"]["responses"]["200"]["content"]["application/json"]["schema"],
                              {"$ref": "#/components/schemas/VaultPauseResponse"})
         for name in ("GeneralVault", "VaultListItem"):
-            self.assertEqual(schema["components"]["schemas"][name]["properties"]["paused"], {"type": "boolean"})
+            self.assertEqual(schema["components"]["schemas"][name]["properties"]["paused"]["type"], "boolean")
 
     def test_sign_in_answers_are_documented_from_their_models(self) -> None:
         document = app.openapi()
