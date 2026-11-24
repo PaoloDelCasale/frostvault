@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import MISSING, BaseModel, ConfigDict, Field, model_validator
 
-from ..api_models import response_model
+from ..api_models import passthrough
 from ..config import settings
 from ..services.audit_events import audit_log
 from ..database import db
@@ -18,10 +18,9 @@ from ..services.lifecycle_policies import (
     set_vault_plan,
     sync_lifecycle_rules_for_bucket,
 )
+from ..services import lifecycle_profiles
 from ..services.lifecycle_profiles import (
     GUIDED_PROFILES,
-    LifecycleProfile,
-    LifecycleTransition,
     guided_profile,
     profile_to_dict,
     validate_lifecycle_profile,
@@ -46,10 +45,10 @@ class LifecycleProfileUpdate(BaseModel):
 
     transitions: list[LifecycleTransitionUpdate] = Field(default_factory=list)
 
-    def to_profile(self) -> LifecycleProfile:
-        return LifecycleProfile(
+    def to_profile(self) -> lifecycle_profiles.LifecycleProfile:
+        return lifecycle_profiles.LifecycleProfile(
             transitions=tuple(
-                LifecycleTransition(
+                lifecycle_profiles.LifecycleTransition(
                     days=item.days,
                     storage_class=item.storage_class.upper(),
                 )
@@ -87,9 +86,85 @@ class StorageEstimateRequest(BaseModel):
         return self
 
 
+# -- Response models (ADR-0056) -------------------------------------------------
+#
+# A route's answer is declared with ``passthrough(Model)``: production neither
+# validates nor filters with it, the tests' HTTP client does. Every model here is
+# closed: the route or one service function builds its keys. A field that is not
+# in every answer is ``MISSING`` by default, so the document says "optional"
+# without inventing a value.
+
+
+class StorageEstimateResponse(BaseModel):
+    # ``CostEstimate.as_dict``; shared with the inclusion preview of policy.py.
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["storage_month"]
+    size_bytes: int
+    storage_class: str
+    tier: str | None
+    estimated_cost_eur: float
+    estimated_hours: float | None
+    currency: str
+    region: str
+    pricing_effective_at: str
+    assumptions: dict[str, Any]
+
+
+class LifecycleTransition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    days: int
+    storage_class: str
+
+
+class LifecycleProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    transitions: list[LifecycleTransition]
+
+
+class LifecycleGuidedProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    transitions: list[LifecycleTransition]
+
+
+class LifecycleResponse(BaseModel):
+    # Saving the plan adds the outcome to what reading it answers.
+    model_config = ConfigDict(extra="forbid")
+    profile: LifecycleProfile
+    guided_profiles: dict[str, LifecycleGuidedProfile]
+    message: str | MISSING = MISSING
+    sync_pending: bool | MISSING = MISSING
+    warnings: list[str] | MISSING = MISSING
+
+
+class VaultMoveEstimate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target_class: str
+    eligible_count: int
+    total_bytes: int
+    skipped: dict[str, int]
+    minimum_days: int
+    estimated_monthly_eur: float
+    estimated_retrieval_eur: float
+    pricing_effective_at: str
+    region: str
+    assumptions: str
+
+
+class VaultMovePreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    vault_id: int
+    targets: list[VaultMoveEstimate]
+
+
+class VaultMoveResponse(VaultMoveEstimate):
+    group_id: str
+    job_ids: list[int]
+    item_count: int
+
+
 @router.post(
     "/api/general/cost-estimates/storage",
-    response_model=response_model("StorageEstimateResponse"),
+    response_model=passthrough(StorageEstimateResponse),
 )
 def storage_cost_estimate(
     action: StorageEstimateRequest,
@@ -121,7 +196,7 @@ def storage_cost_estimate(
 
 def _selected_lifecycle_profile(
     action: LifecycleProfileSelection,
-) -> tuple[LifecycleProfile, str | None]:
+) -> tuple[lifecycle_profiles.LifecycleProfile, str | None]:
     if action.guided_profile is not None:
         return guided_profile(action.guided_profile), action.guided_profile
     if action.profile is None:  # Defensive; Pydantic enforces exactly one selection.
@@ -149,13 +224,13 @@ class VaultMoveRequest(BaseModel):
     acknowledge_costs: bool = False
 
 
-@router.get("/api/vaults/{vault_id}/move", response_model=response_model("VaultMovePreview"))
+@router.get("/api/vaults/{vault_id}/move", response_model=passthrough(VaultMovePreview))
 def preview_vault_move(vault: dict[str, Any] = Depends(vault_in_path)):
     with db() as connection:
         return vault_moves.preview(connection, vault["id"])
 
 
-@router.post("/api/vaults/{vault_id}/move", response_model=response_model("VaultMoveResponse"))
+@router.post("/api/vaults/{vault_id}/move", response_model=passthrough(VaultMoveResponse))
 def move_vault(action: VaultMoveRequest, vault: dict[str, Any] = Depends(vault_in_path),
                user: dict[str, Any] = Depends(current_user)):
     with db() as connection:
@@ -163,13 +238,13 @@ def move_vault(action: VaultMoveRequest, vault: dict[str, Any] = Depends(vault_i
             user_id=user["id"], acknowledged=action.acknowledge_costs, timestamp=now_iso())
 
 
-@router.get("/api/vaults/{vault_id}/lifecycle", response_model=response_model("LifecycleResponse"))
+@router.get("/api/vaults/{vault_id}/lifecycle", response_model=passthrough(LifecycleResponse))
 def own_vault_lifecycle(vault: dict[str, Any] = Depends(vault_in_path)):
     with db() as connection:
         return _lifecycle_payload(connection, vault)
 
 
-@router.put("/api/vaults/{vault_id}/lifecycle", response_model=response_model("LifecycleResponse"))
+@router.put("/api/vaults/{vault_id}/lifecycle", response_model=passthrough(LifecycleResponse))
 def update_vault_storage_plan(
     action: LifecycleProfileSelection,
     request: Request,

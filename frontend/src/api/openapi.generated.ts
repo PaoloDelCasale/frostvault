@@ -2491,6 +2491,25 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * DiskListingEntry
+         * @description An entry read from disk inside an Excluded Folder: not catalogued, not protected.
+         */
+        DiskListingEntry: {
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "file" | "directory";
+            /** Size */
+            size: number | null;
+            /** Modified At */
+            modified_at: string;
+        };
         /** DuplicateCleanupStatus */
         DuplicateCleanupStatus: {
             /** Enabled */
@@ -2543,17 +2562,35 @@ export interface components {
             /** Beyond Minimum */
             beyond_minimum?: boolean | null;
         };
-        /** @description One Vault level read from disk (#754): Excluded Folders of a catalogued level, or the entries of an Excluded Folder. */
+        /** ExcludedFolder */
+        ExcludedFolder: {
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+            /** Rule */
+            rule: string;
+        };
+        /**
+         * ExcludedFolderListing
+         * @description One Vault level read from disk (#754): Excluded Folders of a catalogued level, or the entries of an Excluded Folder.
+         */
         ExcludedFolderListing: {
+            /** Directory */
             directory: string;
-            /** @description The folder rule that covers this directory; null outside an Excluded Folder. */
+            /**
+             * Excluded By
+             * @description The folder rule that covers this directory; null outside an Excluded Folder.
+             */
             excluded_by: string | null;
+            /** Folders */
             folders: components["schemas"]["ExcludedFolder"][];
+            /** Entries */
             entries: components["schemas"]["DiskListingEntry"][];
+            /** Total Entries */
             total_entries: number;
+            /** Truncated */
             truncated: boolean;
-        } & {
-            [key: string]: unknown;
         };
         /**
          * ExpectedFinish
@@ -2811,11 +2848,12 @@ export interface components {
             /** Exclude Globs */
             exclude_globs?: string[];
         };
+        /** GlobPreviewResponse */
         GlobPreviewResponse: {
-            excluded: string[];
+            /** Included */
             included: string[];
-        } & {
-            [key: string]: unknown;
+            /** Excluded */
+            excluded: string[];
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2964,6 +3002,16 @@ export interface components {
         JsonObjectResponse: {
             [key: string]: unknown;
         };
+        /** LifecycleGuidedProfile */
+        LifecycleGuidedProfile: {
+            /** Transitions */
+            transitions: components["schemas"]["LifecycleTransition"][];
+        };
+        /** LifecycleProfile */
+        LifecycleProfile: {
+            /** Transitions */
+            transitions: components["schemas"]["LifecycleTransition"][];
+        };
         /** LifecycleProfileSelection */
         LifecycleProfileSelection: {
             /** Guided Profile */
@@ -2975,15 +3023,26 @@ export interface components {
             /** Transitions */
             transitions?: components["schemas"]["LifecycleTransitionUpdate"][];
         };
+        /** LifecycleResponse */
         LifecycleResponse: {
+            profile: components["schemas"]["LifecycleProfile"];
+            /** Guided Profiles */
             guided_profiles: {
                 [key: string]: components["schemas"]["LifecycleGuidedProfile"];
             };
-            warnings?: string[];
-            profile: components["schemas"]["LifecycleProfile"];
+            /** Message */
+            message?: string;
+            /** Sync Pending */
             sync_pending?: boolean;
-        } & {
-            [key: string]: unknown;
+            /** Warnings */
+            warnings?: string[];
+        };
+        /** LifecycleTransition */
+        LifecycleTransition: {
+            /** Days */
+            days: number;
+            /** Storage Class */
+            storage_class: string;
         };
         /** LifecycleTransitionUpdate */
         LifecycleTransitionUpdate: {
@@ -3435,26 +3494,38 @@ export interface components {
             /** Has More */
             has_more: boolean;
         };
+        /** OperationPolicy */
         OperationPolicy: {
-            /**
-             * @description Override for new upload admissions; null inherits deployment default.
-             * @enum {string|null}
-             */
-            upload_verification?: "s3_checksum" | "read_back" | null;
-            /** @enum {string} */
-            global_upload_verification?: "s3_checksum" | "read_back";
-            /** @enum {string} */
-            effective_upload_verification?: "s3_checksum" | "read_back";
+            /** Auto Upload */
             auto_upload: boolean;
-            exclude_globs: string[];
-            include_globs: string[];
-            /** @enum {integer|null} */
-            local_release_after_days: 90 | 180 | 365 | 730 | null;
+            /** Local Release After Days */
+            local_release_after_days: (90 | 180 | 365 | 730) | null;
+            /** Stability Seconds */
             stability_seconds: number;
-            /** @description Fixed noise exclusions applied to every Vault; read only. */
-            fixed_exclude_globs?: string[];
-        } & {
-            [key: string]: unknown;
+            /** Include Globs */
+            include_globs: string[];
+            /** Exclude Globs */
+            exclude_globs: string[];
+            /**
+             * Upload Verification
+             * @description Override for new upload admissions; null inherits deployment default.
+             */
+            upload_verification: ("s3_checksum" | "read_back") | null;
+            /**
+             * Global Upload Verification
+             * @enum {string}
+             */
+            global_upload_verification: "s3_checksum" | "read_back";
+            /**
+             * Effective Upload Verification
+             * @enum {string}
+             */
+            effective_upload_verification: "s3_checksum" | "read_back";
+            /**
+             * Fixed Exclude Globs
+             * @description Fixed noise exclusions applied to every Vault; read only.
+             */
+            fixed_exclude_globs: string[];
         };
         /**
          * OperationPolicyGlobEdit
@@ -3933,22 +4004,33 @@ export interface components {
              */
             storage_class?: string;
         };
+        /** StorageEstimateResponse */
         StorageEstimateResponse: {
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "storage_month";
+            /** Size Bytes */
+            size_bytes: number;
+            /** Storage Class */
+            storage_class: string;
+            /** Tier */
+            tier: string | null;
+            /** Estimated Cost Eur */
+            estimated_cost_eur: number;
+            /** Estimated Hours */
+            estimated_hours: number | null;
+            /** Currency */
+            currency: string;
+            /** Region */
+            region: string;
+            /** Pricing Effective At */
+            pricing_effective_at: string;
+            /** Assumptions */
             assumptions: {
                 [key: string]: unknown;
             };
-            currency: string;
-            estimated_cost_eur: number;
-            estimated_hours: number | null;
-            /** @constant */
-            kind: "storage_month";
-            pricing_effective_at: string;
-            region: string;
-            size_bytes: number;
-            storage_class: string;
-            tier: string | null;
-        } & {
-            [key: string]: unknown;
         };
         /**
          * SystemBucket
@@ -4587,29 +4669,53 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** VaultInclusionPreview */
         VaultInclusionPreview: {
+            /** Path */
             path: string;
+            /** Is Directory */
             is_directory: boolean;
-            /** @description path/** for a folder, the exact path for a file; null when the path holds glob characters. */
+            /**
+             * Own Rule
+             * @description path/** for a folder, the exact path for a file; null when the path holds glob characters.
+             */
             own_rule: string | null;
+            /** Own Rule Present */
             own_rule_present: boolean;
+            /** Excluded */
             excluded: boolean;
-            /** @description Other exclude globs that exclude the item. */
+            /**
+             * Rules
+             * @description Other exclude globs that exclude the item.
+             */
             rules: string[];
-            /** @description Fixed noise exclusions that match the item. */
+            /**
+             * Fixed
+             * @description Fixed noise exclusions that match the item.
+             */
             fixed: string[];
-            /** @description The include globs do not match the item. */
+            /**
+             * Not Included
+             * @description The include globs do not match the item.
+             */
             not_included: boolean;
+            /** Includable */
             includable: boolean;
-            /** @description Removing the rule makes the Vault look inside the folder again with a full scan. */
+            /**
+             * Folder Rule
+             * @description Removing the rule makes the Vault look inside the folder again with a full scan.
+             */
             folder_rule: boolean;
+            /** Files */
             files: number | null;
+            /** Bytes */
             bytes: number | null;
-            /** @description False when the disk walk stopped at its time budget: the counts are a minimum. */
+            /**
+             * Complete
+             * @description False when the disk walk stopped at its time budget: the counts are a minimum.
+             */
             complete: boolean | null;
             estimate: components["schemas"]["StorageEstimateResponse"] | null;
-        } & {
-            [key: string]: unknown;
         };
         /**
          * VaultItemExclusion
@@ -4624,21 +4730,36 @@ export interface components {
              */
             is_directory?: boolean;
         };
+        /** VaultItemExclusionStatus */
         VaultItemExclusionStatus: {
+            /** Path */
             path: string;
+            /** Is Directory */
             is_directory: boolean;
-            /** @description path/** for a folder, the exact path for a file; null when the path holds glob characters. */
+            /**
+             * Own Rule
+             * @description path/** for a folder, the exact path for a file; null when the path holds glob characters.
+             */
             own_rule: string | null;
+            /** Own Rule Present */
             own_rule_present: boolean;
+            /** Excluded */
             excluded: boolean;
-            /** @description Other exclude globs that exclude the item. */
+            /**
+             * Rules
+             * @description Other exclude globs that exclude the item.
+             */
             rules: string[];
-            /** @description Fixed noise exclusions that match the item. */
+            /**
+             * Fixed
+             * @description Fixed noise exclusions that match the item.
+             */
             fixed: string[];
-            /** @description The include globs do not match the item. */
+            /**
+             * Not Included
+             * @description The include globs do not match the item.
+             */
             not_included: boolean;
-        } & {
-            [key: string]: unknown;
         };
         /** VaultListItem */
         VaultListItem: {
@@ -4656,8 +4777,36 @@ export interface components {
              */
             lifecycle: "provisioning" | "active" | "reconnect_required" | "stopping" | "tombstone";
         };
+        /** VaultMoveEstimate */
+        VaultMoveEstimate: {
+            /** Target Class */
+            target_class: string;
+            /** Eligible Count */
+            eligible_count: number;
+            /** Total Bytes */
+            total_bytes: number;
+            /** Skipped */
+            skipped: {
+                [key: string]: number;
+            };
+            /** Minimum Days */
+            minimum_days: number;
+            /** Estimated Monthly Eur */
+            estimated_monthly_eur: number;
+            /** Estimated Retrieval Eur */
+            estimated_retrieval_eur: number;
+            /** Pricing Effective At */
+            pricing_effective_at: string;
+            /** Region */
+            region: string;
+            /** Assumptions */
+            assumptions: string;
+        };
+        /** VaultMovePreview */
         VaultMovePreview: {
+            /** Vault Id */
             vault_id: number;
+            /** Targets */
             targets: components["schemas"]["VaultMoveEstimate"][];
         };
         /** VaultMoveRequest */
@@ -4670,9 +4819,35 @@ export interface components {
              */
             acknowledge_costs?: boolean;
         };
-        VaultMoveResponse: components["schemas"]["VaultMoveEstimate"] & {
+        /** VaultMoveResponse */
+        VaultMoveResponse: {
+            /** Target Class */
+            target_class: string;
+            /** Eligible Count */
+            eligible_count: number;
+            /** Total Bytes */
+            total_bytes: number;
+            /** Skipped */
+            skipped: {
+                [key: string]: number;
+            };
+            /** Minimum Days */
+            minimum_days: number;
+            /** Estimated Monthly Eur */
+            estimated_monthly_eur: number;
+            /** Estimated Retrieval Eur */
+            estimated_retrieval_eur: number;
+            /** Pricing Effective At */
+            pricing_effective_at: string;
+            /** Region */
+            region: string;
+            /** Assumptions */
+            assumptions: string;
+            /** Group Id */
             group_id: string;
+            /** Job Ids */
             job_ids: number[];
+            /** Item Count */
             item_count: number;
         };
         /** VaultPauseResponse */
@@ -4826,20 +5001,6 @@ export interface components {
             /** Average Bytes Per Second */
             average_bytes_per_second: number | null;
         };
-        VaultMoveEstimate: {
-            target_class: string;
-            eligible_count: number;
-            total_bytes: number;
-            skipped: {
-                [key: string]: number;
-            };
-            minimum_days: number;
-            estimated_monthly_eur: number;
-            estimated_retrieval_eur: number;
-            pricing_effective_at: string;
-            region: string;
-            assumptions: string;
-        };
         ApiErrorResponse: {
             /** @enum {string} */
             code: "bad_request" | "unauthenticated" | "forbidden" | "reauth_required" | "not_found" | "conflict" | "invalid" | "rate_limited" | "failed" | "upstream_failed" | "unavailable";
@@ -4848,36 +5009,6 @@ export interface components {
             message_params: {
                 [key: string]: unknown;
             };
-        };
-        LifecycleGuidedProfile: {
-            transitions: components["schemas"]["LifecycleTransition"][];
-        };
-        LifecycleProfile: {
-            transitions: components["schemas"]["LifecycleTransition"][];
-        };
-        LifecycleTransition: {
-            days: number;
-            storage_class: string;
-        } & {
-            [key: string]: unknown;
-        };
-        ExcludedFolder: {
-            name: string;
-            path: string;
-            rule: string;
-        } & {
-            [key: string]: unknown;
-        };
-        /** @description An entry read from disk inside an Excluded Folder: not catalogued, not protected. */
-        DiskListingEntry: {
-            name: string;
-            path: string;
-            /** @enum {string} */
-            type: "file" | "directory";
-            size: number | null;
-            modified_at: string;
-        } & {
-            [key: string]: unknown;
         };
     };
     responses: never;

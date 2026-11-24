@@ -6106,6 +6106,52 @@
         "title": "DirectoryListItem",
         "description": "Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed."
       },
+      "DiskListingEntry": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "file",
+              "directory"
+            ],
+            "title": "Type"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          },
+          "modified_at": {
+            "type": "string",
+            "title": "Modified At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "path",
+          "type",
+          "size",
+          "modified_at"
+        ],
+        "title": "DiskListingEntry",
+        "description": "An entry read from disk inside an Excluded Folder: not catalogued, not protected."
+      },
       "DuplicateCleanupStatus": {
         "properties": {
           "enabled": {
@@ -6352,40 +6398,73 @@
         "title": "DuplicateCleanupUpdate",
         "description": "Automatic Duplicate Cleanup settings of one Vault (#726); omitted fields keep their value."
       },
-      "ExcludedFolderListing": {
+      "ExcludedFolder": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "rule": {
+            "type": "string",
+            "title": "Rule"
+          }
+        },
+        "additionalProperties": false,
         "type": "object",
-        "additionalProperties": true,
-        "description": "One Vault level read from disk (#754): Excluded Folders of a catalogued level, or the entries of an Excluded Folder.",
+        "required": [
+          "name",
+          "path",
+          "rule"
+        ],
+        "title": "ExcludedFolder"
+      },
+      "ExcludedFolderListing": {
         "properties": {
           "directory": {
-            "type": "string"
+            "type": "string",
+            "title": "Directory"
           },
           "excluded_by": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Excluded By",
             "description": "The folder rule that covers this directory; null outside an Excluded Folder."
           },
           "folders": {
-            "type": "array",
             "items": {
               "$ref": "#/components/schemas/ExcludedFolder"
-            }
+            },
+            "type": "array",
+            "title": "Folders"
           },
           "entries": {
-            "type": "array",
             "items": {
               "$ref": "#/components/schemas/DiskListingEntry"
-            }
+            },
+            "type": "array",
+            "title": "Entries"
           },
           "total_entries": {
-            "type": "integer"
+            "type": "integer",
+            "title": "Total Entries"
           },
           "truncated": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Truncated"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "directory",
           "excluded_by",
@@ -6393,7 +6472,9 @@
           "entries",
           "total_entries",
           "truncated"
-        ]
+        ],
+        "title": "ExcludedFolderListing",
+        "description": "One Vault level read from disk (#754): Excluded Folders of a catalogued level, or the entries of an Excluded Folder."
       },
       "ExpectedFinish": {
         "properties": {
@@ -7155,26 +7236,29 @@
         "title": "GlobPreviewRequest"
       },
       "GlobPreviewResponse": {
-        "additionalProperties": true,
         "properties": {
-          "excluded": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
           "included": {
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "title": "Included"
+          },
+          "excluded": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Excluded"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "included",
           "excluded"
         ],
-        "type": "object"
+        "title": "GlobPreviewResponse"
       },
       "HTTPValidationError": {
         "properties": {
@@ -7733,6 +7817,40 @@
         "title": "JsonObjectResponse",
         "description": "A JSON object response that never filters nested or extension fields."
       },
+      "LifecycleGuidedProfile": {
+        "properties": {
+          "transitions": {
+            "items": {
+              "$ref": "#/components/schemas/LifecycleTransition"
+            },
+            "type": "array",
+            "title": "Transitions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "transitions"
+        ],
+        "title": "LifecycleGuidedProfile"
+      },
+      "LifecycleProfile": {
+        "properties": {
+          "transitions": {
+            "items": {
+              "$ref": "#/components/schemas/LifecycleTransition"
+            },
+            "type": "array",
+            "title": "Transitions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "transitions"
+        ],
+        "title": "LifecycleProfile"
+      },
       "LifecycleProfileSelection": {
         "properties": {
           "guided_profile": {
@@ -7778,32 +7896,59 @@
         "title": "LifecycleProfileUpdate"
       },
       "LifecycleResponse": {
-        "additionalProperties": true,
         "properties": {
+          "profile": {
+            "$ref": "#/components/schemas/LifecycleProfile"
+          },
           "guided_profiles": {
             "additionalProperties": {
               "$ref": "#/components/schemas/LifecycleGuidedProfile"
             },
-            "type": "object"
+            "type": "object",
+            "title": "Guided Profiles"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "sync_pending": {
+            "type": "boolean",
+            "title": "Sync Pending"
           },
           "warnings": {
             "items": {
               "type": "string"
             },
-            "type": "array"
-          },
-          "profile": {
-            "$ref": "#/components/schemas/LifecycleProfile"
-          },
-          "sync_pending": {
-            "type": "boolean"
+            "type": "array",
+            "title": "Warnings"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "profile",
           "guided_profiles"
         ],
-        "type": "object"
+        "title": "LifecycleResponse"
+      },
+      "LifecycleTransition": {
+        "properties": {
+          "days": {
+            "type": "integer",
+            "title": "Days"
+          },
+          "storage_class": {
+            "type": "string",
+            "title": "Storage Class"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "days",
+          "storage_class"
+        ],
+        "title": "LifecycleTransition"
       },
       "LifecycleTransitionUpdate": {
         "properties": {
@@ -9314,18 +9459,60 @@
         "title": "NotificationsResponse"
       },
       "OperationPolicy": {
-        "additionalProperties": true,
         "properties": {
+          "auto_upload": {
+            "type": "boolean",
+            "title": "Auto Upload"
+          },
+          "local_release_after_days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "enum": [
+                  90,
+                  180,
+                  365,
+                  730
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Local Release After Days"
+          },
+          "stability_seconds": {
+            "type": "integer",
+            "title": "Stability Seconds"
+          },
+          "include_globs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Include Globs"
+          },
+          "exclude_globs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Exclude Globs"
+          },
           "upload_verification": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "s3_checksum",
+                  "read_back"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ],
-            "enum": [
-              "s3_checksum",
-              "read_back",
-              null
-            ],
+            "title": "Upload Verification",
             "description": "Override for new upload admissions; null inherits deployment default."
           },
           "global_upload_verification": {
@@ -9333,62 +9520,40 @@
             "enum": [
               "s3_checksum",
               "read_back"
-            ]
+            ],
+            "title": "Global Upload Verification"
           },
           "effective_upload_verification": {
             "type": "string",
             "enum": [
               "s3_checksum",
               "read_back"
-            ]
-          },
-          "auto_upload": {
-            "type": "boolean"
-          },
-          "exclude_globs": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "include_globs": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "local_release_after_days": {
-            "enum": [
-              90,
-              180,
-              365,
-              730,
-              null
             ],
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "stability_seconds": {
-            "type": "number"
+            "title": "Effective Upload Verification"
           },
           "fixed_exclude_globs": {
-            "type": "array",
             "items": {
               "type": "string"
             },
+            "type": "array",
+            "title": "Fixed Exclude Globs",
             "description": "Fixed noise exclusions applied to every Vault; read only."
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "auto_upload",
           "local_release_after_days",
           "stability_seconds",
           "include_globs",
-          "exclude_globs"
+          "exclude_globs",
+          "upload_verification",
+          "global_upload_verification",
+          "effective_upload_verification",
+          "fixed_exclude_globs"
         ],
-        "type": "object"
+        "title": "OperationPolicy"
       },
       "OperationPolicyGlobEdit": {
         "properties": {
@@ -10726,47 +10891,66 @@
         "description": "Monthly storage estimate for an explicit size or a Vault's cloud data."
       },
       "StorageEstimateResponse": {
-        "additionalProperties": true,
         "properties": {
-          "assumptions": {
-            "additionalProperties": {},
-            "type": "object"
-          },
-          "currency": {
-            "type": "string"
-          },
-          "estimated_cost_eur": {
-            "type": "number"
-          },
-          "estimated_hours": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
           "kind": {
+            "type": "string",
             "const": "storage_month",
-            "type": "string"
-          },
-          "pricing_effective_at": {
-            "type": "string"
-          },
-          "region": {
-            "type": "string"
+            "title": "Kind"
           },
           "size_bytes": {
-            "type": "number"
+            "type": "integer",
+            "title": "Size Bytes"
           },
           "storage_class": {
-            "type": "string"
+            "type": "string",
+            "title": "Storage Class"
           },
           "tier": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier"
+          },
+          "estimated_cost_eur": {
+            "type": "number",
+            "title": "Estimated Cost Eur"
+          },
+          "estimated_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Hours"
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "pricing_effective_at": {
+            "type": "string",
+            "title": "Pricing Effective At"
+          },
+          "assumptions": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Assumptions"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "kind",
           "size_bytes",
@@ -10779,7 +10963,7 @@
           "pricing_effective_at",
           "assumptions"
         ],
-        "type": "object"
+        "title": "StorageEstimateResponse"
       },
       "SystemBucket": {
         "properties": {
@@ -12711,70 +12895,97 @@
         "description": "Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, stopped (an upload the Owner stopped, kept out of automatic upload until the content changes, never pending), excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem)."
       },
       "VaultInclusionPreview": {
-        "type": "object",
-        "additionalProperties": true,
         "properties": {
           "path": {
-            "type": "string"
+            "type": "string",
+            "title": "Path"
           },
           "is_directory": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Is Directory"
           },
           "own_rule": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Own Rule",
             "description": "path/** for a folder, the exact path for a file; null when the path holds glob characters."
           },
           "own_rule_present": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Own Rule Present"
           },
           "excluded": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Excluded"
           },
           "rules": {
-            "type": "array",
             "items": {
               "type": "string"
             },
+            "type": "array",
+            "title": "Rules",
             "description": "Other exclude globs that exclude the item."
           },
           "fixed": {
-            "type": "array",
             "items": {
               "type": "string"
             },
+            "type": "array",
+            "title": "Fixed",
             "description": "Fixed noise exclusions that match the item."
           },
           "not_included": {
             "type": "boolean",
+            "title": "Not Included",
             "description": "The include globs do not match the item."
           },
           "includable": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Includable"
           },
           "folder_rule": {
             "type": "boolean",
+            "title": "Folder Rule",
             "description": "Removing the rule makes the Vault look inside the folder again with a full scan."
           },
           "files": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Files"
           },
           "bytes": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes"
           },
           "complete": {
-            "type": [
-              "boolean",
-              "null"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Complete",
             "description": "False when the disk walk stopped at its time budget: the counts are a minimum."
           },
           "estimate": {
@@ -12788,6 +12999,8 @@
             ]
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "path",
           "is_directory",
@@ -12803,7 +13016,8 @@
           "bytes",
           "complete",
           "estimate"
-        ]
+        ],
+        "title": "VaultInclusionPreview"
       },
       "VaultItemExclusion": {
         "properties": {
@@ -12828,47 +13042,59 @@
         "description": "Exclude one Vault file or folder by its own rule (#754)."
       },
       "VaultItemExclusionStatus": {
-        "type": "object",
-        "additionalProperties": true,
         "properties": {
           "path": {
-            "type": "string"
+            "type": "string",
+            "title": "Path"
           },
           "is_directory": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Is Directory"
           },
           "own_rule": {
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
+            "title": "Own Rule",
             "description": "path/** for a folder, the exact path for a file; null when the path holds glob characters."
           },
           "own_rule_present": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Own Rule Present"
           },
           "excluded": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Excluded"
           },
           "rules": {
-            "type": "array",
             "items": {
               "type": "string"
             },
+            "type": "array",
+            "title": "Rules",
             "description": "Other exclude globs that exclude the item."
           },
           "fixed": {
-            "type": "array",
             "items": {
               "type": "string"
             },
+            "type": "array",
+            "title": "Fixed",
             "description": "Fixed noise exclusions that match the item."
           },
           "not_included": {
             "type": "boolean",
+            "title": "Not Included",
             "description": "The include globs do not match the item."
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "path",
           "is_directory",
@@ -12878,7 +13104,8 @@
           "rules",
           "fixed",
           "not_included"
-        ]
+        ],
+        "title": "VaultItemExclusionStatus"
       },
       "VaultListItem": {
         "properties": {
@@ -12921,23 +13148,89 @@
         ],
         "title": "VaultListItem"
       },
-      "VaultMovePreview": {
-        "type": "object",
+      "VaultMoveEstimate": {
         "properties": {
-          "vault_id": {
-            "type": "integer"
+          "target_class": {
+            "type": "string",
+            "title": "Target Class"
           },
-          "targets": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/VaultMoveEstimate"
-            }
+          "eligible_count": {
+            "type": "integer",
+            "title": "Eligible Count"
+          },
+          "total_bytes": {
+            "type": "integer",
+            "title": "Total Bytes"
+          },
+          "skipped": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Skipped"
+          },
+          "minimum_days": {
+            "type": "integer",
+            "title": "Minimum Days"
+          },
+          "estimated_monthly_eur": {
+            "type": "number",
+            "title": "Estimated Monthly Eur"
+          },
+          "estimated_retrieval_eur": {
+            "type": "number",
+            "title": "Estimated Retrieval Eur"
+          },
+          "pricing_effective_at": {
+            "type": "string",
+            "title": "Pricing Effective At"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "assumptions": {
+            "type": "string",
+            "title": "Assumptions"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "target_class",
+          "eligible_count",
+          "total_bytes",
+          "skipped",
+          "minimum_days",
+          "estimated_monthly_eur",
+          "estimated_retrieval_eur",
+          "pricing_effective_at",
+          "region",
+          "assumptions"
+        ],
+        "title": "VaultMoveEstimate"
+      },
+      "VaultMovePreview": {
+        "properties": {
+          "vault_id": {
+            "type": "integer",
+            "title": "Vault Id"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/VaultMoveEstimate"
+            },
+            "type": "array",
+            "title": "Targets"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "vault_id",
           "targets"
-        ]
+        ],
+        "title": "VaultMovePreview"
       },
       "VaultMoveRequest": {
         "properties": {
@@ -12961,33 +13254,84 @@
         "title": "VaultMoveRequest"
       },
       "VaultMoveResponse": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/VaultMoveEstimate"
+        "properties": {
+          "target_class": {
+            "type": "string",
+            "title": "Target Class"
           },
-          {
-            "type": "object",
-            "properties": {
-              "group_id": {
-                "type": "string"
-              },
-              "job_ids": {
-                "type": "array",
-                "items": {
-                  "type": "integer"
-                }
-              },
-              "item_count": {
-                "type": "integer"
-              }
+          "eligible_count": {
+            "type": "integer",
+            "title": "Eligible Count"
+          },
+          "total_bytes": {
+            "type": "integer",
+            "title": "Total Bytes"
+          },
+          "skipped": {
+            "additionalProperties": {
+              "type": "integer"
             },
-            "required": [
-              "group_id",
-              "job_ids",
-              "item_count"
-            ]
+            "type": "object",
+            "title": "Skipped"
+          },
+          "minimum_days": {
+            "type": "integer",
+            "title": "Minimum Days"
+          },
+          "estimated_monthly_eur": {
+            "type": "number",
+            "title": "Estimated Monthly Eur"
+          },
+          "estimated_retrieval_eur": {
+            "type": "number",
+            "title": "Estimated Retrieval Eur"
+          },
+          "pricing_effective_at": {
+            "type": "string",
+            "title": "Pricing Effective At"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "assumptions": {
+            "type": "string",
+            "title": "Assumptions"
+          },
+          "group_id": {
+            "type": "string",
+            "title": "Group Id"
+          },
+          "job_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Job Ids"
+          },
+          "item_count": {
+            "type": "integer",
+            "title": "Item Count"
           }
-        ]
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "target_class",
+          "eligible_count",
+          "total_bytes",
+          "skipped",
+          "minimum_days",
+          "estimated_monthly_eur",
+          "estimated_retrieval_eur",
+          "pricing_effective_at",
+          "region",
+          "assumptions",
+          "group_id",
+          "job_ids",
+          "item_count"
+        ],
+        "title": "VaultMoveResponse"
       },
       "VaultPauseResponse": {
         "properties": {
@@ -13474,56 +13818,6 @@
         ],
         "title": "VerificationPhaseSpeed"
       },
-      "VaultMoveEstimate": {
-        "type": "object",
-        "properties": {
-          "target_class": {
-            "type": "string"
-          },
-          "eligible_count": {
-            "type": "integer"
-          },
-          "total_bytes": {
-            "type": "integer"
-          },
-          "skipped": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "integer"
-            }
-          },
-          "minimum_days": {
-            "type": "integer"
-          },
-          "estimated_monthly_eur": {
-            "type": "number"
-          },
-          "estimated_retrieval_eur": {
-            "type": "number"
-          },
-          "pricing_effective_at": {
-            "type": "string"
-          },
-          "region": {
-            "type": "string"
-          },
-          "assumptions": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "target_class",
-          "eligible_count",
-          "total_bytes",
-          "skipped",
-          "minimum_days",
-          "estimated_monthly_eur",
-          "estimated_retrieval_eur",
-          "pricing_effective_at",
-          "region",
-          "assumptions"
-        ]
-      },
       "ApiErrorResponse": {
         "additionalProperties": false,
         "properties": {
@@ -13561,108 +13855,6 @@
           "message_params"
         ],
         "type": "object"
-      },
-      "LifecycleGuidedProfile": {
-        "additionalProperties": false,
-        "properties": {
-          "transitions": {
-            "items": {
-              "$ref": "#/components/schemas/LifecycleTransition"
-            },
-            "type": "array"
-          }
-        },
-        "type": "object",
-        "required": [
-          "transitions"
-        ]
-      },
-      "LifecycleProfile": {
-        "additionalProperties": false,
-        "properties": {
-          "transitions": {
-            "items": {
-              "$ref": "#/components/schemas/LifecycleTransition"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "transitions"
-        ],
-        "type": "object"
-      },
-      "LifecycleTransition": {
-        "additionalProperties": true,
-        "properties": {
-          "days": {
-            "type": "number"
-          },
-          "storage_class": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "days",
-          "storage_class"
-        ],
-        "type": "object"
-      },
-      "ExcludedFolder": {
-        "type": "object",
-        "additionalProperties": true,
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
-          "rule": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "path",
-          "rule"
-        ]
-      },
-      "DiskListingEntry": {
-        "type": "object",
-        "additionalProperties": true,
-        "description": "An entry read from disk inside an Excluded Folder: not catalogued, not protected.",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
-          "type": {
-            "type": "string",
-            "enum": [
-              "file",
-              "directory"
-            ]
-          },
-          "size": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "modified_at": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "path",
-          "type",
-          "size",
-          "modified_at"
-        ]
       }
     },
     "securitySchemes": {
