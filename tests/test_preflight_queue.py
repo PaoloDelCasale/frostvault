@@ -78,8 +78,7 @@ class PreflightQueueTests(FrostVaultTestCase):
             for v in self.vaults:
                 if vault_id is not None and v['id'] != vault_id:
                     continue
-                catalog = ArchiveCatalog(c)
-                ids, _, _ = JobAdmission(catalog.connection).queue_jobs(vault_id=v['id'], path='', action='upload', 
+                ids, _, _ = JobAdmission(c).queue_jobs(vault_id=v['id'], path='', action='upload', 
                                                requested_at=self.observed, group_id=str(uuid.uuid4()), is_directory=True,
                                                whole_vault=True, origin='automatic')
                 for id in ids:
@@ -156,12 +155,12 @@ class PreflightQueueTests(FrostVaultTestCase):
     def test_missing_automatic_copy_does_not_starve_healthy_other_vault(self):
         with self.db() as c:
             catalog = ArchiveCatalog(c)
-            missing, _, _ = JobAdmission(catalog.connection).queue_jobs(
+            missing, _, _ = JobAdmission(c).queue_jobs(
                 vault_id=1, path='a.txt', action='upload', 
                 requested_at=self.observed, group_id=str(uuid.uuid4()), is_directory=False,
                 origin='automatic',
             )
-            healthy, _, _ = JobAdmission(catalog.connection).queue_jobs(
+            healthy, _, _ = JobAdmission(c).queue_jobs(
                 vault_id=2, path='a.txt', action='upload', 
                 requested_at=self.observed, group_id=str(uuid.uuid4()), is_directory=False,
             )
@@ -192,7 +191,7 @@ class PreflightQueueTests(FrostVaultTestCase):
                 file.write_bytes(b'photo')
                 catalog.observe_local_copy(vault_id=1,path=file.name,file_type='regular',size=5,
                     mtime_ns=file.stat().st_mtime_ns,observed_at=self.observed)
-                JobAdmission(catalog.connection).queue_jobs(vault_id=1,path=file.name,action='upload',
+                JobAdmission(c).queue_jobs(vault_id=1,path=file.name,action='upload',
                     requested_at=self.observed,group_id=str(uuid.uuid4()),is_directory=False)
         barrier = threading.Barrier(16)
         def refused(job):

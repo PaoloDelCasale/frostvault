@@ -29,8 +29,7 @@ for _flag, _value in (
 
 from app.catalog import ArchiveCatalog
 
-from app.services.job_admission import queue_jobs
-from app.services.job_admission import JobAdmission
+from app.services.job_admission import JobAdmission, queue_jobs
 from app.storage import UPLOAD_RETRY_MAX_ATTEMPTS, process_jobs_once
 from tests.fixtures import Database, FrostVaultTestCase, override_settings
 from tests.test_upload_verification import _observed, _prepare_plain_vault, _sha256_hex
@@ -248,7 +247,7 @@ class SourceChangeAfterLinkTests(FrostVaultTestCase):
 
             with self.database.connect() as connection:
                 catalog = ArchiveCatalog(connection)
-                job_ids, _, eligible = JobAdmission(catalog.connection).queue_jobs(
+                job_ids, _, eligible = JobAdmission(connection).queue_jobs(
                     vault_id=2,
                     path="report.txt",
                     action="upload",

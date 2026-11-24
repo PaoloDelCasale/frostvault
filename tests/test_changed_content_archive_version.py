@@ -52,7 +52,7 @@ class ChangedContentAdmissionTests(FrostVaultTestCase):
         return protect(self.catalog, 2, path, sha256_hex(payload))
 
     def queue(self, path: str = "report.txt") -> tuple[list[int], int]:
-        job_ids, _, eligible = JobAdmission(self.catalog.connection).queue_jobs(
+        job_ids, _, eligible = JobAdmission(self.connection).queue_jobs(
             vault_id=2, path=path, action="upload", requested_at="2026-07-21T10:03:00+00:00",
             group_id=str(uuid.uuid4()), is_directory=False)
         return job_ids, eligible
