@@ -15,7 +15,7 @@ function setup(state: string, local: boolean, conflict = false, reconciliation =
   configureApiClient({ fetch: vi.fn(async (input) => {
     const url = String(input); calls.push(url);
     if (/^\/api\/vaults\/\d+\/files\/detail\?/.test(url)) return jsonResponse({ ...stale, state, local_exists: local, cloud_exists: true, cloud_only_conflict: conflict, ...extra });
-    if (/^\/api\/vaults\/\d+\/files\/versions/.test(url)) return jsonResponse({ items: [{ id: "v", recoverable: true, storage_class: "STANDARD", provider_version_id: "exact", verified_at: "2026-11-05", integrity: "verified", ...versionExtra }], ...(reconciliation ? { reconciliation: { pending: true, can_resume: true, reason: "orphan_different", remedy: "keep copies" } } : {}), ...(remediation ? { remediations: [{ id: "r", state: "blocked", phase: "cleanup", reason: "cleanup_unavailable", can_resume: true, archive_version_id: "snapshot-A", current_job_id: 8, resolved_by_job_id: null, original_job_ids: [1] }] } : {}) });
+    if (/^\/api\/vaults\/\d+\/files\/versions/.test(url)) return jsonResponse({ items: [{ id: "v", recoverable: true, storage_class: "STANDARD", provider_version_id: "exact", verified_at: "2026-11-05", integrity: "verified", ...versionExtra }], ...(reconciliation ? { reconciliation: { pending: true, can_resume: true, reason: "orphan_different", remedy: "keep copies" } } : {}), ...(remediation ? { remediations: [{ id: "r", state: "blocked", reason: "cleanup_unavailable", can_resume: true, archive_version_id: "snapshot-A", current_job_id: 8, resolved_by_job_id: null, original_job_ids: [1] }] } : {}) });
     if (/^\/api\/vaults\/\d+\/files\/jobs/.test(url)) return jsonResponse({ items: [{ id: url.includes("before_id") ? 1 : 100, path: "same.jpg", action: "upload", status: "failed", message: "Historical failure", requested_at: "2026-11-01" }], next_before_id: url.includes("before_id") ? null : 100 });
     if (/^\/api\/vaults\/\d+\/jobs\//.test(url)) return jsonResponse({ id: 1, path: "same.jpg", action: "upload", status: "failed", message: "Historical failure", remediation: { state: "resolved", current_job_id: 8, resolved_by_job_id: 8, original_job_ids: [1] } });
     if (/^\/api\/vaults\/\d+\/jobs/.test(url)) return jsonResponse({ groups: pending ? [{ id: "old-folder-delete", path: "parent-folder", action: "cloud-purge", status: "pending_delay" }] : [] });
@@ -32,7 +32,7 @@ describe("deliberate file Details", () => {
   it("separates verified cloud cleanup from changed Local Copy protection and offers exact resume", async () => {
     const calls = setup("pending", true, false, false, true);
     await screen.findByText("remediation.target: snapshot-A");
-    expect(screen.getByText("remediation.phase: remediation.phase.cleanup")).toBeInTheDocument();
+    expect(screen.queryByText(/remediation\.phase/)).not.toBeInTheDocument();
     expect(screen.getByText("remediation.reason: reconciliation.reason.cleanup_unavailable")).toBeInTheDocument();
     expect(screen.queryByText("remediation.reason: cleanup_unavailable")).not.toBeInTheDocument();
     expect(within(screen.getByTestId("details-summary")).getByText("state.pending")).toHaveAttribute("data-state", "pending");
