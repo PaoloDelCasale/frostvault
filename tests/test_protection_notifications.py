@@ -311,7 +311,7 @@ class FixedNotificationPostgresTests(FrostVaultTestCase):
             """, (self.vault_id, observed, observed, observed, observed, total))
         held: list[float] = []
         acquired: list[float] = []
-        lock_owner = inbox._lock_owner_inbox
+        lock_owner = inbox.lock_owner_inbox
         commit, rollback = psycopg.Connection.commit, psycopg.Connection.rollback
 
         def lock(connection):
@@ -327,7 +327,7 @@ class FixedNotificationPostgresTests(FrostVaultTestCase):
             return wrapped
         cycles = []
         with self.connect() as c, patch('app.services.source_layout.vault_local_access', return_value=ONLINE), \
-                patch.object(inbox, '_lock_owner_inbox', side_effect=lock), \
+                patch.object(inbox, 'lock_owner_inbox', side_effect=lock), \
                 patch.object(psycopg.Connection, 'commit', end(commit)), \
                 patch.object(psycopg.Connection, 'rollback', end(rollback)):
             # The first cycle starts every timer; later ones find them unchanged.

@@ -245,7 +245,7 @@ def maintain_notifications(connection: Any, *, now: datetime | None = None) -> N
         # 2. Problem episodes, the only writes needing the Owner lock. A Vault
         # stopped since its read is closed by set_problem itself (#715); one
         # deleted meanwhile has no Problems left to write.
-        inbox._lock_owner_inbox(connection)
+        inbox.lock_owner_inbox(connection)
         for observation in observations:
             if connection.execute("SELECT 1 FROM vaults WHERE id=%s",
                                   (observation.vault_id,)).fetchone():
@@ -261,7 +261,7 @@ def maintain_notifications(connection: Any, *, now: datetime | None = None) -> N
             return
         summary = weekly_summary(connection, now=now)
         connection.commit()
-        inbox._lock_owner_inbox(connection)
+        inbox.lock_owner_inbox(connection)
         if _summary_due(connection, now):
             inbox.enqueue_notification(connection, event="weekly_summary", title="",
                                        title_key="notification.weekly_summary.title",

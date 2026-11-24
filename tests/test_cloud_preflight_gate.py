@@ -227,5 +227,5 @@ class LocalizedRemediationTests(unittest.TestCase):
         self.assertIn(self.italian, summary)
 
     def test_unkeyed_remediation_keeps_its_plain_problem_params(self):
-        self.assertEqual(gate._problem_params('Check permissions'), {'remediation': 'Check permissions'})
-        self.assertEqual(gate._problem_params(None), {'remediation': ''})
+        self.assertEqual(gate.problem_params('Check permissions'), {'remediation': 'Check permissions'})
+        self.assertEqual(gate.problem_params(None), {'remediation': ''})
