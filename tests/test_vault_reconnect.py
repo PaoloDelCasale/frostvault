@@ -501,6 +501,32 @@ class VaultReconnectTests(FrostVaultTestCase):
             self.assertEqual(rows["after/cold.bin"]["state"], "protected")
             self.assertEqual(kit_status(connection)["metadata_restore"]["updated_files"], 1)
 
+    def test_restore_reconciliation_reads_every_class_but_glacier_and_deep_archive(self):
+        # "Restore required" truth table of the Reconnect site (#804): the
+        # listing's class is compared exactly as S3 spells it.
+        classes = {"standard": "STANDARD", "standard-ia": "STANDARD_IA", "onezone-ia": "ONEZONE_IA",
+                   "intelligent": "INTELLIGENT_TIERING", "glacier-ir": "GLACIER_IR",
+                   "glacier": "GLACIER", "deep-archive": "DEEP_ARCHIVE",
+                   "reduced": "REDUCED_REDUNDANCY", "outposts": "OUTPOSTS",
+                   "express": "EXPRESS_ONEZONE", "none": None, "unknown": "FUTURE_CLASS",
+                   "lower-glacier": "glacier", "lower-deep-archive": "deep_archive"}
+        content = {f"c/{name}.bin": name.encode() for name in classes}
+        with self.database.connect() as connection:
+            record_metadata_restore(connection, "2026-11-02T10:00:00+00:00")
+        s3 = ListingS3(content)
+        listing = s3.get_paginator
+        def classified(_name):
+            pages = list(listing(_name).paginate())
+            for item in pages[0]["Versions"]:
+                item["StorageClass"] = classes[item["Key"].rsplit("/", 1)[1].removesuffix(".bin")]
+            return SimpleNamespace(paginate=lambda **kwargs: iter(pages))
+        s3.get_paginator = classified
+        result = self.scan(self.reconnect(), s3)
+        self.assertEqual(result["reconnect_suspended"], 1)
+        self.assertEqual(self.row()["lifecycle"], "reconnect_required")
+        read = sorted(r["Key"].rsplit("/", 1)[1].removesuffix(".bin") for r in s3.reads)
+        self.assertEqual(read, sorted(set(classes) - {"glacier", "deep-archive"}))
+
     def test_a_replaced_current_cleaned_up_after_the_backup_is_superseded_not_missing(self):
         # #639: modified and uploaded again after the backup; Current Snapshot
         # deleted the old version, so only the new one is listed.
