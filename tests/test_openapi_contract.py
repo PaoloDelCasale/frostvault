@@ -371,6 +371,27 @@ class PassthroughResponseModelTests(unittest.TestCase):
             {"Probe", "HTTPValidationError", "ValidationError"},
         )
 
+    def test_a_model_that_nests_another_twice_is_still_one_component(self) -> None:
+        class Part(BaseModel):
+            id: int
+
+        class Whole(BaseModel):
+            first: Part
+            second: Part | None
+
+        document = self.probe(passthrough(Whole)).openapi()
+        operation = document["paths"]["/probe/{case}"]["get"]
+        self.assertEqual(
+            operation["responses"]["200"]["content"]["application/json"]["schema"],
+            {"$ref": "#/components/schemas/Whole"},
+        )
+        self.assertEqual(
+            set(document["components"]["schemas"]),
+            {"Whole", "Part", "HTTPValidationError", "ValidationError"},
+        )
+        self.assertEqual(
+            set(document["components"]["schemas"]["Whole"]["properties"]), {"first", "second"})
+
     def test_the_shared_test_client_checks_json_success_bodies(self) -> None:
         client = fixtures._contract_checking_client()(self.probe(passthrough(Probe)))
         self.assertEqual(client.get("/probe/valid").json(), self.BODIES["valid"])

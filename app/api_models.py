@@ -34,7 +34,13 @@ def passthrough(model: type[BaseModel]) -> type[JsonObjectResponse]:
     """
 
     def model_json_schema(cls, _core_schema: Any, handler: Any) -> Any:
-        return handler(model.__pydantic_core_schema__)
+        schema = model.__pydantic_core_schema__
+        if schema["type"] == "definitions":
+            # A model that nests another one twice keeps its own reference here:
+            # left in, the document would hold two components of the same name.
+            inner = {key: value for key, value in schema["schema"].items() if key != "ref"}
+            schema = {**schema, "schema": inner}
+        return handler(schema)
 
     return type(
         model.__name__,

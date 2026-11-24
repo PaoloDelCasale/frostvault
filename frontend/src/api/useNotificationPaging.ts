@@ -5,10 +5,13 @@ import {
   fetchNotifications,
   markAllNotificationsRead,
   markNotificationRead,
-  type MarkAllNotificationsReadResponse,
 } from "./endpoints";
 import { apiQueryKeys, notificationsQueryOptions } from "./query";
-import type { NotificationItem, NotificationsResponse } from "./types";
+import type {
+  MarkAllNotificationsReadResponse,
+  NotificationItem,
+  NotificationsResponse,
+} from "./types";
 
 type MutationContext<T> = {
   previous: T | undefined;

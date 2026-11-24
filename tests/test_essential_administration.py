@@ -4,19 +4,17 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
 from app import main, storage
 
 from app.services.metadata_backups import build_config_snapshot
-from tests.fixtures import override_settings
+from tests.fixtures import http_client, override_settings
 
 
 class EssentialAdministrationTests(unittest.TestCase):
     def test_removed_apis_are_not_in_openapi_or_callable(self):
         paths = ("/api/audit-events", "/api/admin/audit-events", "/api/admin/worker-errors", "/api/admin/settings")
         schema = main.app.openapi()
-        client = TestClient(main.app)
+        client = http_client()
         for path in paths:
             self.assertNotIn(path, schema["paths"])
             self.assertEqual(client.get(path).status_code, 404)

@@ -1653,7 +1653,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NotificationsResponse"
+                  "$ref": "#/components/schemas/ProblemsResponse"
                 }
               }
             }
@@ -1806,7 +1806,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
+                  "$ref": "#/components/schemas/NotificationItem"
                 }
               }
             }
@@ -1835,7 +1835,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
+                  "$ref": "#/components/schemas/MarkAllNotificationsReadResponse"
                 }
               }
             }
@@ -1928,7 +1928,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
+                  "$ref": "#/components/schemas/MetadataBackupsResponse"
                 }
               }
             }
@@ -1956,7 +1956,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonObjectResponse"
+                  "$ref": "#/components/schemas/MetadataBackupRunResult"
                 }
               }
             }
@@ -4217,7 +4217,8 @@
           {
             "$ref": "#/components/schemas/DirectoryListItem"
           }
-        ]
+        ],
+        "title": "ArchiveListItem"
       },
       "AuthMethod": {
         "anyOf": [
@@ -4518,6 +4519,39 @@
           "error_detail",
           "periods"
         ]
+      },
+      "BulkUploadAdmissionActivity": {
+        "properties": {
+          "requests": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Requests"
+          },
+          "selected_files": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Selected Files"
+          },
+          "processed_files": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Processed Files"
+          },
+          "admitted_files": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Admitted Files"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "requests",
+          "selected_files",
+          "processed_files",
+          "admitted_files"
+        ],
+        "title": "BulkUploadAdmissionActivity"
       },
       "BulkUploadAdmissionResponse": {
         "type": "object",
@@ -4866,6 +4900,48 @@
         ],
         "title": "CloudOnlyReplacementAction"
       },
+      "CloudPreflightSnapshot": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "ready",
+              "blocked"
+            ],
+            "title": "Status"
+          },
+          "remediation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remediation"
+          },
+          "next_probe_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Probe At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "remediation",
+          "next_probe_at"
+        ],
+        "title": "CloudPreflightSnapshot"
+      },
       "CloudPurgeRequest": {
         "properties": {
           "path": {
@@ -4961,6 +5037,102 @@
           "reason"
         ],
         "title": "CloudPurgeRequest"
+      },
+      "DirectoryListItem": {
+        "properties": {
+          "last_known_states": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Last Known States"
+          },
+          "last_known_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Known At"
+          },
+          "available_actions": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Available Actions"
+          },
+          "cloud_size": {
+            "type": "number",
+            "title": "Cloud Size"
+          },
+          "item_count": {
+            "type": "number",
+            "title": "Item Count"
+          },
+          "local_size": {
+            "type": "number",
+            "title": "Local Size"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "state_counts": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "State Counts"
+          },
+          "storage_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Class"
+          },
+          "storage_class_count": {
+            "type": "number",
+            "title": "Storage Class Count"
+          },
+          "total_size": {
+            "type": "number",
+            "title": "Total Size"
+          },
+          "type": {
+            "type": "string",
+            "const": "directory",
+            "title": "Type"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "item_count",
+          "name",
+          "path",
+          "state",
+          "total_size",
+          "type"
+        ],
+        "title": "DirectoryListItem",
+        "description": "Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed."
       },
       "DuplicateCleanupStatus": {
         "type": "object",
@@ -5419,6 +5591,36 @@
           "truncated"
         ]
       },
+      "ExpectedFinish": {
+        "properties": {
+          "at": {
+            "type": "string",
+            "title": "At"
+          },
+          "seconds": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Seconds"
+          },
+          "limited_by": {
+            "type": "string",
+            "enum": [
+              "upload",
+              "verification"
+            ],
+            "title": "Limited By"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "at",
+          "seconds",
+          "limited_by"
+        ],
+        "title": "ExpectedFinish",
+        "description": "The later of the active phases at their average speed, and the phase that limits it (#755)."
+      },
       "FileAction": {
         "properties": {
           "path": {
@@ -5493,6 +5695,101 @@
           "next_before_id"
         ]
       },
+      "FileRecovery": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "awaiting_approval",
+              "waiting_for_cloud",
+              "ready",
+              "downloading"
+            ],
+            "title": "State"
+          },
+          "active": {
+            "type": "boolean",
+            "title": "Active",
+            "description": "A Recovery Job is in progress; false when only the cloud restore continues or a restored copy is readable."
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "Expedited",
+                  "Standard",
+                  "Bulk"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier"
+          },
+          "days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days"
+          },
+          "requested_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested At"
+          },
+          "ready_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ready By",
+            "description": "Request instant plus the tier's restore hours; an estimate."
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At",
+            "description": "End of the readable restored copy."
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "state",
+          "active",
+          "tier",
+          "days",
+          "requested_at",
+          "ready_by",
+          "expires_at"
+        ],
+        "title": "FileRecovery",
+        "description": "Recovery in progress of a cloud-only file (#646): its Job and the cloud restore, which continues and is charged after the Job is stopped."
+      },
       "FileVersionsResponse": {
         "additionalProperties": true,
         "properties": {
@@ -5548,163 +5845,175 @@
         "type": "object"
       },
       "FilesResponse": {
-        "additionalProperties": true,
         "properties": {
           "manual_upload": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Manual Upload"
           },
           "aggregate_status": {
-            "description": "Directory aggregate readiness for this listing: ready, loading (no projection yet), or stale (showing prior projection while rebuild/dirty work converges).",
+            "type": "string",
             "enum": [
               "ready",
               "loading",
               "stale"
             ],
-            "type": "string"
+            "title": "Aggregate Status",
+            "description": "Directory aggregate readiness for this listing: ready, loading (no projection yet), or stale (showing prior projection while rebuild/dirty work converges)."
           },
           "directory": {
-            "type": "string"
+            "type": "string",
+            "title": "Directory"
           },
           "items": {
             "items": {
               "$ref": "#/components/schemas/ArchiveListItem"
             },
-            "type": "array"
+            "type": "array",
+            "title": "Items"
           },
           "mode": {
-            "type": "string"
+            "type": "string",
+            "title": "Mode"
           },
           "page": {
-            "type": "number"
+            "type": "number",
+            "title": "Page"
           },
           "total": {
-            "type": "number"
+            "type": "number",
+            "title": "Total"
           }
         },
+        "additionalProperties": true,
+        "type": "object",
         "required": [
-          "items",
-          "total",
-          "page",
           "directory",
-          "mode"
+          "items",
+          "mode",
+          "page",
+          "total"
         ],
-        "type": "object"
+        "title": "FilesResponse"
       },
       "GeneralOverview": {
-        "type": "object",
-        "additionalProperties": false,
         "properties": {
           "vaults": {
-            "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "integer"
-                },
-                "name": {
-                  "type": "string"
-                },
-                "monthly_estimate": {
-                  "type": "number"
-                },
-                "open_problem_count": {
-                  "type": "integer"
-                },
-                "uuid": {
-                  "type": "string"
-                },
-                "lifecycle": {
-                  "type": "string",
-                  "enum": [
-                    "provisioning",
-                    "active",
-                    "reconnect_required",
-                    "stopping",
-                    "tombstone"
-                  ]
-                }
-              },
-              "required": [
-                "id",
-                "uuid",
-                "name",
-                "lifecycle",
-                "monthly_estimate",
-                "open_problem_count"
-              ]
-            }
+              "$ref": "#/components/schemas/GeneralOverviewVault"
+            },
+            "type": "array",
+            "title": "Vaults"
           },
           "open_problem_count": {
-            "type": "number"
+            "type": "number",
+            "title": "Open Problem Count"
           },
           "monthly_estimate": {
-            "type": "number"
+            "type": "number",
+            "title": "Monthly Estimate"
           },
           "month": {
-            "type": "string"
+            "type": "string",
+            "title": "Month"
           },
           "currency": {
-            "type": "string"
+            "type": "string",
+            "title": "Currency"
           },
           "pricing_effective_at": {
-            "type": "string"
+            "type": "string",
+            "title": "Pricing Effective At"
           },
           "previous_month_delta": {
-            "type": [
-              "number",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Month Delta"
           },
           "email_configured": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Email Configured"
           },
           "runs_as_root": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Runs As Root"
           },
           "dac_override": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Dac Override"
           },
           "cloud_preflight": {
-            "type": "object",
-            "properties": {
-              "status": {
-                "type": "string",
-                "enum": [
-                  "unknown",
-                  "ready",
-                  "blocked"
-                ]
-              },
-              "remediation": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "next_probe_at": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            },
-            "required": [
-              "status",
-              "remediation",
-              "next_probe_at"
-            ]
+            "$ref": "#/components/schemas/CloudPreflightSnapshot"
           },
           "last_verified_backup": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Verified Backup"
           },
           "metadata_backup_verification": {
             "$ref": "#/components/schemas/MetadataBackupVerification"
           }
-        }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "GeneralOverview"
+      },
+      "GeneralOverviewVault": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "monthly_estimate": {
+            "type": "number",
+            "title": "Monthly Estimate"
+          },
+          "open_problem_count": {
+            "type": "integer",
+            "title": "Open Problem Count"
+          },
+          "uuid": {
+            "type": "string",
+            "title": "Uuid"
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "provisioning",
+              "active",
+              "reconnect_required",
+              "stopping",
+              "tombstone"
+            ],
+            "title": "Lifecycle"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "monthly_estimate",
+          "open_problem_count",
+          "uuid",
+          "lifecycle"
+        ],
+        "title": "GeneralOverviewVault"
       },
       "GeneralVaultReconnectResponse": {
         "additionalProperties": true,
@@ -6237,6 +6546,25 @@
         ],
         "title": "LoginRequest"
       },
+      "MarkAllNotificationsReadResponse": {
+        "properties": {
+          "marked_count": {
+            "type": "integer",
+            "title": "Marked Count"
+          },
+          "unread_count": {
+            "type": "integer",
+            "title": "Unread Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "marked_count",
+          "unread_count"
+        ],
+        "title": "MarkAllNotificationsReadResponse"
+      },
       "MeResponse": {
         "properties": {
           "id": {
@@ -6382,6 +6710,187 @@
         ],
         "title": "MeVault"
       },
+      "MetadataBackupReference": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "verified_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "created_at",
+          "verified_at"
+        ],
+        "title": "MetadataBackupReference"
+      },
+      "MetadataBackupRun": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "backend": {
+            "type": "string",
+            "title": "Backend"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "digest_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Digest Sha256"
+          },
+          "database_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Database Sha256"
+          },
+          "local_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Local Path"
+          },
+          "s3_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "S3 Key"
+          },
+          "s3_bucket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "S3 Bucket",
+            "description": "Bucket of the off-host copy; null for local-only and pre-#734 runs."
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "verified_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "created_at",
+          "finished_at",
+          "reason",
+          "backend",
+          "status",
+          "digest_sha256",
+          "database_sha256",
+          "local_path",
+          "s3_key",
+          "s3_bucket",
+          "size_bytes",
+          "error_message",
+          "verified_at"
+        ],
+        "title": "MetadataBackupRun"
+      },
       "MetadataBackupRunAction": {
         "properties": {
           "reason": {
@@ -6396,6 +6905,242 @@
           "reason"
         ],
         "title": "MetadataBackupRunAction"
+      },
+      "MetadataBackupRunResult": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "digest_sha256": {
+            "type": "string",
+            "title": "Digest Sha256"
+          },
+          "database_sha256": {
+            "type": "string",
+            "title": "Database Sha256"
+          },
+          "backend": {
+            "type": "string",
+            "title": "Backend"
+          },
+          "s3_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "S3 Key"
+          },
+          "s3_bucket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "S3 Bucket"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ok",
+          "reason",
+          "path",
+          "digest_sha256",
+          "database_sha256",
+          "backend",
+          "s3_key",
+          "s3_bucket",
+          "size_bytes",
+          "filename",
+          "created_at"
+        ],
+        "title": "MetadataBackupRunResult"
+      },
+      "MetadataBackupStatus": {
+        "properties": {
+          "last_status": {
+            "type": "string",
+            "title": "Last Status"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetadataBackupRun"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "succeeded_count": {
+            "type": "integer",
+            "title": "Succeeded Count"
+          },
+          "failed_count": {
+            "type": "integer",
+            "title": "Failed Count"
+          },
+          "verification": {
+            "$ref": "#/components/schemas/MetadataBackupVerification",
+            "description": "Last verified backup and next automatic verification (#648)."
+          },
+          "system_bucket": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SystemBucket"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where off-host copies go; null while there is none (#734)."
+          },
+          "off_host": {
+            "type": "boolean",
+            "title": "Off Host",
+            "description": "Whether backups must also reach the System Bucket."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "last_status",
+          "last_run",
+          "succeeded_count",
+          "failed_count",
+          "verification",
+          "system_bucket",
+          "off_host"
+        ],
+        "title": "MetadataBackupStatus"
+      },
+      "MetadataBackupVerification": {
+        "properties": {
+          "last_verified": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetadataBackupReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetadataBackupReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending_run_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Run Id"
+          },
+          "automatic": {
+            "type": "boolean",
+            "title": "Automatic"
+          },
+          "next_verification_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Verification At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "last_verified",
+          "latest",
+          "pending_run_id",
+          "automatic",
+          "next_verification_at"
+        ],
+        "title": "MetadataBackupVerification"
+      },
+      "MetadataBackupsResponse": {
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/MetadataBackupStatus"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/MetadataBackupRun"
+            },
+            "type": "array",
+            "title": "Runs"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "runs"
+        ],
+        "title": "MetadataBackupsResponse"
+      },
+      "MetadataRestoreNotice": {
+        "properties": {
+          "backup_created_at": {
+            "type": "string",
+            "title": "Backup Created At"
+          },
+          "updated_files": {
+            "type": "integer",
+            "title": "Updated Files"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "backup_created_at",
+          "updated_files"
+        ],
+        "title": "MetadataRestoreNotice"
       },
       "MinimumStorageSummary": {
         "type": "object",
@@ -7002,6 +7747,168 @@
         "title": "MirrorCleanupUpdate",
         "description": "Mirror Cleanup settings of one Vault (#771); omitted fields keep their value."
       },
+      "NotificationItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "vault_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vault Id"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "event": {
+            "type": "string",
+            "title": "Event"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          },
+          "title_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Key"
+          },
+          "body_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body Key"
+          },
+          "message_params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Message Params"
+          },
+          "in_app_enabled": {
+            "type": "boolean",
+            "title": "In App Enabled"
+          },
+          "dedupe_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dedupe Key"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "read": {
+            "type": "boolean",
+            "title": "Read"
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read At"
+          },
+          "problem_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "resolved"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Problem Status"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "resolving": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "scan"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolving"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "vault_id",
+          "job_id",
+          "event",
+          "title",
+          "body",
+          "title_key",
+          "body_key",
+          "message_params",
+          "in_app_enabled",
+          "dedupe_key",
+          "created_at",
+          "read",
+          "read_at",
+          "problem_status",
+          "resolved_at"
+        ],
+        "title": "NotificationItem"
+      },
       "NotificationReadAction": {
         "properties": {
           "notification_id": {
@@ -7016,34 +7923,41 @@
         "title": "NotificationReadAction"
       },
       "NotificationsResponse": {
-        "type": "object",
         "properties": {
           "items": {
-            "type": "array",
             "items": {
               "$ref": "#/components/schemas/NotificationItem"
-            }
+            },
+            "type": "array",
+            "title": "Items"
           },
           "unread_count": {
-            "type": "integer"
+            "type": "integer",
+            "title": "Unread Count"
           },
           "open_problem_count": {
-            "type": "integer"
+            "type": "integer",
+            "title": "Open Problem Count"
           },
           "email_configured": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Email Configured"
           },
           "has_more": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Has More"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "items",
           "unread_count",
           "open_problem_count",
           "email_configured",
           "has_more"
-        ]
+        ],
+        "title": "NotificationsResponse"
       },
       "OperationPolicy": {
         "additionalProperties": true,
@@ -7234,6 +8148,29 @@
         "additionalProperties": false,
         "type": "object",
         "title": "PendingUploadCancelAction"
+      },
+      "ProblemsResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "open_problem_count": {
+            "type": "integer",
+            "title": "Open Problem Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "open_problem_count"
+        ],
+        "title": "ProblemsResponse",
+        "description": "One page of the open Problems and how many are open in all."
       },
       "ReauthRequest": {
         "properties": {
@@ -7479,8 +8416,66 @@
         "title": "RecoveryKitCustody"
       },
       "RecoveryKitStatus": {
-        "type": "object",
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "title": "Configured"
+          },
+          "fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fingerprint"
+          },
+          "system_bucket": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SystemBucket"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The current System Bucket (#734), ready or not; null while there is none."
+          },
+          "awaiting_backup": {
+            "type": "boolean",
+            "title": "Awaiting Backup",
+            "description": "A System Bucket exists but no metadata backup has succeeded in it yet: the kit is not offered (#734)."
+          },
+          "custody_acknowledged": {
+            "type": "boolean",
+            "title": "Custody Acknowledged"
+          },
+          "acknowledged_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledged At"
+          },
+          "metadata_restore": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetadataRestoreNotice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
         "additionalProperties": true,
+        "type": "object",
         "required": [
           "configured",
           "fingerprint",
@@ -7488,79 +8483,7 @@
           "acknowledged_at",
           "metadata_restore"
         ],
-        "properties": {
-          "configured": {
-            "type": "boolean"
-          },
-          "fingerprint": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "system_bucket": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "The current System Bucket (#734), ready or not; null while there is none.",
-            "required": [
-              "name",
-              "region",
-              "origin",
-              "ready"
-            ],
-            "properties": {
-              "name": {
-                "type": "string"
-              },
-              "region": {
-                "type": "string"
-              },
-              "origin": {
-                "type": "string",
-                "enum": [
-                  "configured",
-                  "created"
-                ]
-              },
-              "ready": {
-                "type": "boolean"
-              }
-            }
-          },
-          "awaiting_backup": {
-            "type": "boolean",
-            "description": "A System Bucket exists but no metadata backup has succeeded in it yet: the kit is not offered (#734)."
-          },
-          "custody_acknowledged": {
-            "type": "boolean"
-          },
-          "acknowledged_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "metadata_restore": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "required": [
-              "backup_created_at",
-              "updated_files"
-            ],
-            "properties": {
-              "backup_created_at": {
-                "type": "string"
-              },
-              "updated_files": {
-                "type": "integer"
-              }
-            }
-          }
-        }
+        "title": "RecoveryKitStatus"
       },
       "RecoverySelectionItem": {
         "properties": {
@@ -7724,6 +8647,32 @@
         ],
         "type": "object"
       },
+      "ServerPriority": {
+        "properties": {
+          "throttled": {
+            "type": "boolean",
+            "title": "Throttled"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "throttled",
+          "since"
+        ],
+        "title": "ServerPriority"
+      },
       "SessionMessageResponse": {
         "properties": {
           "message": {
@@ -7743,6 +8692,49 @@
         ],
         "title": "SessionMessageResponse",
         "description": "What signing in and signing out answer."
+      },
+      "SourceDeviceReads": {
+        "properties": {
+          "device": {
+            "type": "string",
+            "title": "Device"
+          },
+          "reading": {
+            "type": "integer",
+            "title": "Reading"
+          },
+          "waiting": {
+            "type": "integer",
+            "title": "Waiting"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Reads in flight allowed on this device: 1 on a rotational disk, 3 otherwise, or SOURCE_DEVICE_READ_CONCURRENCY when set (#766)."
+          },
+          "bytes_per_second": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Per Second",
+            "description": "Bytes read from this device per second over the last 20 s, by scan verification and uploads (#766); null while unmeasured."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "device",
+          "reading",
+          "waiting",
+          "limit",
+          "bytes_per_second"
+        ],
+        "title": "SourceDeviceReads"
       },
       "SourceDirectoryBrowseResponse": {
         "additionalProperties": true,
@@ -7783,261 +8775,91 @@
         "type": "object"
       },
       "StatsResponse": {
-        "additionalProperties": true,
         "properties": {
           "manual_upload": {
-            "type": "boolean"
+            "type": "boolean",
+            "title": "Manual Upload"
           },
           "protection_state": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protection State"
           },
           "last_known_states": {
-            "type": "object",
             "additionalProperties": {
               "type": "number"
-            }
+            },
+            "type": "object",
+            "title": "Last Known States"
           },
           "active_jobs": {
-            "type": "number"
+            "type": "number",
+            "title": "Active Jobs"
           },
           "runtime": {
-            "additionalProperties": {},
-            "properties": {
-              "last_error": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "scanning": {
-                "type": "boolean"
-              },
-              "scan_phase": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "verify_files_total": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "verify_files_done": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "verify_bytes_total": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "verify_bytes_done": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "traversal_files_seen": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "traversal_files_per_minute": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "traversal_files_expected": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "last_error_source_cause": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "traversal_lock_wait_seconds": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "traversal_probe_seconds": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "traversal_write_seconds": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "last_error_source": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "last_error_source_at": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "server_priority_enabled": {
-                "type": "boolean"
-              },
-              "server_priority_throttled": {
-                "type": "boolean"
-              },
-              "server_priority_throttled_since": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "source_device_read_limit": {
-                "type": "integer"
-              },
-              "source_devices": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "device": {
-                      "type": "string"
-                    },
-                    "reading": {
-                      "type": "integer"
-                    },
-                    "waiting": {
-                      "type": "integer"
-                    },
-                    "limit": {
-                      "type": "integer",
-                      "description": "Reads in flight allowed on this device: 1 on a rotational disk, 3 otherwise, or SOURCE_DEVICE_READ_CONCURRENCY when set (#766)."
-                    },
-                    "bytes_per_second": {
-                      "type": [
-                        "integer",
-                        "null"
-                      ],
-                      "description": "Bytes read from this device per second over the last 20 s, by scan verification and uploads (#766); null while unmeasured."
-                    }
-                  },
-                  "required": [
-                    "device",
-                    "reading",
-                    "waiting",
-                    "limit",
-                    "bytes_per_second"
-                  ]
-                }
-              },
-              "scan_queued": {
-                "type": "boolean",
-                "description": "A requested full scan waits for the Vault (#759)."
-              },
-              "scan_queued_at": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "scan_waiting_for": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "description": "The operation the queued scan waits for (null when the Vault is free)."
-              },
-              "scan_waiting_since": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "description": "Since when that operation holds the Vault."
-              },
-              "verify_bytes_read": {
-                "type": [
-                  "number",
-                  "null"
-                ],
-                "description": "Bytes read by the running verification, partial files included (#759)."
-              }
-            },
-            "type": "object"
+            "$ref": "#/components/schemas/VaultRuntimeStatus"
           },
           "states": {
             "additionalProperties": {
               "type": "number"
             },
-            "type": "object"
+            "type": "object",
+            "title": "States"
           },
           "storage": {
-            "additionalProperties": true,
-            "properties": {
-              "cloud_bytes": {
-                "type": "number"
-              },
-              "local_bytes": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "local_bytes",
-              "cloud_bytes"
-            ],
-            "type": "object"
+            "$ref": "#/components/schemas/VaultStorageBytes"
           },
           "source_volume": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "alias": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "health": {
-                "type": "string"
-              },
-              "local_operations_allowed": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "alias",
-              "health",
-              "local_operations_allowed"
-            ]
+            "$ref": "#/components/schemas/StatsSourceVolume"
           }
         },
+        "additionalProperties": true,
+        "type": "object",
         "required": [
-          "states",
-          "storage",
           "active_jobs",
           "runtime",
+          "states",
+          "storage",
           "source_volume"
         ],
-        "type": "object"
+        "title": "StatsResponse"
+      },
+      "StatsSourceVolume": {
+        "properties": {
+          "alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias"
+          },
+          "health": {
+            "type": "string",
+            "title": "Health"
+          },
+          "local_operations_allowed": {
+            "type": "boolean",
+            "title": "Local Operations Allowed"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "alias",
+          "health",
+          "local_operations_allowed"
+        ],
+        "title": "StatsSourceVolume"
       },
       "StopProtectionRequest": {
         "properties": {
@@ -8243,6 +9065,66 @@
         ],
         "type": "object"
       },
+      "SystemBucket": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "configured",
+              "created"
+            ],
+            "title": "Origin"
+          },
+          "ready": {
+            "type": "boolean",
+            "title": "Ready"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "region",
+          "origin",
+          "ready"
+        ],
+        "title": "SystemBucket",
+        "description": "The installation's System Bucket for metadata backups (#734)."
+      },
+      "ThroughputSample": {
+        "properties": {
+          "at": {
+            "type": "string",
+            "title": "At"
+          },
+          "upload_bytes_per_second": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Upload Bytes Per Second"
+          },
+          "verification_bytes_per_second": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Verification Bytes Per Second"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "at",
+          "upload_bytes_per_second",
+          "verification_bytes_per_second"
+        ],
+        "title": "ThroughputSample"
+      },
       "UploadAction": {
         "properties": {
           "path": {
@@ -8309,68 +9191,271 @@
         "title": "UploadAction"
       },
       "UploadActivityResponse": {
-        "type": "object",
         "properties": {
           "observed_at": {
-            "type": "string"
+            "type": "string",
+            "title": "Observed At"
           },
           "global": {
             "$ref": "#/components/schemas/UploadActivitySummary"
           },
           "vaults": {
-            "type": "array",
             "items": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/UploadActivitySummary"
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "vault_id": {
-                      "type": "integer"
-                    },
-                    "vault_name": {
-                      "type": "string"
-                    },
-                    "paused": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "vault_id",
-                    "vault_name",
-                    "paused"
-                  ]
-                }
-              ]
-            }
+              "$ref": "#/components/schemas/UploadActivityVault"
+            },
+            "type": "array",
+            "title": "Vaults"
           },
           "server_priority": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "throttled": {
-                "type": "boolean"
-              },
-              "since": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            },
-            "required": [
-              "throttled",
-              "since"
-            ]
+            "$ref": "#/components/schemas/ServerPriority"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
         "required": [
           "observed_at",
           "global",
           "vaults"
-        ]
+        ],
+        "title": "UploadActivityResponse"
+      },
+      "UploadActivityStage": {
+        "properties": {
+          "files": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Files"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Bytes"
+          },
+          "transferred_bytes": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Transferred Bytes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "files",
+          "bytes",
+          "transferred_bytes"
+        ],
+        "title": "UploadActivityStage"
+      },
+      "UploadActivitySummary": {
+        "properties": {
+          "stability_wait": {
+            "$ref": "#/components/schemas/UploadActivityStage"
+          },
+          "queued": {
+            "$ref": "#/components/schemas/UploadActivityStage"
+          },
+          "uploading": {
+            "$ref": "#/components/schemas/UploadActivityStage"
+          },
+          "verifying": {
+            "$ref": "#/components/schemas/UploadActivityStage"
+          },
+          "bulk_admission": {
+            "$ref": "#/components/schemas/BulkUploadAdmissionActivity"
+          },
+          "awaiting_admission_files": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Awaiting Admission Files"
+          },
+          "next_stable_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Stable At"
+          },
+          "throughput": {
+            "$ref": "#/components/schemas/UploadThroughput"
+          },
+          "expected_finish": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExpectedFinish"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stopped_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped Since",
+            "description": "When work that should move last made progress, once nothing has moved for five minutes; the expected finish is then null (#759)."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "stability_wait",
+          "queued",
+          "uploading",
+          "verifying",
+          "awaiting_admission_files",
+          "next_stable_at",
+          "throughput",
+          "expected_finish",
+          "stopped_since"
+        ],
+        "title": "UploadActivitySummary"
+      },
+      "UploadActivityVault": {
+        "properties": {
+          "stability_wait": {
+            "$ref": "#/components/schemas/UploadActivityStage"
+          },
+          "queued": {
+            "$ref": "#/components/schemas/UploadActivityStage"
+          },
+          "uploading": {
+            "$ref": "#/components/schemas/UploadActivityStage"
+          },
+          "verifying": {
+            "$ref": "#/components/schemas/UploadActivityStage"
+          },
+          "bulk_admission": {
+            "$ref": "#/components/schemas/BulkUploadAdmissionActivity"
+          },
+          "awaiting_admission_files": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Awaiting Admission Files"
+          },
+          "next_stable_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Stable At"
+          },
+          "throughput": {
+            "$ref": "#/components/schemas/UploadThroughput"
+          },
+          "expected_finish": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExpectedFinish"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stopped_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped Since",
+            "description": "When work that should move last made progress, once nothing has moved for five minutes; the expected finish is then null (#759)."
+          },
+          "vault_id": {
+            "type": "integer",
+            "title": "Vault Id"
+          },
+          "vault_name": {
+            "type": "string",
+            "title": "Vault Name"
+          },
+          "paused": {
+            "type": "boolean",
+            "title": "Paused"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "stability_wait",
+          "queued",
+          "uploading",
+          "verifying",
+          "awaiting_admission_files",
+          "next_stable_at",
+          "throughput",
+          "expected_finish",
+          "stopped_since",
+          "vault_id",
+          "vault_name",
+          "paused"
+        ],
+        "title": "UploadActivityVault"
+      },
+      "UploadPhaseSpeed": {
+        "properties": {
+          "bytes_per_second": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Per Second"
+          },
+          "files_per_second": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Files Per Second"
+          },
+          "average_bytes_per_second": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average Bytes Per Second"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "bytes_per_second",
+          "files_per_second",
+          "average_bytes_per_second"
+        ],
+        "title": "UploadPhaseSpeed"
       },
       "UploadReconciliationAction": {
         "properties": {
@@ -8418,6 +9503,56 @@
           "job_id",
           "group_id"
         ]
+      },
+      "UploadThroughput": {
+        "properties": {
+          "sample_seconds": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Sample Seconds"
+          },
+          "instant_seconds": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Instant Seconds"
+          },
+          "average_seconds": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Average Seconds"
+          },
+          "history_seconds": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "History Seconds"
+          },
+          "upload": {
+            "$ref": "#/components/schemas/UploadPhaseSpeed"
+          },
+          "verification": {
+            "$ref": "#/components/schemas/VerificationPhaseSpeed"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/ThroughputSample"
+            },
+            "type": "array",
+            "title": "History"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "sample_seconds",
+          "instant_seconds",
+          "average_seconds",
+          "history_seconds",
+          "upload",
+          "verification",
+          "history"
+        ],
+        "title": "UploadThroughput",
+        "description": "Measured speeds of a Vault's two adoption phases, from in-memory samples lost at restart (#755). Bytes per second; null until measured."
       },
       "ValidationError": {
         "properties": {
@@ -9355,6 +10490,307 @@
           "request"
         ]
       },
+      "VaultFileListItem": {
+        "properties": {
+          "upload_verification_requested": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "s3_checksum",
+                  "read_back"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upload Verification Requested"
+          },
+          "verification_method": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "s3_checksum",
+                  "read_back"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Method"
+          },
+          "verification_fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Fallback Reason"
+          },
+          "verification_egress_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Egress Bytes"
+          },
+          "last_known_state": {
+            "type": "string",
+            "title": "Last Known State"
+          },
+          "last_known_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Known At"
+          },
+          "previous_snapshot_protected": {
+            "type": "boolean",
+            "title": "Previous Snapshot Protected"
+          },
+          "availability": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Availability"
+          },
+          "cleanup_eligible": {
+            "type": "boolean",
+            "title": "Cleanup Eligible"
+          },
+          "cloud_exists": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Cloud Exists"
+          },
+          "cloud_size": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cloud Size"
+          },
+          "integrity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integrity"
+          },
+          "local_exists": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Local Exists"
+          },
+          "local_file_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Local File Type"
+          },
+          "local_size": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Local Size"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "recover_eligible": {
+            "type": "boolean",
+            "title": "Recover Eligible"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "storage_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Class"
+          },
+          "type": {
+            "type": "string",
+            "const": "file",
+            "title": "Type"
+          },
+          "upload_eligible": {
+            "type": "boolean",
+            "title": "Upload Eligible"
+          },
+          "modified_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified At"
+          },
+          "vault_id": {
+            "type": "integer",
+            "title": "Vault Id"
+          },
+          "vault_name": {
+            "type": "string",
+            "title": "Vault Name"
+          },
+          "cloud_only_conflict": {
+            "type": "boolean",
+            "title": "Cloud Only Conflict"
+          },
+          "in_excluded_folder": {
+            "type": "boolean",
+            "title": "In Excluded Folder",
+            "description": "The file is inside an Excluded Folder: the Vault does not look there, so it keeps its last known state and is not observed."
+          },
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "current_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version Id",
+            "description": "Explicit Current Snapshot reference; null when the file has none."
+          },
+          "pending_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Version Id",
+            "description": "Explicit replacement in progress; never recoverable."
+          },
+          "recoverable": {
+            "type": "boolean",
+            "title": "Recoverable",
+            "description": "Current exists, is verified and available."
+          },
+          "reconciliation_block": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reconciliation Block"
+          },
+          "cleanup": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "waiting",
+                  "in_progress",
+                  "blocked"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cleanup",
+            "description": "Exact cleanup of superseded versions."
+          },
+          "recovery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FileRecovery"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "name",
+          "path",
+          "state",
+          "type"
+        ],
+        "title": "VaultFileListItem",
+        "description": "Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, stopped (an upload the Owner stopped, kept out of automatic upload until the content changes, never pending), excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem)."
+      },
       "VaultInclusionPreview": {
         "type": "object",
         "additionalProperties": true,
@@ -9652,6 +11088,264 @@
         "title": "VaultReconnect",
         "description": "Explicitly accept a Source Volume and directory for an existing Vault."
       },
+      "VaultRuntimeStatus": {
+        "properties": {
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "scanning": {
+            "type": "boolean",
+            "title": "Scanning"
+          },
+          "scan_phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Phase"
+          },
+          "verify_files_total": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verify Files Total"
+          },
+          "verify_files_done": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verify Files Done"
+          },
+          "verify_bytes_total": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verify Bytes Total"
+          },
+          "verify_bytes_done": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verify Bytes Done"
+          },
+          "traversal_files_seen": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Traversal Files Seen"
+          },
+          "traversal_files_per_minute": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Traversal Files Per Minute"
+          },
+          "traversal_files_expected": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Traversal Files Expected"
+          },
+          "last_error_source_cause": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Source Cause"
+          },
+          "traversal_lock_wait_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Traversal Lock Wait Seconds"
+          },
+          "traversal_probe_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Traversal Probe Seconds"
+          },
+          "traversal_write_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Traversal Write Seconds"
+          },
+          "last_error_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Source"
+          },
+          "last_error_source_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Source At"
+          },
+          "server_priority_enabled": {
+            "type": "boolean",
+            "title": "Server Priority Enabled"
+          },
+          "server_priority_throttled": {
+            "type": "boolean",
+            "title": "Server Priority Throttled"
+          },
+          "server_priority_throttled_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Server Priority Throttled Since"
+          },
+          "source_device_read_limit": {
+            "type": "integer",
+            "title": "Source Device Read Limit"
+          },
+          "source_devices": {
+            "items": {
+              "$ref": "#/components/schemas/SourceDeviceReads"
+            },
+            "type": "array",
+            "title": "Source Devices"
+          },
+          "scan_queued": {
+            "type": "boolean",
+            "title": "Scan Queued",
+            "description": "A requested full scan waits for the Vault (#759)."
+          },
+          "scan_queued_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Queued At"
+          },
+          "scan_waiting_for": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Waiting For",
+            "description": "The operation the queued scan waits for (null when the Vault is free)."
+          },
+          "scan_waiting_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Waiting Since",
+            "description": "Since when that operation holds the Vault."
+          },
+          "verify_bytes_read": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verify Bytes Read",
+            "description": "Bytes read by the running verification, partial files included (#759)."
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "VaultRuntimeStatus"
+      },
       "VaultSelectResponse": {
         "additionalProperties": true,
         "properties": {
@@ -9742,6 +11436,25 @@
         "title": "VaultSelfServiceCreate",
         "description": "Self-service vault creation payload (issues #7, #6, and #150).\n\nLabels are accepted. Adoption adds a\nconstrained ``volume_alias`` + ``relative_path`` pair \u2014 never an absolute\nfilesystem path or S3 identity."
       },
+      "VaultStorageBytes": {
+        "properties": {
+          "cloud_bytes": {
+            "type": "number",
+            "title": "Cloud Bytes"
+          },
+          "local_bytes": {
+            "type": "number",
+            "title": "Local Bytes"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "cloud_bytes",
+          "local_bytes"
+        ],
+        "title": "VaultStorageBytes"
+      },
       "VaultsResponse": {
         "additionalProperties": true,
         "properties": {
@@ -9756,6 +11469,41 @@
           "items"
         ],
         "type": "object"
+      },
+      "VerificationPhaseSpeed": {
+        "properties": {
+          "bytes_per_second": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Per Second"
+          },
+          "average_bytes_per_second": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average Bytes Per Second"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "bytes_per_second",
+          "average_bytes_per_second"
+        ],
+        "title": "VerificationPhaseSpeed"
       },
       "VaultMoveEstimate": {
         "type": "object",
@@ -9805,121 +11553,6 @@
           "pricing_effective_at",
           "region",
           "assumptions"
-        ]
-      },
-      "NotificationItem": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "integer"
-          },
-          "user_id": {
-            "type": "integer"
-          },
-          "vault_id": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "job_id": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "event": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          },
-          "body": {
-            "type": "string"
-          },
-          "title_key": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "body_key": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "message_params": {
-            "type": "object",
-            "additionalProperties": true
-          },
-          "in_app_enabled": {
-            "type": "boolean"
-          },
-          "dedupe_key": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "created_at": {
-            "type": "string"
-          },
-          "read": {
-            "type": "boolean"
-          },
-          "read_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "problem_status": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "open",
-              "resolved",
-              null
-            ]
-          },
-          "resolved_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "resolving": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "scan",
-              null
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "user_id",
-          "vault_id",
-          "job_id",
-          "event",
-          "title",
-          "body",
-          "title_key",
-          "body_key",
-          "message_params",
-          "in_app_enabled",
-          "dedupe_key",
-          "created_at",
-          "read",
-          "read_at",
-          "problem_status",
-          "resolved_at"
         ]
       },
       "GeneralVault": {
@@ -10186,79 +11819,6 @@
           "id",
           "role",
           "recoverable"
-        ],
-        "type": "object"
-      },
-      "DirectoryListItem": {
-        "additionalProperties": true,
-        "description": "Directory protection counts as returned by /api/files browse mode. State is the most actionable observation, not Mixed.",
-        "properties": {
-          "last_known_states": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "number"
-            }
-          },
-          "last_known_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "available_actions": {
-            "additionalProperties": {
-              "type": "number"
-            },
-            "type": "object"
-          },
-          "cloud_size": {
-            "type": "number"
-          },
-          "item_count": {
-            "type": "number"
-          },
-          "local_size": {
-            "type": "number"
-          },
-          "name": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
-          "state": {
-            "type": "string"
-          },
-          "state_counts": {
-            "additionalProperties": {
-              "type": "number"
-            },
-            "type": "object"
-          },
-          "storage_class": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "storage_class_count": {
-            "type": "number"
-          },
-          "total_size": {
-            "type": "number"
-          },
-          "type": {
-            "const": "directory",
-            "type": "string"
-          }
-        },
-        "required": [
-          "type",
-          "name",
-          "path",
-          "item_count",
-          "total_size",
-          "state"
         ],
         "type": "object"
       },
@@ -10769,204 +12329,6 @@
         ],
         "type": "string"
       },
-      "VaultFileListItem": {
-        "additionalProperties": true,
-        "description": "Vault File protection observation: pending, protected, problem, unconfirmed, cloud_only, stopped (an upload the Owner stopped, kept out of automatic upload until the content changes, never pending), excluded (skipped by automatic upload, never pending) or unsupported (a symlink or special file that cannot be archived, never a problem).",
-        "properties": {
-          "upload_verification_requested": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "s3_checksum",
-              "read_back",
-              null
-            ]
-          },
-          "verification_method": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "s3_checksum",
-              "read_back",
-              null
-            ]
-          },
-          "verification_fallback_reason": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "verification_egress_bytes": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "last_known_state": {
-            "type": "string"
-          },
-          "last_known_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "previous_snapshot_protected": {
-            "type": "boolean"
-          },
-          "availability": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "cleanup_eligible": {
-            "type": "boolean"
-          },
-          "cloud_exists": {
-            "type": [
-              "number",
-              "boolean"
-            ]
-          },
-          "cloud_size": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "integrity": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "local_exists": {
-            "type": [
-              "number",
-              "boolean"
-            ]
-          },
-          "local_file_type": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "local_size": {
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "name": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
-          "recover_eligible": {
-            "type": "boolean"
-          },
-          "state": {
-            "type": "string"
-          },
-          "storage_class": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "type": {
-            "const": "file",
-            "type": "string"
-          },
-          "upload_eligible": {
-            "type": "boolean"
-          },
-          "modified_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "vault_id": {
-            "type": "integer"
-          },
-          "vault_name": {
-            "type": "string"
-          },
-          "cloud_only_conflict": {
-            "type": "boolean"
-          },
-          "in_excluded_folder": {
-            "type": "boolean",
-            "description": "The file is inside an Excluded Folder: the Vault does not look there, so it keeps its last known state and is not observed."
-          },
-          "id": {
-            "type": "string"
-          },
-          "current_version_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Explicit Current Snapshot reference; null when the file has none."
-          },
-          "pending_version_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Explicit replacement in progress; never recoverable."
-          },
-          "recoverable": {
-            "type": "boolean",
-            "description": "Current exists, is verified and available."
-          },
-          "reconciliation_block": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "cleanup": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "waiting",
-              "in_progress",
-              "blocked",
-              null
-            ],
-            "description": "Exact cleanup of superseded versions."
-          },
-          "recovery": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/FileRecovery"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "type",
-          "name",
-          "path",
-          "state"
-        ],
-        "type": "object"
-      },
       "VaultListItem": {
         "additionalProperties": true,
         "properties": {
@@ -10999,405 +12361,6 @@
           "name"
         ],
         "type": "object"
-      },
-      "BulkUploadAdmissionActivity": {
-        "type": "object",
-        "properties": {
-          "requests": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "selected_files": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "processed_files": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "admitted_files": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "required": [
-          "requests",
-          "selected_files",
-          "processed_files",
-          "admitted_files"
-        ]
-      },
-      "UploadActivityStage": {
-        "type": "object",
-        "properties": {
-          "files": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "bytes": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "transferred_bytes": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "required": [
-          "files",
-          "bytes",
-          "transferred_bytes"
-        ]
-      },
-      "UploadActivitySummary": {
-        "type": "object",
-        "properties": {
-          "stability_wait": {
-            "$ref": "#/components/schemas/UploadActivityStage"
-          },
-          "queued": {
-            "$ref": "#/components/schemas/UploadActivityStage"
-          },
-          "uploading": {
-            "$ref": "#/components/schemas/UploadActivityStage"
-          },
-          "verifying": {
-            "$ref": "#/components/schemas/UploadActivityStage"
-          },
-          "bulk_admission": {
-            "$ref": "#/components/schemas/BulkUploadAdmissionActivity"
-          },
-          "awaiting_admission_files": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "next_stable_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "throughput": {
-            "$ref": "#/components/schemas/UploadThroughput"
-          },
-          "expected_finish": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/ExpectedFinish"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "stopped_since": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "When work that should move last made progress, once nothing has moved for five minutes; the expected finish is then null (#759)."
-          }
-        },
-        "required": [
-          "stability_wait",
-          "queued",
-          "uploading",
-          "verifying",
-          "awaiting_admission_files",
-          "next_stable_at",
-          "throughput",
-          "expected_finish",
-          "stopped_since"
-        ]
-      },
-      "UploadThroughput": {
-        "type": "object",
-        "description": "Measured speeds of a Vault's two adoption phases, from in-memory samples lost at restart (#755). Bytes per second; null until measured.",
-        "properties": {
-          "sample_seconds": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "instant_seconds": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "average_seconds": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "history_seconds": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "upload": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "bytes_per_second": {
-                "type": [
-                  "number",
-                  "null"
-                ],
-                "minimum": 0
-              },
-              "files_per_second": {
-                "type": [
-                  "number",
-                  "null"
-                ],
-                "minimum": 0
-              },
-              "average_bytes_per_second": {
-                "type": [
-                  "number",
-                  "null"
-                ],
-                "minimum": 0
-              }
-            },
-            "required": [
-              "bytes_per_second",
-              "files_per_second",
-              "average_bytes_per_second"
-            ]
-          },
-          "verification": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "bytes_per_second": {
-                "type": [
-                  "number",
-                  "null"
-                ],
-                "minimum": 0
-              },
-              "average_bytes_per_second": {
-                "type": [
-                  "number",
-                  "null"
-                ],
-                "minimum": 0
-              }
-            },
-            "required": [
-              "bytes_per_second",
-              "average_bytes_per_second"
-            ]
-          },
-          "history": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "at": {
-                  "type": "string"
-                },
-                "upload_bytes_per_second": {
-                  "type": "number",
-                  "minimum": 0
-                },
-                "verification_bytes_per_second": {
-                  "type": "number",
-                  "minimum": 0
-                }
-              },
-              "required": [
-                "at",
-                "upload_bytes_per_second",
-                "verification_bytes_per_second"
-              ]
-            }
-          }
-        },
-        "required": [
-          "sample_seconds",
-          "instant_seconds",
-          "average_seconds",
-          "history_seconds",
-          "upload",
-          "verification",
-          "history"
-        ]
-      },
-      "ExpectedFinish": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "The later of the active phases at their average speed, and the phase that limits it (#755).",
-        "properties": {
-          "at": {
-            "type": "string"
-          },
-          "seconds": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "limited_by": {
-            "type": "string",
-            "enum": [
-              "upload",
-              "verification"
-            ]
-          }
-        },
-        "required": [
-          "at",
-          "seconds",
-          "limited_by"
-        ]
-      },
-      "MetadataBackupVerification": {
-        "type": "object",
-        "properties": {
-          "last_verified": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "properties": {
-              "id": {
-                "type": "integer"
-              },
-              "created_at": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "verified_at": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "created_at",
-              "verified_at"
-            ]
-          },
-          "latest": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "properties": {
-              "id": {
-                "type": "integer"
-              },
-              "created_at": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "verified_at": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            },
-            "required": [
-              "id",
-              "created_at",
-              "verified_at"
-            ]
-          },
-          "pending_run_id": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "automatic": {
-            "type": "boolean"
-          },
-          "next_verification_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "last_verified",
-          "latest",
-          "pending_run_id",
-          "automatic",
-          "next_verification_at"
-        ]
-      },
-      "FileRecovery": {
-        "type": "object",
-        "additionalProperties": true,
-        "description": "Recovery in progress of a cloud-only file (#646): its Job and the cloud restore, which continues and is charged after the Job is stopped.",
-        "properties": {
-          "state": {
-            "type": "string",
-            "enum": [
-              "queued",
-              "awaiting_approval",
-              "waiting_for_cloud",
-              "ready",
-              "downloading"
-            ]
-          },
-          "active": {
-            "type": "boolean",
-            "description": "A Recovery Job is in progress; false when only the cloud restore continues or a restored copy is readable."
-          },
-          "tier": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "Expedited",
-              "Standard",
-              "Bulk",
-              null
-            ]
-          },
-          "days": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "requested_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "ready_by": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Request instant plus the tier's restore hours; an estimate."
-          },
-          "expires_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "End of the readable restored copy."
-          }
-        },
-        "required": [
-          "state",
-          "active",
-          "tier",
-          "days",
-          "requested_at",
-          "ready_by",
-          "expires_at"
-        ]
       },
       "MinimumStorageDeletion": {
         "type": "object",

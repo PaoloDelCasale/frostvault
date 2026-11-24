@@ -14,10 +14,15 @@ import type {
   LocaleUpdateResponse,
   LoginOptionsResponse,
   MeResponse,
+  MarkAllNotificationsReadResponse,
+  MetadataBackupRun as MetadataBackupRunWire,
   MetadataBackupRunAction,
-  MetadataBackupVerification,
+  MetadataBackupRunResult as MetadataBackupRunResultWire,
+  MetadataBackupStatus as MetadataBackupStatusWire,
+  MetadataBackupsResponse as MetadataBackupsResponseWire,
   NotificationItem,
   NotificationsResponse,
+  ProblemsResponse,
   RecoveryKitStatus,
   RetryFailedUploadsResponse,
   SourceDirectoryBrowseResponse,
@@ -39,54 +44,14 @@ export type FetchNotificationsParams = {
   beforeId?: number;
 };
 
-export type MarkAllNotificationsReadResponse = {
-  marked_count: number;
-  unread_count: number;
-};
-
 /**
- * The metadata-backup, mark-read and sign-out routes below answer with an
- * untyped JSON object in the OpenAPI document, so their shapes are written
- * here; every other response type comes from the generated schema.
- *
- * Safe metadata-backup fields exposed to the SPA; filesystem paths are omitted.
+ * Safe metadata-backup fields exposed to the SPA: the generated answers of the
+ * metadata-backup routes without their filesystem paths.
  */
-export type MetadataBackupRun = {
-  id: number;
-  created_at: string;
-  finished_at: string | null;
-  reason: string;
-  backend: string;
-  status: string;
-  digest_sha256: string | null;
-  database_sha256: string | null;
-  s3_key: string | null;
-  /** Bucket of the off-host copy; null for local-only and pre-#734 runs. */
-  s3_bucket?: string | null;
-  size_bytes: number | null;
-  error_message: string | null;
-  verified_at: string | null;
-};
+export type MetadataBackupRun = Omit<MetadataBackupRunWire, "local_path">;
 
-/** The installation's System Bucket for metadata backups (#734). */
-export type SystemBucket = {
-  name: string;
-  region: string;
-  origin: "configured" | "created";
-  ready: boolean;
-};
-
-export type MetadataBackupStatus = {
-  last_status: string;
+export type MetadataBackupStatus = Omit<MetadataBackupStatusWire, "last_run"> & {
   last_run: MetadataBackupRun | null;
-  succeeded_count: number;
-  failed_count: number;
-  /** Last verified backup and next automatic verification (#648). */
-  verification?: MetadataBackupVerification;
-  /** Where off-host copies go; null while there is none (#734). */
-  system_bucket?: SystemBucket | null;
-  /** Whether backups must also reach the System Bucket. */
-  off_host?: boolean;
 };
 
 export type MetadataBackupsResponse = {
@@ -94,36 +59,9 @@ export type MetadataBackupsResponse = {
   runs: MetadataBackupRun[];
 };
 
-export type MetadataBackupRunResult = {
-  ok: boolean;
-  reason: string;
-  digest_sha256: string;
-  database_sha256: string;
-  backend: string;
-  s3_key: string | null;
-  size_bytes: number;
-  filename: string;
-  created_at: string;
-};
+export type MetadataBackupRunResult = Omit<MetadataBackupRunResultWire, "path">;
 
 export type MetadataBackupDownload = ApiDownload;
-
-type MetadataBackupRunWire = MetadataBackupRun & {
-  local_path?: unknown;
-  path?: unknown;
-};
-
-type MetadataBackupRunResultWire = MetadataBackupRunResult & {
-  local_path?: unknown;
-  path?: unknown;
-};
-
-type MetadataBackupsResponseWire = {
-  status: Omit<MetadataBackupStatus, "last_run"> & {
-    last_run: MetadataBackupRunWire | null;
-  };
-  runs: MetadataBackupRunWire[];
-};
 
 function withoutMetadataBackupPaths<T extends Record<string, unknown>>(
   value: T,
@@ -302,8 +240,8 @@ export function fetchOverview(): Promise<GeneralOverview> {
 }
 
 /** One page of open Problems across every Vault. */
-export function fetchProblems(page: number): Promise<NotificationsResponse> {
-  return apiRequest<NotificationsResponse>(`/api/problems?page=${page}`);
+export function fetchProblems(page: number): Promise<ProblemsResponse> {
+  return apiRequest<ProblemsResponse>(`/api/problems?page=${page}`);
 }
 
 /** Files by name across every Vault the Owner can see; a Vault's own list is `vaultApi(id).files`. */

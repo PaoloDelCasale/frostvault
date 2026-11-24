@@ -159,6 +159,7 @@ const INTEGRITY_RUN: MetadataBackupRun = {
   digest_sha256: INTEGRITY_DIGEST,
   database_sha256: "b".repeat(64),
   s3_key: "system/backups/metadata-10.bak.enc",
+  s3_bucket: null,
   size_bytes: 21,
   error_message: null,
   verified_at: null,

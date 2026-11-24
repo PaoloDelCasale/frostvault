@@ -5,9 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
-from fastapi.testclient import TestClient
 
-from app.main import app
 from app.services.metadata_backups import record_backup_run
 from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 from tests.spa_fixture import write_spa_dist
@@ -66,7 +64,7 @@ class ReconnectRecoveryHttpTests(FrostVaultTestCase):
         self.assertEqual(response.json()["source_root"], str(sources / "managed" / own_uuid))
 
     def test_kit_requires_authentication_and_recent_reauthentication(self):
-        anonymous = TestClient(app)
+        anonymous = self.http_client()
         self.assertIn(anonymous.get("/api/recovery-kit/download").status_code, (401, 403))
         client, _ = self.client_for(stale=True)
         with patch("app.services.recovery_kit.build_recovery_kit") as build:

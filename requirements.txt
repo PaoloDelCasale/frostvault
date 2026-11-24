@@ -1,5 +1,8 @@
 fastapi==0.163.2
 starlette==1.10.0
+# The response models use the MISSING sentinel, experimental in this release:
+# pinned so that an image build cannot pick up a release that changed it.
+pydantic==2.14.4
 uvicorn[standard]==0.54.0
 watchfiles==1.3.0
 boto3==1.44.5

@@ -39,13 +39,11 @@ class EssentialSearchPostgresTests(fixtures.ProtectionStateFixture):
         self.assertFalse(hot['requires_restore'])
 
     def test_http_config_scope_survives_another_clients_session_selection(self):
-        from fastapi.testclient import TestClient
-        from app.main import app
         from app.services.operation_policies import get_policy
         seed_vault(self.connection, id=10, name='Second', source_root='/second')
         create_owner(self.connection)
         self.connection.commit()
-        client = TestClient(app)
+        client = self.http_client()
         sign_in(client, self.database, auth_method='local')
         self.connection.execute('UPDATE sessions SET vault_id=9')
         self.connection.commit()
