@@ -14,7 +14,7 @@ working.
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from .i18n import DEFAULT_LOCALE, has_message, translate
 
@@ -59,6 +59,16 @@ class NotFound(DomainError):
     """What the request names does not exist (or not in this Vault)."""
 
     code = "not_found"
+
+
+class MethodNotAllowed(DomainError):
+    """The address exists, but not for the method of the request."""
+
+    code = "method_not_allowed"
+
+    def __init__(self, message_key: str, *, allow: Iterable[str]) -> None:
+        super().__init__(message_key)
+        self.headers = {"Allow": ", ".join(allow)}
 
 
 class Conflict(DomainError):
@@ -129,6 +139,7 @@ STATUS: Mapping[str, int] = {
     "forbidden": 403,
     "reauth_required": 403,
     "not_found": 404,
+    "method_not_allowed": 405,
     "conflict": 409,
     "invalid": 422,
     "rate_limited": 429,

@@ -25,7 +25,7 @@ NO_GROUP = "00000000-0000-0000-0000-000000000000"
 
 # The ``code`` of each status: the kind of refusal, which the status follows.
 CODES = {400: "bad_request", 401: "unauthenticated", 403: "forbidden", 404: "not_found",
-         409: "conflict", 422: "invalid", 429: "rate_limited", 500: "failed",
+         405: "method_not_allowed", 409: "conflict", 422: "invalid", 429: "rate_limited", 500: "failed",
          502: "upstream_failed", 503: "unavailable"}
 
 
@@ -110,8 +110,7 @@ class SessionErrors(ApiErrorCase):
     def test_the_session_vault_is_gone(self) -> None:
         # #805: the interface chooses the Vault it opens on; the Session holds none.
         self.assertNotIn("/api/vaults/select", self.client.app.openapi()["paths"])
-        response = self.client.post("/api/vaults/select", json={"vault_id": 1})
-        self.assertEqual((response.status_code, response.json()), (404, {"detail": "Not Found"}))
+        self.check("POST", "/api/vaults/select", {"vault_id": 1}, 404, problem("api.not_found"))
         self.assertNotIn("vault", self.client.get("/api/me").json())
         with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT vault_id FROM sessions").fetchall(),
@@ -146,6 +145,56 @@ class SessionErrors(ApiErrorCase):
                 response = send()
             self.same(response, 429, problem("api.sign_in.too_many_attempts"))
             self.assertGreater(int(response.headers["Retry-After"]), 0)
+
+
+class RouterErrors(ApiErrorCase):
+    """#861: an address the router does not route answers the same error shape under /api/."""
+
+    def test_an_unknown_address_is_not_found(self) -> None:
+        not_found = problem("api.not_found")
+        for method, url, body in (
+            ("GET", "/api/does-not-exist", X),
+            ("GET", "/api/stats?vault_id=4", X),
+            ("GET", "/api/vault/operation-policy", X),
+            ("POST", "/api/vaults/select", {"vault_id": 1}),
+            ("PUT", "/api/does-not-exist", {}),
+            ("PATCH", "/api/does-not-exist", {}),
+            ("DELETE", "/api/does-not-exist", X),
+        ):
+            response = self.check(method, url, body, 404, not_found)
+            self.assertNotIn("allow", response.headers)
+            self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_a_known_address_with_another_method_is_not_allowed(self) -> None:
+        not_allowed = problem("api.method_not_allowed")
+        for method, url, allow in (
+            ("DELETE", "/api/vaults", "GET, POST"),
+            ("PUT", "/api/vaults", "GET, POST"),
+            ("GET", "/api/upload/retry-failed", "POST"),
+            ("DELETE", "/api/vaults/1/stats", "GET"),
+        ):
+            response = self.check(method, url, X, 405, not_allowed)
+            self.assertEqual(response.headers["allow"], allow)
+            self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_a_routed_address_keeps_its_own_answer(self) -> None:
+        self.check("GET", "/api/vaults/999/stats", X, 404, problem("api.protected_vault_not_found"))
+
+    def test_the_message_follows_the_language_of_the_request(self) -> None:
+        italian = {"Accept-Language": "it"}
+        self.check("GET", "/api/does-not-exist", X, 404, problem("api.not_found", locale="it"),
+                   headers=italian)
+        self.check("DELETE", "/api/vaults", X, 405,
+                   problem("api.method_not_allowed", locale="it"), headers=italian)
+
+    def test_addresses_outside_the_api_keep_the_router_answer(self) -> None:
+        for method, url in (("GET", "/api"), ("GET", "/auth/does-not-exist"),
+                            ("GET", "/assets/missing.js"),
+                            ("POST", "/does-not-exist"), ("DELETE", "/auth/does-not-exist")):
+            with self.subTest(f"{method} {url}"):
+                response = self.client.request(method, url)
+                self.assertEqual((response.status_code, response.json()),
+                                 (404, {"detail": "Not Found"}))
 
 
 class VaultManagementErrors(ApiErrorCase):
@@ -549,8 +598,7 @@ class BrowseAddress(VaultAddressCase):
                 with self.subTest(suffix=suffix, query=query):
                     separator = "&" if "?" in suffix else "?"
                     response = self.client.get(f"/api/{suffix}{separator if query else ''}{query}")
-                    self.assertEqual((response.status_code, response.json()),
-                                     (404, {"detail": "Not Found"}))
+                    self.same(response, 404, problem("api.not_found"))
         self.assertIsNone(self.session_vault())
 
     def test_the_vault_is_not_a_query_parameter_any_more(self) -> None:
@@ -689,8 +737,7 @@ class JobsAddress(VaultAddressCase):
                 with self.subTest(method=method, suffix=suffix, query=query):
                     separator = ("&" if "?" in suffix else "?") if query else ""
                     response = self.client.request(method, f"/api/{suffix}{separator}{query}", json=body)
-                    self.assertEqual((response.status_code, response.json()),
-                                     (404, {"detail": "Not Found"}))
+                    self.same(response, 404, problem("api.not_found"))
         self.assertIsNone(self.session_vault())
 
     def test_the_vault_is_not_a_query_parameter_any_more(self) -> None:
