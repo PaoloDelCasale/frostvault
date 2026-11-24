@@ -12,6 +12,7 @@ import hashlib
 import unittest
 
 from app.catalog import ArchiveCatalog
+from app.services.job_admission import JobAdmission
 
 from tests.catalog_support import fingerprint, protect
 from tests.fixtures import FrostVaultTestCase, seed_vault
@@ -66,7 +67,7 @@ class VersionSelectionTests(FrostVaultTestCase):
     def test_superseded_available_copy_cannot_be_selected_for_recovery(self) -> None:
         ids = self._fixture()
         with self.database.connect() as connection:
-            job_ids, _total, eligible = ArchiveCatalog(connection).queue_jobs(
+            job_ids, _total, eligible = JobAdmission(connection).queue_jobs(
                 vault_id=2,
                 path="notes.txt",
                 action="recover",
@@ -81,7 +82,7 @@ class VersionSelectionTests(FrostVaultTestCase):
     def test_default_recover_targets_the_verified_current(self) -> None:
         ids = self._fixture()
         with self.database.connect() as connection:
-            job_ids, _, _ = ArchiveCatalog(connection).queue_jobs(
+            job_ids, _, _ = JobAdmission(connection).queue_jobs(
                 vault_id=2,
                 path="notes.txt",
                 action="recover",

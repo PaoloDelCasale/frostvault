@@ -19,6 +19,7 @@ from watchfiles import Change
 
 from app import main, storage
 from app.catalog import ArchiveCatalog
+from app.services.job_admission import JobAdmission
 from app.services import health, notifications, vault_relocation
 from app.services.operation_policies import queue_auto_uploads
 from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
@@ -126,7 +127,7 @@ class QueueFixture(FrostVaultTestCase):
             patch("app.storage.source_layout.vault_local_access", side_effect=lambda _: self.access),
             patch("app.storage.now_iso", side_effect=lambda: self.clock.isoformat()),
             # Per-Vault operation policies are not in the v0.6 baseline yet.
-            patch("app.catalog.ArchiveCatalog._upload_verification_mode", return_value="s3_checksum"),
+            patch("app.services.job_admission.JobAdmission._upload_verification_mode", return_value="s3_checksum"),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -226,7 +227,7 @@ class ClaimableWindowTests(QueueFixture):
         self.advance(60)
         self.write(2, "manual.jpg")
         with self.db() as connection:
-            manual, _, _ = ArchiveCatalog(connection).queue_jobs(
+            manual, _, _ = JobAdmission(connection).queue_jobs(
                 vault_id=2, path="manual.jpg", action="upload",
                 requested_at=self.clock.isoformat(), group_id=str(uuid.uuid4()), is_directory=False,
             )
@@ -309,7 +310,7 @@ class TierWindowTests(QueueFixture):
         self.write(2, "manual.jpg")
         self.advance(300)
         with self.db() as connection:
-            manual, _, _ = ArchiveCatalog(connection).queue_jobs(
+            manual, _, _ = JobAdmission(connection).queue_jobs(
                 vault_id=2, path="manual.jpg", action="upload",
                 requested_at=self.clock.isoformat(), group_id=str(uuid.uuid4()), is_directory=False,
             )
@@ -503,7 +504,7 @@ class RemovedFileTests(QueueFixture):
 
     def queue_manual(self, name):
         with self.db() as connection:
-            ids, _, _ = ArchiveCatalog(connection).queue_jobs(
+            ids, _, _ = JobAdmission(connection).queue_jobs(
                 vault_id=2, path=name, action="upload",
                 requested_at=self.clock.isoformat(), group_id=str(uuid.uuid4()), is_directory=False,
             )
@@ -863,7 +864,7 @@ class CancelPendingHttpTests(QueueFixture):
     def queue_manual(self, name):
         group_id = str(uuid.uuid4())
         with self.db() as connection:
-            job_ids, _, _ = ArchiveCatalog(connection).queue_jobs(
+            job_ids, _, _ = JobAdmission(connection).queue_jobs(
                 vault_id=2, path=name, action="upload",
                 requested_at=self.clock.isoformat(), group_id=group_id, is_directory=False,
             )

@@ -138,7 +138,7 @@ def preview(connection: Any, vault_id: int) -> dict[str, Any]:
 
 def schedule(connection: Any, *, vault_id: int, target: str, user_id: int,
              acknowledged: bool, timestamp: str) -> dict[str, Any]:
-    from ..catalog import ArchiveCatalog
+    from .job_admission import JobAdmission
 
     vault = lock_vault(connection, vault_id)
     require_ready(vault)
@@ -156,10 +156,10 @@ def schedule(connection: Any, *, vault_id: int, target: str, user_id: int,
         raise MoveBlocked("api.vault_move.source_outside")
     group_id = str(uuid.uuid4())
     ids: list[int] = []
-    catalog = ArchiveCatalog(connection)
+    admission = JobAdmission(connection)
     for row in eligible:
         # Only the files found eligible here: never a warming move.
-        admitted, _bytes, _count = catalog.queue_jobs(
+        admitted, _bytes, _count = admission.queue_jobs(
             vault_id=vault_id, path=row["path"], action="storage-class", requested_at=timestamp,
             group_id=group_id, is_directory=False, target_storage_class=target, colder_only=True)
         ids.extend(admitted)

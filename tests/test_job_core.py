@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 import psycopg
 
 from app.catalog import ArchiveCatalog
+from app.services.job_admission import JobAdmission
 from app.services import job_admission, recovery_approval, vault_pause
 from tests.catalog_support import fingerprint, protect, sha256_hex
 from tests.fixtures import FrostVaultTestCase, seed_vault
@@ -63,7 +64,7 @@ class JobCoreFixture(FrostVaultTestCase):
         if action == "upload":
             kwargs.setdefault("admission_verification_mode", "s3_checksum")
         with self.db() as connection:
-            job_ids, _total, _eligible = ArchiveCatalog(connection).queue_jobs(
+            job_ids, _total, _eligible = JobAdmission(connection).queue_jobs(
                 vault_id=vault_id, path=path, action=action, requested_at=stamp(seconds),
                 group_id=group_id or token(), is_directory=kwargs.pop("is_directory", False),
                 origin=origin, **kwargs,

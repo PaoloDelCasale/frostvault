@@ -1,6 +1,6 @@
 """Archive a changed Local Copy of a Vault File already present on S3 (#295).
 
-Admission seams on the rebuilt model (ADR-0035): ``ArchiveCatalog.queue_jobs``
+Admission seams on the rebuilt model (ADR-0035): ``JobAdmission.queue_jobs``
 and the unpaged listing admit new bytes when Current holds older content, and
 directory aggregates offer the upload. Disposable PostgreSQL 16 only.
 
@@ -26,6 +26,7 @@ import unittest
 import uuid
 
 from app.catalog import ArchiveCatalog
+from app.services.job_admission import JobAdmission
 from app.services import directory_aggregates as aggregates
 from tests.catalog_support import fingerprint, protect, sha256_hex
 from tests import catalog_probe
@@ -51,7 +52,7 @@ class ChangedContentAdmissionTests(FrostVaultTestCase):
         return protect(self.catalog, 2, path, sha256_hex(payload))
 
     def queue(self, path: str = "report.txt") -> tuple[list[int], int]:
-        job_ids, _, eligible = self.catalog.queue_jobs(
+        job_ids, _, eligible = JobAdmission(self.connection).queue_jobs(
             vault_id=2, path=path, action="upload", requested_at="2026-07-21T10:03:00+00:00",
             group_id=str(uuid.uuid4()), is_directory=False)
         return job_ids, eligible

@@ -13,13 +13,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ..api_models import JsonObjectResponse, response_model
 from ..config import settings
 from ..i18n import DEFAULT_LOCALE, format_datetime, translate
-from ..catalog import ArchiveCatalog
 from ..database import db
 from ..errors import Conflict, Invalid, NotFound, Unavailable, VaultNotFound
 from ..services.source_layout import vault_local_access
 from ..services.runtime_status import scan_waiting, vault_operation_key
 from ..services import audit_events as audit_event_store
 from ..services.catalog_event_stream import coalesced_catchup_signal, iter_catalog_event_sse
+from ..services.file_listing import FileListing
 from ..services.restore_estimates import SUPPORTED_RESTORE_TIERS
 from ..services import cloud_deletion as cloud_deletion_service
 from ..services import job_admission
@@ -333,7 +333,7 @@ def file_versions(
 ):
     logical_path = safe_relative_path(path).as_posix()
     with db() as connection:
-        versions = ArchiveCatalog(connection).list_versions(vault["id"], logical_path)
+        versions = FileListing(connection).list_versions(vault["id"], logical_path)
         from ..services.upload_provenance import describe
         reconciliation = describe(connection, vault_id=vault["id"], path=logical_path)
         from ..services.upload_remediation import file_projection

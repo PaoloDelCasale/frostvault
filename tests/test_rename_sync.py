@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 from app import storage
 from app.catalog import ArchiveCatalog
+from app.services.job_admission import JobAdmission
 from app.services import vault_relocation
 from app.services.s3_copy import COPY_TOKEN_KEY
 from tests import test_upload_worker as fixtures
@@ -46,7 +47,7 @@ class CopyWorkerFixture(fixtures.UploadWorkerCase):
 
     def admit(self, action: str, path: str, **kwargs) -> int:
         with self.db() as connection:
-            job_ids, _bytes, eligible = ArchiveCatalog(connection).queue_jobs(
+            job_ids, _bytes, eligible = JobAdmission(connection).queue_jobs(
                 vault_id=2, path=path, action=action, requested_at=storage.now_iso(),
                 group_id=str(uuid.uuid4()), is_directory=False, **kwargs)
         self.assertEqual((len(job_ids), eligible), (1, 1), f"{action} must be admitted")

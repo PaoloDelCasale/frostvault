@@ -177,8 +177,8 @@ def advance(connection: Any, *, vault_id: int, group_id: str, batch_size: int = 
     file_ids = [str(row["id"]) for row in rows if row["included"]]
     job_ids, total_bytes = [], 0
     if file_ids:
-        from ..catalog import ArchiveCatalog
-        job_ids, total_bytes, _ = ArchiveCatalog(connection).queue_jobs(
+        from .job_admission import JobAdmission
+        job_ids, total_bytes, _ = JobAdmission(connection).queue_jobs(
             vault_id=vault_id, path=request["path"], action="upload",
             requested_at=stamp, group_id=group_id, is_directory=True,
             whole_vault=not request["path"], origin=request["origin"], admission_file_ids=file_ids,

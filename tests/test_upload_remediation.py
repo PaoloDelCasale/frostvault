@@ -17,6 +17,7 @@ import psycopg
 
 from app import storage
 from app.catalog import ArchiveCatalog
+from app.services.job_admission import JobAdmission
 from app.services import upload_failure_problems
 from app.services import upload_provenance as provenance
 from app.services import upload_remediation as remediation
@@ -77,7 +78,7 @@ class UploadRemediationTests(worker.UploadWorkerCase):
 
     def request_upload(self) -> list[int]:
         with self.db() as connection:
-            job_ids, _, _ = ArchiveCatalog(connection).queue_jobs(
+            job_ids, _, _ = JobAdmission(connection).queue_jobs(
                 vault_id=2, path="report.txt", action="upload", requested_at=storage.now_iso(),
                 group_id=str(uuid.uuid4()), is_directory=False)
         return job_ids

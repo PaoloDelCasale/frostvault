@@ -17,6 +17,7 @@ from watchfiles import Change, awatch
 
 from app import storage
 from app.catalog import ArchiveCatalog
+from app.services.job_admission import JobAdmission
 from tests import test_auto_upload_watcher as watcher
 from tests.catalog_support import fingerprint, protect
 from tests.fixtures import override_settings
@@ -53,7 +54,7 @@ class FilesystemCatalogTests(watcher.WatcherCase):
 
     def job(self, action, path="photo.jpg"):
         with self.db() as connection:
-            ids, _, _ = ArchiveCatalog(connection).queue_jobs(
+            ids, _, _ = JobAdmission(connection).queue_jobs(
                 vault_id=2, path=path, action=action,
                 requested_at=self.clock.isoformat(), group_id=str(uuid.uuid4()), is_directory=False,
             )

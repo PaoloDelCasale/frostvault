@@ -405,8 +405,8 @@ def queue_auto_uploads(
     committed batch are admitted, and each new Job records the generation it
     was admitted on, so a compensated observation never reaches the upload.
     """
-    from ..catalog import ArchiveCatalog
     from .file_renames import awaiting_rename_analysis_sql
+    from .job_admission import JobAdmission
     from .vault_paths import safe_local_path
 
     policy = get_policy(connection, vault_id)
@@ -418,7 +418,7 @@ def queue_auto_uploads(
     ).fetchone()
     if vault is None or vault["lifecycle"] != "active":
         return 0
-    catalog = ArchiveCatalog(connection)
+    admission = JobAdmission(connection)
     # One row per File (#587): its Local Copy and its matched Archive Version.
     # A purge in progress is an active Job of the File, so it is excluded too.
     rows = connection.execute(
@@ -498,7 +498,7 @@ def queue_auto_uploads(
                                  if row["content_observed_at"] else None),
         ):
             continue
-        job_ids, _total, _eligible = catalog.queue_jobs(
+        job_ids, _total, _eligible = admission.queue_jobs(
             vault_id=vault_id,
             path=path,
             action="upload",
@@ -676,8 +676,8 @@ def queue_auto_local_cleanups(
     now: datetime | None = None,
 ) -> int:
     """Queue safe Local Copy cleanup Jobs when the current policy is due."""
-    from ..catalog import ArchiveCatalog
     from .audit_events import record_audit_event
+    from .job_admission import JobAdmission
     from .protection_states import CURRENT_JOIN_SQL, PROTECTED_SQL
 
     policy = get_policy(connection, vault_id)
@@ -705,7 +705,7 @@ def queue_auto_local_cleanups(
         """,
         (vault_id,),
     ).fetchall()
-    catalog = ArchiveCatalog(connection)
+    admission = JobAdmission(connection)
     timestamp = current.isoformat()
     queued = 0
     for row in rows:
@@ -720,7 +720,7 @@ def queue_auto_local_cleanups(
             content_observed_at=row["content_observed_at"],
         ):
             continue
-        job_ids, _total, _eligible = catalog.queue_jobs(
+        job_ids, _total, _eligible = admission.queue_jobs(
             vault_id=vault_id,
             path=row["path"],
             action="free-space",
