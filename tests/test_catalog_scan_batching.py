@@ -1,12 +1,12 @@
 """Catalog scan batching (issue #242).
 
 Seams under test:
-- ArchiveCatalog.observe_local_copies_batch — the bulk Local Copy observation
+- LocalCopies.observe_local_copies_batch — the bulk Local Copy observation
   used by ``_scan_tree`` flush batches.  It must be semantically identical to
   the serialized per-file ``observe_local_copy`` path (identity creation,
   upsert columns, digest preservation, dirty ancestors) while issuing a
   constant number of statements (#587: one upsert on ``files``).
-- ``_vault_lock_touch`` is taken once per batch, not once per file.
+- ``vault_lock_touch`` is taken once per batch, not once per file.
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ from unittest.mock import patch
 import psycopg
 
 from app.catalog import ArchiveCatalog
+from app.services import local_copies as local_copies_module
+from app.services.local_copies import LocalCopies
 
 
 def _seed_vault(connection: psycopg.Connection, vault_id: int = 2) -> None:
@@ -33,7 +35,7 @@ class CatalogScanBatchIdentityTests(FrostVaultTestCase):
         self.connection = self.database.connect()
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
-        self.catalog = ArchiveCatalog(self.connection)
+        self.local_copies = LocalCopies(self.connection)
 
     def tearDown(self) -> None:
         self.connection.__exit__(None, None, None)
@@ -58,7 +60,7 @@ class CatalogScanBatchIdentityTests(FrostVaultTestCase):
             ("photos/b.jpg", "regular", 200, 2, "2026-07-21T10:00:00+00:00"),
             ("readme.txt", "regular", 12, 3, "2026-07-21T10:00:00+00:00"),
         ]
-        ids = self.catalog.observe_local_copies_batch(vault_id=2, entries=entries)
+        ids = self.local_copies.observe_local_copies_batch(vault_id=2, entries=entries)
         rows = self._rows()
         self.assertEqual(len(rows), 3)
         self.assertEqual([r["path"] for r in rows], ["photos/a.jpg", "photos/b.jpg", "readme.txt"])
@@ -75,7 +77,7 @@ class CatalogScanBatchIdentityTests(FrostVaultTestCase):
             ("dup.txt", "regular", 10, 1, "2026-07-21T10:00:00+00:00"),
             ("dup.txt", "regular", 20, 2, "2026-07-21T10:00:00+00:00"),
         ]
-        ids = self.catalog.observe_local_copies_batch(vault_id=2, entries=entries)
+        ids = self.local_copies.observe_local_copies_batch(vault_id=2, entries=entries)
         rows = self._rows()
         self.assertEqual(len(rows), 1)
         # Last observation wins.
@@ -87,12 +89,12 @@ class CatalogScanBatchIdentityTests(FrostVaultTestCase):
         entries = [
             ("stable.bin", "regular", 50, 7, "2026-07-21T10:00:00+00:00"),
         ]
-        ids = self.catalog.observe_local_copies_batch(vault_id=2, entries=entries)
+        ids = self.local_copies.observe_local_copies_batch(vault_id=2, entries=entries)
         self.connection.execute(
             "UPDATE files SET local_sha256=%s WHERE id=%s",
             (bytes.fromhex("d" * 64), ids["stable.bin"]),
         )
-        self.catalog.observe_local_copies_batch(
+        self.local_copies.observe_local_copies_batch(
             vault_id=2,
             entries=[("stable.bin", "regular", 50, 7, "2026-07-21T10:01:00+00:00")],
         )
@@ -103,12 +105,12 @@ class CatalogScanBatchIdentityTests(FrostVaultTestCase):
         entries = [
             ("mutating.bin", "regular", 50, 7, "2026-07-21T10:00:00+00:00"),
         ]
-        ids = self.catalog.observe_local_copies_batch(vault_id=2, entries=entries)
+        ids = self.local_copies.observe_local_copies_batch(vault_id=2, entries=entries)
         self.connection.execute(
             "UPDATE files SET local_sha256=%s WHERE id=%s",
             (bytes.fromhex("d" * 64), ids["mutating.bin"]),
         )
-        self.catalog.observe_local_copies_batch(
+        self.local_copies.observe_local_copies_batch(
             vault_id=2,
             entries=[("mutating.bin", "regular", 99, 8, "2026-07-21T10:01:00+00:00")],
         )
@@ -117,11 +119,11 @@ class CatalogScanBatchIdentityTests(FrostVaultTestCase):
         self.assertIsNone(rows[0]["plaintext_sha256"])
 
     def test_batch_reuses_existing_identities_across_calls(self) -> None:
-        first = self.catalog.observe_local_copies_batch(
+        first = self.local_copies.observe_local_copies_batch(
             vault_id=2,
             entries=[("keep.txt", "regular", 1, 1, "2026-07-21T10:00:00+00:00")],
         )
-        second = self.catalog.observe_local_copies_batch(
+        second = self.local_copies.observe_local_copies_batch(
             vault_id=2,
             entries=[("keep.txt", "regular", 2, 2, "2026-07-21T10:00:00+00:00")],
         )
@@ -129,7 +131,7 @@ class CatalogScanBatchIdentityTests(FrostVaultTestCase):
         self.assertEqual(len(self._rows()), 1)
 
     def test_batch_marks_ancestors_dirty_once_per_directory(self) -> None:
-        self.catalog.observe_local_copies_batch(
+        self.local_copies.observe_local_copies_batch(
             vault_id=2,
             entries=[
                 ("recordings/cam1/a.bin", "regular", 1, 1, "2026-07-21T10:00:00+00:00"),
@@ -153,13 +155,13 @@ class CatalogScanBatchIdentityTests(FrostVaultTestCase):
         serialized_rows = None
         with ref_db.connect() as reference:
             seed_vault(reference, id=2, source_root="/source")
-            catalog = ArchiveCatalog(reference)
+            local_copies = LocalCopies(reference)
             for path, file_type, size, mtime_ns, observed_at in [
                 ("photos/a.jpg", "regular", 100, 1, "2026-07-21T10:00:00+00:00"),
                 ("photos/b.jpg", "regular", 200, 2, "2026-07-21T10:00:00+00:00"),
                 ("link/x", "symlink", 0, 3, "2026-07-21T10:00:00+00:00"),
             ]:
-                catalog.observe_local_copy(
+                local_copies.observe_local_copy(
                     vault_id=2,
                     path=path,
                     file_type=file_type,
@@ -179,7 +181,7 @@ class CatalogScanBatchIdentityTests(FrostVaultTestCase):
             ).fetchall()
 
         # Batch path on the fixture connection (vault id 2 pre-seeded).
-        self.catalog.observe_local_copies_batch(
+        self.local_copies.observe_local_copies_batch(
             vault_id=2,
             entries=[
                 ("photos/a.jpg", "regular", 100, 1, "2026-07-21T10:00:00+00:00"),
@@ -208,14 +210,14 @@ class CatalogScanBatchIdentityTests(FrostVaultTestCase):
         """One vault lock touch for a whole batch, not one per entry."""
         touches: list[tuple] = []
 
-        original = self.catalog._vault_lock_touch
+        original = local_copies_module.vault_lock_touch
 
-        def recording(self_, *args, **kwargs):
+        def recording(connection, *args, **kwargs):
             touches.append(args)
-            return original(*args, **kwargs)
+            return original(connection, *args, **kwargs)
 
-        with patch.object(ArchiveCatalog, "_vault_lock_touch", recording):
-            self.catalog.observe_local_copies_batch(
+        with patch.object(local_copies_module, "vault_lock_touch", recording):
+            self.local_copies.observe_local_copies_batch(
                 vault_id=2,
                 entries=[
                     ("a/1.bin", "regular", 1, 1, "2026-07-21T10:00:00+00:00"),
@@ -236,6 +238,7 @@ class CatalogScanBatchStatementCountTests(FrostVaultTestCase):
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
         self.catalog = ArchiveCatalog(self.connection)
+        self.local_copies = LocalCopies(self.connection)
 
     def tearDown(self) -> None:
         self.connection.__exit__(None, None, None)
@@ -257,8 +260,8 @@ class CatalogScanBatchStatementCountTests(FrostVaultTestCase):
                 return self.inner.execute(sql, params)
 
         counting = CountingConnection(self.connection)
-        catalog = ArchiveCatalog(counting)
-        catalog.observe_local_copies_batch(vault_id=2, entries=entries)
+        local_copies = LocalCopies(counting)
+        local_copies.observe_local_copies_batch(vault_id=2, entries=entries)
         # 1 vault lock touch + 1 bulk upsert + 1 consent revocation + 1
         # dirty-ancestor write: constant, far below 100 per-file calls.
         self.assertLessEqual(len(statements), 4)

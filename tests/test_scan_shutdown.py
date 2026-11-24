@@ -81,7 +81,7 @@ class ScanShutdownTests(_AdoptionFixture):
 
         with (
             patch("app.storage._rollback_local_scan_journal") as rollback,
-            patch("app.storage.ArchiveCatalog.mark_unseen_local_copies_missing") as missing,
+            patch("app.storage.LocalCopies.mark_unseen_local_copies_missing") as missing,
         ):
             result = self._scan(
                 vault,
@@ -122,7 +122,7 @@ class ScanShutdownTests(_AdoptionFixture):
 
         with (
             patch("app.storage._rollback_local_scan_journal") as rollback,
-            patch("app.storage.ArchiveCatalog.mark_unseen_local_copies_missing") as missing,
+            patch("app.storage.LocalCopies.mark_unseen_local_copies_missing") as missing,
         ):
             result = self._scan(
                 vault, self._concurrency(1),

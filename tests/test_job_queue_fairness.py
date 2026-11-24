@@ -17,7 +17,7 @@ from unittest.mock import patch
 from watchfiles import Change
 
 from app import storage
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 from app.services import health, notifications, vault_relocation
 from app.services.operation_policies import queue_auto_uploads
@@ -145,7 +145,7 @@ class QueueFixture(FrostVaultTestCase):
         # The scanner and the automatic-upload policy move to the new model
         # with #593/#590: observe the Local Copy through the catalog directly.
         with self.db() as connection:
-            ArchiveCatalog(connection).observe_local_copy(
+            LocalCopies(connection).observe_local_copy(
                 vault_id=vault_id, path=name, file_type="regular", size=len(content),
                 mtime_ns=1_500_000_000 * 10**9, observed_at=self.clock.isoformat(),
             )

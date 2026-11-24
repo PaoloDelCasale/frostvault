@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 from app import storage
 from app.catalog import ArchiveCatalog, VaultFileNotFound
+from app.services.local_copies import LocalCopies
 from app.services.file_renames import FileRenames
 from app.services.vaults import VAULT_ROW_SQL
 from tests.catalog_support import fingerprint
@@ -45,10 +46,10 @@ class EssentialFileActionTests(CopyWorkerFixture):
         os.replace(self.file, target)
         self.file = target
         with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
-            catalog.mark_local_copy_missing(self.file_id, observed_at=storage.now_iso())
+            local_copies = LocalCopies(connection)
+            local_copies.mark_local_copy_missing(self.file_id, observed_at=storage.now_iso())
             stat = target.stat()
-            self.new_id = catalog.observe_local_copy(
+            self.new_id = local_copies.observe_local_copy(
                 vault_id=2, path=new_path, file_type="regular", size=stat.st_size,
                 mtime_ns=stat.st_mtime_ns, observed_at=storage.now_iso())
         self.old_key, self.new_key = self.key, f"vaults/{self.uuid}/{new_path}"
@@ -87,15 +88,16 @@ class EssentialFileActionTests(CopyWorkerFixture):
                 before = self.moved()
                 with self.db() as connection:
                     catalog = ArchiveCatalog(connection)
+                    local_copies = LocalCopies(connection)
                     other = self.source / "other.txt"
                     other.write_bytes(A)
-                    extra_id = catalog.observe_local_copy(
+                    extra_id = local_copies.observe_local_copy(
                         vault_id=2, path="other.txt", file_type="regular", size=len(A),
                         mtime_ns=other.stat().st_mtime_ns, observed_at=storage.now_iso())
                     fingerprint(catalog, 2, "other.txt", sha(A))
                     fingerprint(catalog, 2, NEW, sha(A))
                     if not extra_present:
-                        catalog.mark_local_copy_missing(extra_id, observed_at=storage.now_iso())
+                        local_copies.mark_local_copy_missing(extra_id, observed_at=storage.now_iso())
                 with self.db() as connection, self.assertRaises(VaultFileNotFound):
                     ArchiveCatalog(connection).confirm_file_rename(
                         vault_file_id=self.file_id, new_path=NEW, changed_at=storage.now_iso(), vault_id=2)

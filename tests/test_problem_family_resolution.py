@@ -7,6 +7,7 @@ has no domain rule stays open; the Problems of a stopped Vault close.
 from datetime import datetime, timedelta, timezone
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services import notifications as inbox
 from tests.catalog_support import fingerprint, protect, sha256_hex
 from tests.fixtures import FrostVaultTestCase, seed_job, seed_vault
@@ -41,7 +42,8 @@ class ProblemFamilyResolutionTests(FrostVaultTestCase):
     def protected_file(self, c, path="a.txt"):
         """A Vault File with one verified Archive Version; returns (file id, version id)."""
         catalog = ArchiveCatalog(c)
-        catalog.observe_local_copy(vault_id=self.vault_id, path=path, file_type="regular",
+        local_copies = LocalCopies(c)
+        local_copies.observe_local_copy(vault_id=self.vault_id, path=path, file_type="regular",
                                    size=1, mtime_ns=1, observed_at=NOW.isoformat())
         digest = sha256_hex(b"a")
         fingerprint(catalog, self.vault_id, path, digest)
@@ -51,7 +53,7 @@ class ProblemFamilyResolutionTests(FrostVaultTestCase):
         return file_id, version
 
     def observed_file(self, c, path="a.txt"):
-        ArchiveCatalog(c).observe_local_copy(vault_id=self.vault_id, path=path, file_type="regular",
+        LocalCopies(c).observe_local_copy(vault_id=self.vault_id, path=path, file_type="regular",
                                              size=1, mtime_ns=1, observed_at=NOW.isoformat())
 
     def failed_upload(self, c, path="a.txt"):
@@ -118,11 +120,11 @@ class ProblemFamilyResolutionTests(FrostVaultTestCase):
     def test_upload_reconciliation_closes_once_no_file_under_its_key_is_blocked(self):
         with self.database.connect() as c:
             file_id, _version = self.protected_file(c)
-            ArchiveCatalog(c).block_reconciliation(file_id, reason="ambiguous_send", at=NOW.isoformat())
+            LocalCopies(c).block_reconciliation(file_id, reason="ambiguous_send", at=NOW.isoformat())
             key = self.open_problem(c, event="upload_reconciliation",
                                     key=f"upload_reconciliation:{file_id}")
             self.assertEqual(self.status(c, key), "open")
-            ArchiveCatalog(c).clear_reconciliation_block(file_id)
+            LocalCopies(c).clear_reconciliation_block(file_id)
             self.assertEqual(self.status(c, key), "resolved")
 
     def test_archive_version_missing_closes_once_the_version_is_located_again(self):

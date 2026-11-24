@@ -15,12 +15,14 @@ from tests.fixtures import fresh_database, seed_vault
 class CatalogInterfaceTests(unittest.TestCase):
     def test_catalog_observes_a_new_local_file_through_one_interface(self) -> None:
         from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
 
         with fresh_database() as database:
             with database.connect() as connection:
                 seed_vault(connection, id=2, source_root="/source")
                 catalog = ArchiveCatalog(connection)
-                file_id = catalog.observe_local_copy(
+                local_copies = LocalCopies(connection)
+                file_id = local_copies.observe_local_copy(
                     vault_id=2,
                     path="reports/annual.txt",
                     file_type="regular",
@@ -38,12 +40,14 @@ class CatalogInterfaceTests(unittest.TestCase):
 
     def test_confirmed_rename_preserves_identity_and_path_history(self) -> None:
         from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
 
         with fresh_database() as database:
             with database.connect() as connection:
                 seed_vault(connection, name="Photos", id=2, source_root="/source")
                 catalog = ArchiveCatalog(connection)
-                file_id = catalog.observe_local_copy(
+                local_copies = LocalCopies(connection)
+                file_id = local_copies.observe_local_copy(
                     vault_id=2,
                     path="test/fototest.jpg",
                     file_type="regular",
@@ -72,14 +76,16 @@ class CatalogInterfaceTests(unittest.TestCase):
 
     def test_stale_cloud_scan_does_not_hide_a_concurrent_upload(self) -> None:
         from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
 
         with fresh_database() as database:
             with database.connect() as connection:
                 seed_vault(connection, id=2, source_root="/source")
                 catalog = ArchiveCatalog(connection)
+                local_copies = LocalCopies(connection)
                 ids = {}
                 for name in ("old.txt", "new.txt"):
-                    ids[name] = catalog.observe_local_copy(
+                    ids[name] = local_copies.observe_local_copy(
                         vault_id=2, path=name, file_type="regular", size=1,
                         mtime_ns=1, observed_at="2026-07-21T08:00:00+00:00",
                     )

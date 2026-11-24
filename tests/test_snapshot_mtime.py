@@ -90,6 +90,7 @@ class SnapshotMtimeTests(unittest.TestCase):
                 kwargs["Callback"](5)
             client.download_file.side_effect = download
             stack.enter_context(patch.object(storage, "ArchiveCatalog", return_value=catalog))
+            local_copies = stack.enter_context(patch.object(storage, "LocalCopies")).return_value
             for name in ("db", "ensure_job_active", "validate_cloud_vault", "ensure_job_claim_owned_in_transaction",
                          "set_job", "set_job_progress", "_ThrottledByteProgress"):
                 stack.enter_context(patch.object(storage, name))
@@ -99,7 +100,7 @@ class SnapshotMtimeTests(unittest.TestCase):
                 "path": "recovered", "s3_bucket": "bucket", "total_bytes": 5, "status": "queued"})
             self.assertEqual(destination.read_bytes(), b"photo")
             self.assertEqual(destination.stat().st_mtime_ns, expected)
-            observation = catalog.publish_recovered_local_copy.call_args.kwargs
+            observation = local_copies.publish_recovered_local_copy.call_args.kwargs
             self.assertEqual(observation["mtime_ns"], expected)
             self.assertIsNotNone(observation["recovered_at"])
             self.assertEqual(observation["generation"], 4)

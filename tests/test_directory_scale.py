@@ -11,6 +11,7 @@ from unittest.mock import patch
 import psycopg
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.routes.browse import list_files
 from app.services import directory_aggregates as aggregates
@@ -40,7 +41,8 @@ def _seed_vault(
 def _cloud_only(catalog, vault_id: int, path: str, provider_version_id: str, size: int) -> str:
     """A verified Current whose Local Copy is gone."""
     stamp = "2026-07-21T10:00:00+00:00"
-    file_id = catalog.observe_local_copy(
+    local_copies = LocalCopies(catalog.connection)
+    file_id = local_copies.observe_local_copy(
         vault_id=vault_id, path=path, file_type="regular", size=size, mtime_ns=1, observed_at=stamp,
     )
     digest = "e" * 64
@@ -49,7 +51,7 @@ def _cloud_only(catalog, vault_id: int, path: str, provider_version_id: str, siz
         catalog, vault_id, path, digest, provider_version_id=provider_version_id,
         created_at=stamp, verified_at=stamp,
     )
-    catalog.mark_local_copy_missing(file_id, observed_at=stamp)
+    local_copies.mark_local_copy_missing(file_id, observed_at=stamp)
     return version_id
 
 
@@ -105,6 +107,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
         self.catalog = ArchiveCatalog(self.connection)
+        self.local_copies = LocalCopies(self.connection)
         self.listing = FileListing(self.connection)
 
     def tearDown(self) -> None:
@@ -124,7 +127,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
 
     def test_list_files_page_matches_build_directory_items_semantics(self) -> None:
         catalog = self.catalog
-        catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="photos/small.jpg",
             file_type="regular",
@@ -132,7 +135,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
             mtime_ns=1,
             observed_at="2026-07-21T10:00:00+00:00",
         )
-        catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="photos/large.jpg",
             file_type="regular",
@@ -141,7 +144,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
             observed_at="2026-07-21T10:00:00+00:00",
         )
         _cloud_only(catalog, 2, "photos/large.jpg", "v-large", 2_000_000)
-        catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="documents/invoice.pdf",
             file_type="regular",
@@ -149,7 +152,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
             mtime_ns=1,
             observed_at="2026-07-21T10:00:00+00:00",
         )
-        catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="readme.txt",
             file_type="regular",
@@ -184,8 +187,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
             self.assertEqual(photos[key], expected_photos[key], key)
 
     def test_root_listing_does_not_call_list_file_rows(self) -> None:
-        catalog = self.catalog
-        catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="a/one.bin",
             file_type="regular",
@@ -261,7 +263,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         self.assertGreaterEqual(browse_filtered["items"][0]["item_count"], 2)
 
     def test_watcher_style_delta_updates_ancestors_without_full_relist(self) -> None:
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="recordings/cam1/a.bin",
             file_type="regular",
@@ -273,7 +275,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         before = self.catalog.list_files_page(2)["items"][0]
         self.assertEqual(before["item_count"], 1)
 
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="recordings/cam1/b.bin",
             file_type="regular",
@@ -292,7 +294,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         self.assertEqual(after["total_size"], 150)
 
     def test_rename_moves_contribution_between_ancestor_chains(self) -> None:
-        file_id = self.catalog.observe_local_copy(
+        file_id = self.local_copies.observe_local_copy(
             vault_id=2,
             path="old-dir/nested/file.bin",
             file_type="regular",
@@ -315,7 +317,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
 
     def test_burst_updates_coalesce_directory_rebuilds(self) -> None:
         # Baseline directory.
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="burst/seed.bin",
             file_type="regular",
@@ -328,7 +330,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         burst = 10_000
         started = time.perf_counter()
         for index in range(burst):
-            self.catalog.observe_local_copy(
+            self.local_copies.observe_local_copy(
                 vault_id=2,
                 path=f"burst/file-{index:05d}.bin",
                 file_type="regular",
@@ -385,7 +387,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
 
     def test_stale_rebuild_flag_does_not_block_list(self) -> None:
         """Listing must not run full rebuild; maintenance converges off-path."""
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="repair/me.bin",
             file_type="regular",
@@ -426,7 +428,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
     def test_list_with_existing_projection_returns_stale_while_rebuild_required(
         self,
     ) -> None:
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="keep/me.bin",
             file_type="regular",
@@ -533,7 +535,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         self.assertLess(duration, 2.0)
 
     def test_remark_in_new_transaction_has_independent_durable_identity(self) -> None:
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="photos/a.jpg",
             file_type="regular",
@@ -557,7 +559,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
 
     def test_flush_preserves_dirty_marks_newer_than_claim_cutoff(self) -> None:
         """A mark committed after the flush snapshot must survive delete."""
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="alpha/one.bin",
             file_type="regular",
@@ -565,7 +567,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
             mtime_ns=1,
             observed_at="2026-07-21T10:00:00+00:00",
         )
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="beta/two.bin",
             file_type="regular",
@@ -627,7 +629,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         )
 
     def test_full_rebuild_preserves_post_cutoff_dirty_marks(self) -> None:
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="keep/me.bin",
             file_type="regular",
@@ -672,7 +674,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         )
 
     def test_flush_rollback_leaves_durable_dirty_for_restart(self) -> None:
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="roll/a.bin",
             file_type="regular",
@@ -683,7 +685,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         self.connection.commit()
 
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="roll/b.bin",
             file_type="regular",
@@ -710,7 +712,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         # Fresh connection-scoped tracker (restart).
         aggregates._tracker(self.connection).clear()
         # Apply the missing file on a new transaction, then flush durable dirty.
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="roll/b.bin",
             file_type="regular",
@@ -723,7 +725,7 @@ class DirectoryScaleTests(FrostVaultTestCase):
         self.assertEqual(page["items"][0]["item_count"], 2)
 
     def test_two_flush_passes_are_idempotent_on_shared_dirty_set(self) -> None:
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="shared/x.bin",
             file_type="regular",
@@ -755,6 +757,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
         self.catalog = ArchiveCatalog(self.connection)
+        self.local_copies = LocalCopies(self.connection)
 
     def tearDown(self) -> None:
         self.connection.__exit__(None, None, None)
@@ -762,7 +765,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
 
     def _seed_both_file(self, path: str = "photos/shot.jpg") -> str:
         digest = "a" * 64
-        file_id = self.catalog.observe_local_copy(
+        file_id = self.local_copies.observe_local_copy(
             vault_id=2,
             path=path,
             file_type="regular",
@@ -843,7 +846,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         # A Cloud-only file whose Current is an exact landed upload of its key.
         path = "purge/me.bin"
         digest = bytes.fromhex("a" * 64)
-        file_id = self.catalog.observe_local_copy(
+        file_id = self.local_copies.observe_local_copy(
             vault_id=2, path=path, file_type="regular", size=100, mtime_ns=1,
             observed_at="2026-07-21T10:00:00+00:00",
         )
@@ -875,7 +878,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
             file_id, archive_version_id=version_id, plaintext_sha256=digest.hex(),
             verified_at="2026-07-21T10:00:00+00:00", local_generation=row["generation"],
         )
-        self.catalog.mark_local_copy_missing(file_id, observed_at="2026-07-21T10:30:00+00:00")
+        self.local_copies.mark_local_copy_missing(file_id, observed_at="2026-07-21T10:30:00+00:00")
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
         before = self.catalog.list_files_page(2)["items"][0]
         self.assertEqual(before["available_actions"]["cloud-purge"], 1)
@@ -965,7 +968,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
     ) -> str:
         """Seed missing@old + present@new sharing a digest for confirmation."""
         digest = "c" * 64
-        file_id = self.catalog.observe_local_copy(
+        file_id = self.local_copies.observe_local_copy(
             vault_id=2,
             path=old_path,
             file_type="regular",
@@ -979,10 +982,10 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
                 self.catalog, 2, old_path, digest, provider_version_id="rename-v1",
                 created_at="2026-07-21T10:00:00+00:00", verified_at="2026-07-21T10:00:00+00:00",
             )
-        self.catalog.mark_local_copy_missing(
+        self.local_copies.mark_local_copy_missing(
             file_id, observed_at="2026-07-21T11:00:00+00:00"
         )
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path=new_path,
             file_type="regular",
@@ -1075,7 +1078,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
         second_old = "album/2024/b.bin"
         second_new = "archive/2024/b.bin"
         digest = "d" * 64
-        second_id = self.catalog.observe_local_copy(
+        second_id = self.local_copies.observe_local_copy(
             vault_id=2,
             path=second_old,
             file_type="regular",
@@ -1084,10 +1087,10 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
             observed_at="2026-07-21T10:05:00+00:00",
         )
         fingerprint(self.catalog, 2, second_old, digest)
-        self.catalog.mark_local_copy_missing(
+        self.local_copies.mark_local_copy_missing(
             second_id, observed_at="2026-07-21T11:05:00+00:00"
         )
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path=second_new,
             file_type="regular",
@@ -1124,7 +1127,7 @@ class DirectoryAggregateInvalidationTests(FrostVaultTestCase):
 
     def test_confirm_file_rename_after_earlier_dirty_flushed(self) -> None:
         # Unrelated dirty work is flushed first; rename must still mark both chains.
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=2,
             path="other/seed.bin",
             file_type="regular",
@@ -1278,6 +1281,7 @@ class MaintenanceFixture(FrostVaultTestCase):
         _seed_vault(self.connection, 2)
         _seed_vault(self.connection, 3)
         self.catalog = ArchiveCatalog(self.connection)
+        self.local_copies = LocalCopies(self.connection)
 
     def tearDown(self) -> None:
         # Stop further pending drains, then join any worker already started so
@@ -1292,7 +1296,7 @@ class MaintenanceFixture(FrostVaultTestCase):
         aggregates.set_maintenance_scheduling_enabled(True)
 
     def _seed_dirty_vault(self, vault_id: int, path: str) -> None:
-        self.catalog.observe_local_copy(
+        self.local_copies.observe_local_copy(
             vault_id=vault_id,
             path=path,
             file_type="regular",
@@ -1822,7 +1826,7 @@ class DirectoryAggregateMaintenanceLockTests(MaintenanceFixture):
                 # the Vault row: it must wait for the next pass, not be rolled
                 # up under the lock by the revision of this one.
                 with self._open_db() as other:
-                    ArchiveCatalog(other).observe_local_copy(
+                    LocalCopies(other).observe_local_copy(
                         vault_id=2, path="late/b.bin", file_type="regular",
                         size=1, mtime_ns=1, observed_at="2026-07-21T10:00:01+00:00",
                     )

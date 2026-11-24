@@ -43,6 +43,7 @@ from watchfiles import Change
 
 from app import storage
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.routes.jobs import FileAction, cancel_job_group, free_space, jobs
 from app.services.job_admission import queue_jobs
@@ -240,7 +241,7 @@ class StorageCleanupTests(FrostVaultTestCase):
     def test_scan_missing_transition_preserves_a_newer_writer_observation(self) -> None:
         with self.database.connect() as connection:
             seed_vault(connection, id=2, source_root="/source")
-            ArchiveCatalog(connection).observe_local_copy(
+            LocalCopies(connection).observe_local_copy(
                 vault_id=2,
                 path="concurrent.txt",
                 file_type="regular",
@@ -249,7 +250,7 @@ class StorageCleanupTests(FrostVaultTestCase):
                 observed_at="2026-07-21T10:00:01+00:00",
                 seen_at="2026-07-21T10:00:01+00:00",  # the watcher's generation
             )
-            ArchiveCatalog(connection).mark_unseen_local_copies_missing(
+            LocalCopies(connection).mark_unseen_local_copies_missing(
                 vault_id=2,
                 seen_at="2026-07-21T10:00:00+00:00",  # the older scan's generation
                 observed_at="2026-07-21T10:00:02+00:00",
@@ -267,7 +268,7 @@ class StorageCleanupTests(FrostVaultTestCase):
     def test_upload_job_targets_a_stable_vault_file(self) -> None:
         with self.database.connect() as connection:
             seed_vault(connection, id=2, source_root="/source")
-            ArchiveCatalog(connection).observe_local_copy(
+            LocalCopies(connection).observe_local_copy(
                 vault_id=2,
                 path="report.txt",
                 file_type="regular",
@@ -292,7 +293,7 @@ class StorageCleanupTests(FrostVaultTestCase):
                 seed_vault(connection, id=2, source_root=str(source))
                 from app.services.vault_relocation import enroll_vault_root_identity
                 enroll_vault_root_identity(connection, 2, str(source))
-                ArchiveCatalog(connection).observe_local_copy(
+                LocalCopies(connection).observe_local_copy(
                     vault_id=2,
                     path="report.txt",
                     file_type="regular",
@@ -357,7 +358,7 @@ class StorageCleanupTests(FrostVaultTestCase):
             }
             with self.database.connect() as database:
                 seed_vault(database, id=2, source_root=str(source))
-                ArchiveCatalog(database).observe_local_copy(
+                LocalCopies(database).observe_local_copy(
                     vault_id=2,
                     path="docs/deleted.txt",
                     file_type="regular",
@@ -745,7 +746,8 @@ class StorageCleanupTests(FrostVaultTestCase):
             from app.services.vault_relocation import enroll_vault_root_identity
             enroll_vault_root_identity(connection, 2, str(source))
             catalog = ArchiveCatalog(connection)
-            catalog.observe_local_copy(
+            local_copies = LocalCopies(connection)
+            local_copies.observe_local_copy(
                 vault_id=2,
                 path="docs/file.txt",
                 file_type="regular",
@@ -1037,7 +1039,7 @@ class StorageCleanupTests(FrostVaultTestCase):
             target.unlink()
             with self.database.connect() as connection:
                 file = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "docs/file.txt")
-                ArchiveCatalog(connection).mark_local_copy_missing(
+                LocalCopies(connection).mark_local_copy_missing(
                     file["id"], observed_at="2026-07-21T11:00:00+00:00"
                 )
             worker_settings = dict(

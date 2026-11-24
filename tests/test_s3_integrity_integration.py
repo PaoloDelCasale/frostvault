@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from tests.catalog_support import fingerprint, queue_rename_job
 
 from app.services.job_admission import queue_jobs
@@ -86,6 +87,7 @@ class PlainS3IntegrityIntegrationTests(FrostVaultTestCase):
                 process_jobs_once()
                 with self.database.connect() as connection:
                     catalog = ArchiveCatalog(connection)
+                    local_copies = LocalCopies(connection)
                     observed = catalog_probe.get_file_by_path(catalog, 2, relative_path)
                     job = connection.execute("SELECT status, message FROM jobs WHERE action='upload'").fetchone()
                     self.assertEqual(job["status"], "completed", job["message"])
@@ -106,9 +108,10 @@ class PlainS3IntegrityIntegrationTests(FrostVaultTestCase):
                     local = renamed
                     with self.database.connect() as connection:
                         catalog = ArchiveCatalog(connection)
+                        local_copies = LocalCopies(connection)
                         timestamp = "2026-11-11T12:00:00+00:00"
-                        catalog.mark_local_copy_missing(observed["id"], observed_at=timestamp)
-                        catalog.observe_local_copy(vault_id=2, path=relative_path, file_type="regular",
+                        local_copies.mark_local_copy_missing(observed["id"], observed_at=timestamp)
+                        local_copies.observe_local_copy(vault_id=2, path=relative_path, file_type="regular",
                             size=len(payload), mtime_ns=original_mtime_ns, observed_at=timestamp)
                         fingerprint(catalog, 2, relative_path, digest)
                         catalog.confirm_file_rename(vault_file_id=observed["id"], new_path=relative_path,
@@ -154,8 +157,9 @@ class PlainS3IntegrityIntegrationTests(FrostVaultTestCase):
                         self.assertNotEqual(listed['Versions'][0]['VersionId'],version['provider_version_id'])
                 with self.database.connect() as connection:
                     catalog = ArchiveCatalog(connection)
+                    local_copies = LocalCopies(connection)
                     local.unlink()
-                    catalog.mark_local_copy_missing(observed["id"], observed_at="2026-07-22T12:30:00+00:00")
+                    local_copies.mark_local_copy_missing(observed["id"], observed_at="2026-07-22T12:30:00+00:00")
                 queue_jobs(relative_path, "recover", 2)
                 process_jobs_once()
                 with self.database.connect() as connection:

@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 import psycopg
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 from app.services import job_admission, recovery_approval, vault_pause
 from tests.catalog_support import fingerprint, protect, sha256_hex
@@ -44,13 +45,13 @@ class JobCoreFixture(FrostVaultTestCase):
         super().setUp()
         self.file_ids: dict[tuple[int, str], str] = {}
         with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             for vault_id in self.vault_ids:
                 seed_vault(connection, id=vault_id, source_root=f"/source/{vault_id}",
                            name=f"Vault {vault_id}")
                 for index in range(self.files_per_vault):
                     name = f"f{index}.txt"
-                    self.file_ids[(vault_id, name)] = catalog.observe_local_copy(
+                    self.file_ids[(vault_id, name)] = local_copies.observe_local_copy(
                         vault_id=vault_id, path=name, file_type="regular", size=10 + index,
                         mtime_ns=1, observed_at=stamp(-3600),
                     )
@@ -150,9 +151,9 @@ class AdmissionTests(JobCoreFixture):
 
     def test_directory_admission_is_one_group_in_path_order_with_literal_prefix(self):
         with self.db() as connection:
-            catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             for name in ("dir/b.txt", "dir/a.txt", "dir%/x.txt", "dir0.txt", "dirx/y.txt"):
-                catalog.observe_local_copy(vault_id=10, path=name, file_type="regular", size=1,
+                local_copies.observe_local_copy(vault_id=10, path=name, file_type="regular", size=1,
                                            mtime_ns=1, observed_at=stamp(-60))
         group = token()
         job_ids = self.queue(path="dir", is_directory=True, group_id=group)

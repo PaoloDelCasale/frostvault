@@ -13,7 +13,7 @@ import unittest
 from datetime import datetime, timezone
 
 from app import storage
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services import cloud_deletion
 from tests import test_cloud_deletion as fixtures
 
@@ -30,7 +30,7 @@ class SelectionFixture(fixtures.CloudDeletionFixture):
         target.write_bytes(payload)
         stat = target.stat()
         with self.db() as connection:
-            file_id = ArchiveCatalog(connection).observe_local_copy(
+            file_id = LocalCopies(connection).observe_local_copy(
                 vault_id=2, path=path, file_type="regular", size=stat.st_size,
                 mtime_ns=stat.st_mtime_ns, observed_at=storage.now_iso())
             if not upload:
@@ -49,7 +49,7 @@ class SelectionFixture(fixtures.CloudDeletionFixture):
     def lose(self, path: str, file_id: str) -> None:
         (self.source / path).unlink()
         with self.db() as connection:
-            ArchiveCatalog(connection).mark_local_copy_missing(file_id, observed_at=storage.now_iso())
+            LocalCopies(connection).mark_local_copy_missing(file_id, observed_at=storage.now_iso())
 
     def cloud_only_at(self, path: str, payload: bytes) -> str:
         file_id = self.put(path, payload)

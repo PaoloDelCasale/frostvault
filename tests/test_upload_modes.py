@@ -6,6 +6,7 @@ from unittest.mock import patch
 from botocore.exceptions import ClientError
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.job_admission import queue_jobs
 from app.services.operation_policies import OperationPolicy, get_policy, set_policy
 from app.services.upload_snapshot import sha256_b64
@@ -81,7 +82,7 @@ class UploadModeTests(FrostVaultTestCase):
         """The watcher's observation of the current source bytes."""
         path = self.source / "a.txt"
         with self.database.connect() as connection:
-            ArchiveCatalog(connection).observe_local_copy(
+            LocalCopies(connection).observe_local_copy(
                 vault_id=2, path="a.txt", file_type="regular", size=path.stat().st_size,
                 mtime_ns=path.stat().st_mtime_ns, observed_at="2026-11-06T00:00:00+00:00")
 
@@ -313,7 +314,7 @@ class UploadModeTests(FrostVaultTestCase):
         path.write_bytes(self.payload)
         snapshot, _ = prepare_upload_snapshot(path, lambda: None)
         with self.database.connect() as connection:
-            ArchiveCatalog(connection).observe_local_copy(vault_id=2, path="a.txt", file_type="regular", size=len(self.payload), mtime_ns=path.stat().st_mtime_ns, observed_at="2026-11-06")
+            LocalCopies(connection).observe_local_copy(vault_id=2, path="a.txt", file_type="regular", size=len(self.payload), mtime_ns=path.stat().st_mtime_ns, observed_at="2026-11-06")
         self.upload_response = {"VersionId": "raw-version", "ChecksumType": "COMPOSITE", "ChecksumSHA256": snapshot.checksum_sha256}
         self.queue(); self.run_worker()
         job, versions, _ = self.rows()

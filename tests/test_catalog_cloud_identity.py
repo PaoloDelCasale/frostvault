@@ -17,6 +17,7 @@ from unittest.mock import patch
 import psycopg
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.storage import scan_cloud
 from tests.catalog_support import fingerprint, sha256_hex
 from tests.fixtures import FrostVaultTestCase, seed_vault
@@ -49,7 +50,8 @@ class CloudRediscoveryIdentityTests(FrostVaultTestCase):
         with self.database.connect() as connection:
             seed_vault(connection, id=2, uuid=VAULT_UUID, source_root="/source")
             catalog = ArchiveCatalog(connection)
-            self.file_id = catalog.observe_local_copy(
+            local_copies = LocalCopies(connection)
+            self.file_id = local_copies.observe_local_copy(
                 vault_id=2, path=OLD_PATH, file_type="regular", size=32,
                 mtime_ns=1_000, observed_at="2026-07-21T10:00:00+00:00",
             )
@@ -63,10 +65,10 @@ class CloudRediscoveryIdentityTests(FrostVaultTestCase):
                 row["id"], archive_version_id=self.version_id, plaintext_sha256=digest,
                 verified_at="2026-07-21T10:02:00+00:00", local_generation=row["generation"],
             )
-            catalog.mark_local_copy_missing(
+            local_copies.mark_local_copy_missing(
                 self.file_id, observed_at="2026-07-21T11:00:00+00:00"
             )
-            catalog.observe_local_copy(
+            local_copies.observe_local_copy(
                 vault_id=2, path=NEW_PATH, file_type="regular", size=32,
                 mtime_ns=1_000, observed_at="2026-07-21T11:00:00+00:00",
             )

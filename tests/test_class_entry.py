@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services import duplicate_cleanup, minimum_storage, source_layout
 from app.services import vaults as vaults_service
 from app.services.catalog_audit import audit_vault_catalog
@@ -61,7 +62,8 @@ class ClassEntryFixture(FrostVaultTestCase):
         """A version uploaded by a direct PUT (``begin_replacement``)."""
         with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
-            catalog.observe_local_copy(
+            local_copies = LocalCopies(connection)
+            local_copies.observe_local_copy(
                 vault_id=2, path=path, file_type="regular", size=size, mtime_ns=1,
                 observed_at=created_at.isoformat())
             row = catalog_probe.get_file_by_path(catalog, 2, path)

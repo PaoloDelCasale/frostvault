@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from app.routes.jobs import PendingUploadCancelAction, cancel_job_group, cancel_pending_uploads
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services import bulk_upload_admission as bulk, protection_stop, vault_relocation
 from app.services.operation_policies import OperationPolicy, set_policy
 from app.services.upload_activity import upload_activity
@@ -79,9 +80,9 @@ class BulkAdmissionProvenanceTests(provenance_fixtures.UploadProvenanceWorkerCas
 class BulkAdmissionPostgresTests(QueueFixture):
     def seed(self, paths, vault_id=2):
         with self.db() as c:
-            catalog = ArchiveCatalog(c)
+            local_copies = LocalCopies(c)
             for path in paths:
-                catalog.observe_local_copy(vault_id=vault_id, path=path, file_type="regular", size=12,
+                local_copies.observe_local_copy(vault_id=vault_id, path=path, file_type="regular", size=12,
                                            mtime_ns=1, observed_at=self.clock.isoformat())
 
     def request(self):
@@ -154,9 +155,9 @@ class BulkAdmissionPostgresTests(QueueFixture):
         self.seed(["inactive-a.jpg", "inactive-b.jpg", "active.jpg"])
         with self.db() as c:
             # A File whose Local Copy is gone stays a candidate but is never admitted.
-            catalog = ArchiveCatalog(c)
+            local_copies = LocalCopies(c)
             for row in c.execute("SELECT id FROM files WHERE vault_id=2 AND path LIKE 'inactive-%'").fetchall():
-                catalog.mark_local_copy_missing(str(row["id"]), observed_at=self.clock.isoformat())
+                local_copies.mark_local_copy_missing(str(row["id"]), observed_at=self.clock.isoformat())
         group = self.create()["group_id"]
         self.assertEqual(self.status(group)["selected_count"], 3)
         for count in (1, 2, 3):
@@ -187,7 +188,7 @@ class BulkAdmissionPostgresTests(QueueFixture):
         group = self.create()["group_id"]
         with self.db() as c:
             missing = c.execute("SELECT id FROM files WHERE vault_id=2 AND path='b.jpg'").fetchone()["id"]
-            ArchiveCatalog(c).mark_local_copy_missing(str(missing), observed_at=self.clock.isoformat())
+            LocalCopies(c).mark_local_copy_missing(str(missing), observed_at=self.clock.isoformat())
             c.execute("""INSERT INTO jobs(vault_id,file_id,action,status,origin,requested_at,updated_at)
                 SELECT 2,id,'recover','queued','manual',%s,%s FROM files WHERE vault_id=2 AND path='c.jpg'""",
                 (self.clock.isoformat(), self.clock.isoformat()))

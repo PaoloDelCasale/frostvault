@@ -183,16 +183,16 @@ class FixedNotificationPostgresTests(FrostVaultTestCase):
             self.assertEqual(inbox.count_open_problems(c),1)
 
     def test_delay_is_aggregated_deduplicated_and_never_stable_age_survives_writes(self):
-        from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
         with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
-            catalog = ArchiveCatalog(c)
+            local_copies = LocalCopies(c)
             for name in ('one.jpg','two.jpg','live.lrcat'):
-                catalog.observe_local_copy(vault_id=self.vault_id,path=name,file_type='regular',size=1,
+                local_copies.observe_local_copy(vault_id=self.vault_id,path=name,file_type='regular',size=1,
                     mtime_ns=1,observed_at=(NOW-timedelta(hours=25)).isoformat())
             vault = c.execute('SELECT * FROM vaults WHERE id=%s',(self.vault_id,)).fetchone()
             monitor_vault(c,vault,now=NOW)
             # Keep changing the live file; timer must remain continuous.
-            catalog.observe_local_copy(vault_id=self.vault_id,path='live.lrcat',file_type='regular',size=2,
+            local_copies.observe_local_copy(vault_id=self.vault_id,path='live.lrcat',file_type='regular',size=2,
                     mtime_ns=int(NOW.timestamp()*1e9),observed_at=NOW.isoformat())
             monitor_vault(c,vault,now=NOW+timedelta(seconds=30))
             notes = c.execute("SELECT * FROM notifications WHERE event='protection_delayed'").fetchall()
@@ -201,18 +201,18 @@ class FixedNotificationPostgresTests(FrostVaultTestCase):
             self.assertEqual(c.execute('SELECT count(*) AS n FROM notification_deliveries').fetchone()['n'],1)
             self.assertEqual(c.execute('SELECT count(*) AS n FROM archive_versions').fetchone()['n'],0)
             for row in c.execute('SELECT id FROM files WHERE vault_id=%s',(self.vault_id,)).fetchall():
-                catalog.mark_local_copy_missing(str(row['id']),observed_at=NOW+timedelta(minutes=1))
+                local_copies.mark_local_copy_missing(str(row['id']),observed_at=NOW+timedelta(minutes=1))
             monitor_vault(c,vault,now=NOW+timedelta(minutes=1))
             self.assertEqual(inbox.count_open_problems(c),0)
             self.assertEqual(inbox.count_unread_notifications(c),0)
 
     def test_a_stopped_upload_is_not_a_delay_but_a_failed_one_still_is(self):
         # #630: the Owner stopped it; nothing will start it, so it is not overdue work.
-        from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
         with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
-            catalog = ArchiveCatalog(c)
+            local_copies = LocalCopies(c)
             observed = (NOW-timedelta(hours=25)).isoformat()
-            ids = {name: catalog.observe_local_copy(vault_id=self.vault_id,path=name,file_type='regular',size=1,
+            ids = {name: local_copies.observe_local_copy(vault_id=self.vault_id,path=name,file_type='regular',size=1,
                                                     mtime_ns=1,observed_at=observed)
                    for name in ('stopped.jpg','failed.jpg')}
             for name, status, origin, key in (('stopped.jpg','cancelled','manual','job.upload_stopped'),
@@ -426,11 +426,13 @@ class FixedNotificationPostgresTests(FrostVaultTestCase):
 
     def test_resolved_catalog_incident_is_read_without_dismissing_open_problems(self):
         from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
         from app.services.catalog_incidents import remember_missing_archives, resolve_archive_version_incidents
         from tests.catalog_support import fingerprint, protect, sha256_hex
         with self.connect() as c:
             catalog = ArchiveCatalog(c)
-            catalog.observe_local_copy(vault_id=self.vault_id,path='lost.jpg',file_type='regular',size=2,
+            local_copies = LocalCopies(c)
+            local_copies.observe_local_copy(vault_id=self.vault_id,path='lost.jpg',file_type='regular',size=2,
                                        mtime_ns=1,observed_at=NOW)
             digest = sha256_hex(b'lost')
             fingerprint(catalog,self.vault_id,'lost.jpg',digest)
@@ -452,14 +454,16 @@ class FixedNotificationPostgresTests(FrostVaultTestCase):
 
     def test_summary_reads_success_dates_freed_space_cost_and_every_state(self):
         from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
         from app.services.component_health import record_component_health
         from tests.catalog_support import fingerprint, protect, sha256_hex
         with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
             catalog = ArchiveCatalog(c)
+            local_copies = LocalCopies(c)
             digest = sha256_hex(b'content')
             for state in monitor.STATES:
                 name = '._excluded.jpg' if state == 'excluded' else state + '.jpg'
-                catalog.observe_local_copy(vault_id=self.vault_id,path=name,
+                local_copies.observe_local_copy(vault_id=self.vault_id,path=name,
                                            file_type='symlink' if state == 'unsupported' else 'regular',
                                            size=1024**3,mtime_ns=1,observed_at=NOW)
                 if state == 'stopped':
@@ -475,7 +479,7 @@ class FixedNotificationPostgresTests(FrostVaultTestCase):
                 availability = {'problem':'missing','unconfirmed':'unknown'}.get(state,'available')
                 c.execute("UPDATE archive_versions SET availability=%s WHERE id=%s",(availability,version))
                 if state == 'cloud_only':
-                    catalog.mark_local_copy_missing(catalog_probe.get_file_by_path(catalog, self.vault_id,name)['id'],observed_at=NOW)
+                    local_copies.mark_local_copy_missing(catalog_probe.get_file_by_path(catalog, self.vault_id,name)['id'],observed_at=NOW)
             record_component_health(c,vault_id=self.vault_id,component='source',ok=True,at='2026-11-02T10:00:00+00:00')
             record_component_health(c,vault_id=self.vault_id,component='audit',ok=True,at='2026-11-01T10:00:00+00:00')
             protected = catalog_probe.get_file_by_path(catalog, self.vault_id,'protected.jpg')['id']

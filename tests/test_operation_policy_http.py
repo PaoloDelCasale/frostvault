@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from tests.fixtures import FrostVaultTestCase, override_settings, seed_vault
 
 
@@ -60,10 +61,11 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
 
     def test_changing_upload_globs_refreshes_excluded_rollups_but_other_fields_do_not(self) -> None:
         from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
         from app.services import directory_aggregates as aggregates
         self.sign_in()
         with self.database.connect() as connection:
-            ArchiveCatalog(connection).observe_local_copy(vault_id=self.vault_id, path="raw/shot.raw", file_type="regular",
+            LocalCopies(connection).observe_local_copy(vault_id=self.vault_id, path="raw/shot.raw", file_type="regular",
                                                           size=1, mtime_ns=1, observed_at="2026-11-03T10:00:00Z")
             aggregates.rebuild_vault_directory_aggregates(connection, self.vault_id)
 
@@ -190,7 +192,8 @@ class OperationPolicyHttpTests(FrostVaultTestCase):
 
     def _archive_version(self, connection, path: str, size: int) -> None:
         catalog = ArchiveCatalog(connection)
-        file_id = catalog.observe_local_copy(
+        local_copies = LocalCopies(connection)
+        file_id = local_copies.observe_local_copy(
             vault_id=self.vault_id, path=path, file_type="regular", size=size,
             mtime_ns=1, observed_at="2026-07-01T00:00:00+00:00",
         )

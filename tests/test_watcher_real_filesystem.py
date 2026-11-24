@@ -258,9 +258,9 @@ class Harness(RealTreeCase):
     def catalog_observations(self) -> set[str]:
         """Use the real batch and pinned walk, replacing only persistence."""
         observed = set()
-        catalog = self.stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
-        catalog.observe_local_copy.side_effect = lambda **kw: observed.add(kw["path"]) or 1
-        catalog.observe_local_copies_batch.side_effect = lambda **kw: observed.update(
+        local_copies = self.stack.enter_context(patch("app.storage.LocalCopies")).return_value
+        local_copies.observe_local_copy.side_effect = lambda **kw: observed.add(kw["path"]) or 1
+        local_copies.observe_local_copies_batch.side_effect = lambda **kw: observed.update(
             entry[0] for entry in kw["entries"]
         )
         self.stack.enter_context(patch("app.storage._validate_enrolled_scan_root"))
@@ -837,18 +837,18 @@ class RemovalOnlyWhenProvenTests(RealTreeCase):
     catalogued is not a removal."""
 
     def apply(self, root: Path, changes):
-        catalog = SimpleNamespace(mark_local_path_missing=unittest.mock.Mock(), observe_local_copy=unittest.mock.Mock())
+        local_copies = SimpleNamespace(mark_local_path_missing=unittest.mock.Mock(), observe_local_copy=unittest.mock.Mock())
         with ExitStack() as stack:
             connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = None
-            stack.enter_context(patch("app.storage.ArchiveCatalog", return_value=catalog))
+            stack.enter_context(patch("app.storage.LocalCopies", return_value=local_copies))
             stack.enter_context(patch("app.storage.record_catalog_revision"))
             stack.enter_context(patch("app.storage._validate_enrolled_scan_root"))
             stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(
                 local_operations_allowed=True, volume_alias=None, volume_health="healthy",
             )))
             storage.apply_filesystem_changes({"id": VAULT_ID, "source_root": str(root)}, changes)
-        return [call.kwargs["path"] for call in catalog.mark_local_path_missing.call_args_list]
+        return [call.kwargs["path"] for call in local_copies.mark_local_path_missing.call_args_list]
 
     def test_a_folder_renamed_to_an_undecodable_name_is_not_missing(self):
         root = self.make_root()
@@ -1300,7 +1300,7 @@ class PinnedSubtreeTests(RealTreeCase):
         with ExitStack() as stack:
             connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = None
-            stack.enter_context(patch("app.storage.ArchiveCatalog"))
+            stack.enter_context(patch("app.storage.LocalCopies"))
             stack.enter_context(patch("app.storage.report_problem", side_effect=lambda *a, **kw: problems.append((kw["event"], kw["path"]))))
             stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(
                 local_operations_allowed=True, volume_alias=None, volume_health="healthy",

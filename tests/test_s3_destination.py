@@ -30,7 +30,7 @@ for _flag, _value in (
     if not hasattr(os, _flag):
         setattr(os, _flag, _value)
 
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.services.job_admission import queue_jobs
 from app.storage import expected_cloud_key, process_jobs_once
@@ -76,7 +76,7 @@ class S3UploadPrefixTests(FrostVaultTestCase):
                              bucket="example-bucket", uuid=prefix.removeprefix("vaults/"))
                 from app.services.vault_relocation import enroll_vault_root_identity
                 enroll_vault_root_identity(connection, 2, str(source))
-                ArchiveCatalog(connection).observe_local_copy(
+                LocalCopies(connection).observe_local_copy(
                     vault_id=2,
                     path=relative_path,
                     file_type="regular",

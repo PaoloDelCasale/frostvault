@@ -26,6 +26,7 @@ import unittest
 import uuid
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 from app.services import directory_aggregates as aggregates
 from tests.catalog_support import fingerprint, protect, sha256_hex
@@ -39,9 +40,10 @@ class ChangedContentAdmissionTests(FrostVaultTestCase):
         self.connection = self.enterContext(self.database.connect())
         seed_vault(self.connection, source_root=str(self.tmp_path / "source"), id=2)
         self.catalog = ArchiveCatalog(self.connection)
+        self.local_copies = LocalCopies(self.connection)
 
     def observe(self, path: str, size: int, mtime_ns: int) -> str:
-        return self.catalog.observe_local_copy(
+        return self.local_copies.observe_local_copy(
             vault_id=2, path=path, file_type="regular", size=size, mtime_ns=mtime_ns,
             observed_at="2026-07-21T10:00:00+00:00")
 

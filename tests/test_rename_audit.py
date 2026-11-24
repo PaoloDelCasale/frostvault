@@ -9,7 +9,7 @@ import hashlib
 import unittest
 from unittest.mock import patch
 
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.storage import apply_auto_renames
 from tests.fixtures import FrostVaultTestCase, seed_vault
 
@@ -31,17 +31,17 @@ class RenameAuditPersistenceTests(FrostVaultTestCase):
         new_file.parent.mkdir(parents=True, exist_ok=True)
         new_file.write_bytes(PAYLOAD)
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
-            old_id = catalog.observe_local_copy(
+            local_copies = LocalCopies(connection)
+            old_id = local_copies.observe_local_copy(
                 vault_id=self.vault_id, path=old_path, file_type="regular", size=len(PAYLOAD),
                 mtime_ns=100, observed_at="2026-07-21T10:00:00+00:00")
             generation = connection.execute(
                 "SELECT generation FROM files WHERE id=%s", (old_id,)).fetchone()["generation"]
-            self.assertTrue(catalog.publish_local_fingerprint(
+            self.assertTrue(local_copies.publish_local_fingerprint(
                 old_id, generation=generation, plaintext_sha256=DIGEST_A,
                 size=len(PAYLOAD), mtime_ns=100))
-            catalog.mark_local_copy_missing(old_id, observed_at="2026-07-21T11:00:00+00:00")
-            catalog.observe_local_copy(
+            local_copies.mark_local_copy_missing(old_id, observed_at="2026-07-21T11:00:00+00:00")
+            local_copies.observe_local_copy(
                 vault_id=self.vault_id, path=new_path, file_type="regular", size=len(PAYLOAD),
                 mtime_ns=new_file.stat().st_mtime_ns, observed_at="2026-07-21T11:00:00+00:00")
             # The new path's fingerprint stays unset so apply_auto_renames hashes it.

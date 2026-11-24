@@ -5,6 +5,7 @@ import json
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.routes.browse import stats
 from app.services.runtime_status import runtime_status, snapshot_runtime_status_for_stats
 from app.services.source_layout import VaultLocalAccess
@@ -21,7 +22,8 @@ class StatsTests(FrostVaultTestCase):
         with self.database.connect() as connection:
             seed_vault(connection, id=9, source_root="/sources/photos", name="Files")
             catalog = ArchiveCatalog(connection)
-            catalog.observe_local_copy(vault_id=9, path="photo.jpg", file_type="regular", size=12, mtime_ns=1, observed_at="2026-07-21T00:00:00+00:00")
+            local_copies = LocalCopies(connection)
+            local_copies.observe_local_copy(vault_id=9, path="photo.jpg", file_type="regular", size=12, mtime_ns=1, observed_at="2026-07-21T00:00:00+00:00")
             # Current holds other (older) content: the Local Copy is pending.
             row = catalog_probe.get_file_by_path(catalog, 9, "photo.jpg")
             version = catalog.begin_replacement(

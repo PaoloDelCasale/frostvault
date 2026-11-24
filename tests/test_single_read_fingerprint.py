@@ -63,7 +63,9 @@ class UploadFingerprintTests(unittest.TestCase):
         self.fingerprint = self.unfingerprinted()
         self.check = lambda: None
         self.catalog = MagicMock()
-        self.catalog.publish_local_fingerprint.side_effect = self.published
+        self.local_copies = MagicMock()
+        self.local_copies.publish_local_fingerprint.side_effect = self.published
+        self.enterContext(patch.object(execution, "LocalCopies", return_value=self.local_copies))
         worker = fake_worker()
         worker.safe_local_path.return_value = self.source
         worker.prepare_upload_snapshot.side_effect = self.hash
@@ -145,7 +147,7 @@ class UploadFingerprintTests(unittest.TestCase):
 
     def test_a_whole_stable_read_publishes_the_fingerprint_before_the_send(self) -> None:
         self.assertEqual(self.run_job().status, "completed")
-        self.catalog.publish_local_fingerprint.assert_called_once_with(
+        self.local_copies.publish_local_fingerprint.assert_called_once_with(
             "file", generation=7, plaintext_sha256=hashlib.sha256(BIG).hexdigest(),
             size=len(BIG), mtime_ns=MTIME_NS, parts=(upload_part_size(len(BIG)), _parts(BIG)))
         self.assertEqual(self.events, ["fingerprint", "send"])
@@ -164,7 +166,7 @@ class UploadFingerprintTests(unittest.TestCase):
         self.write(SMALL)
         self.fingerprint = self.unfingerprinted(SMALL)
         self.assertEqual(self.run_job().status, "completed")
-        self.catalog.publish_local_fingerprint.assert_called_once_with(
+        self.local_copies.publish_local_fingerprint.assert_called_once_with(
             "file", generation=7, plaintext_sha256=hashlib.sha256(SMALL).hexdigest(),
             size=len(SMALL), mtime_ns=MTIME_NS, parts=None)
         self.assertEqual(self.sent[0]["_upload_payload"], SMALL)
@@ -173,7 +175,7 @@ class UploadFingerprintTests(unittest.TestCase):
         self.worker.upload_s3_file.side_effect = RuntimeError("provider down")
         with self.assertRaisesRegex(RuntimeError, "provider down"):
             self.run_job()
-        self.catalog.publish_local_fingerprint.assert_called_once()
+        self.local_copies.publish_local_fingerprint.assert_called_once()
         self.assertTrue(source_devices.upload_fingerprints().claim(self.scan_row()))
 
     def test_a_small_failed_send_keeps_its_fingerprint_too(self) -> None:
@@ -182,7 +184,7 @@ class UploadFingerprintTests(unittest.TestCase):
         self.worker.upload_s3_file.side_effect = RuntimeError("provider down")
         with self.assertRaisesRegex(RuntimeError, "provider down"):
             self.run_job()
-        self.catalog.publish_local_fingerprint.assert_called_once()
+        self.local_copies.publish_local_fingerprint.assert_called_once()
         self.worker.upload_s3_file.assert_called_once()  # Published after the failed send.
         self.assertTrue(source_devices.upload_fingerprints().claim(self.scan_row(SMALL)))
 
@@ -196,7 +198,7 @@ class UploadFingerprintTests(unittest.TestCase):
         self.fingerprint = self.unfingerprinted(SMALL)
         with patch.object(self.execution_module.UploadExecution, "_publish", publish):
             self.assertEqual(self.run_job().status, "completed")
-        self.catalog.publish_local_fingerprint.assert_not_called()
+        self.local_copies.publish_local_fingerprint.assert_not_called()
         self.assertTrue(source_devices.upload_fingerprints().claim(self.scan_row(SMALL)))
 
     def test_a_file_changed_during_the_read_publishes_nothing(self) -> None:
@@ -210,7 +212,7 @@ class UploadFingerprintTests(unittest.TestCase):
         self.check = touch
         with self.assertRaisesRegex(RuntimeError, CHANGED):
             self.run_job()
-        self.catalog.publish_local_fingerprint.assert_not_called()
+        self.local_copies.publish_local_fingerprint.assert_not_called()
         self.worker.upload_s3_file.assert_not_called()
         self.assertFalse(source_devices.upload_fingerprints().claim(self.scan_row()))
 
@@ -227,10 +229,10 @@ class UploadFingerprintTests(unittest.TestCase):
         self.check = grow
         with self.assertRaisesRegex(RuntimeError, CHANGED):
             self.run_job()
-        self.catalog.publish_local_fingerprint.assert_not_called()
+        self.local_copies.publish_local_fingerprint.assert_not_called()
 
     def test_a_lost_compare_and_swap_is_not_remembered(self) -> None:
-        self.catalog.publish_local_fingerprint.side_effect = lambda *a, **k: False
+        self.local_copies.publish_local_fingerprint.side_effect = lambda *a, **k: False
         self.assertEqual(self.run_job().status, "completed")
         self.assertFalse(source_devices.upload_fingerprints().claim(self.scan_row()))
 
@@ -246,10 +248,10 @@ class UploadFingerprintTests(unittest.TestCase):
         }
         for name, case in cases.items():
             with self.subTest(case=name):
-                self.catalog.publish_local_fingerprint.reset_mock()
+                self.local_copies.publish_local_fingerprint.reset_mock()
                 self.fingerprint, self.bound = case["fingerprint"], case.get("bound", False)
                 self.assertEqual(self.run_job().status, "completed")
-                self.catalog.publish_local_fingerprint.assert_not_called()
+                self.local_copies.publish_local_fingerprint.assert_not_called()
 
     def test_a_retired_fingerprint_is_no_longer_skipped_by_the_scan(self) -> None:
         # A bound retry rehashes and finds other bytes under the same size and
@@ -261,7 +263,7 @@ class UploadFingerprintTests(unittest.TestCase):
                             "local_part_sha256": _parts(BIG)}
         self.bound = True
         self.assertEqual(self.run_job().status, "completed")
-        self.catalog.retire_local_fingerprint.assert_called_once()
+        self.local_copies.retire_local_fingerprint.assert_called_once()
         self.assertFalse(source_devices.upload_fingerprints().claim(self.scan_row()))
 
     def test_the_scan_verification_skips_what_the_upload_fingerprinted(self) -> None:

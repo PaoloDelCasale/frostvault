@@ -9,7 +9,7 @@ class EssentialSearchPostgresTests(fixtures.ProtectionStateFixture):
     def _cloud_only(self, vault_id, path, provider_version_id, storage_class, digest):
         """A verified Current whose Local Copy is gone, in ``vault_id``."""
         stamp = '2026-11-03T10:00:00Z'
-        file_id = self.catalog.observe_local_copy(
+        file_id = self.local_copies.observe_local_copy(
             vault_id=vault_id, path=path, file_type='regular', size=12, mtime_ns=1, observed_at=stamp)
         fingerprint(self.catalog, vault_id, path, digest)
         version = self.catalog.begin_replacement(
@@ -18,14 +18,14 @@ class EssentialSearchPostgresTests(fixtures.ProtectionStateFixture):
         self.catalog.promote_replacement(
             file_id, archive_version_id=version, plaintext_sha256=digest, verified_at=stamp,
             local_generation=catalog_probe.get_file_by_path(self.catalog, vault_id, path)['generation'])
-        self.catalog.mark_local_copy_missing(file_id, observed_at=stamp)
+        self.local_copies.mark_local_copy_missing(file_id, observed_at=stamp)
         return version
 
     def test_recursive_estimate_includes_released_missing_copies_only_in_its_vault(self):
         from app.services.job_admission import estimate_recovery
         stamp = '2026-11-03T10:00:00Z'
         file_id, version = self.seed('cold', archive=True, verified=True)
-        self.catalog.mark_local_copy_missing(file_id, observed_at=stamp)
+        self.local_copies.mark_local_copy_missing(file_id, observed_at=stamp)
         self.connection.execute("UPDATE archive_versions SET storage_class='DEEP_ARCHIVE' WHERE id=%s", (version,))
         seed_vault(self.connection, id=10, name='Second', source_root='/second')
         self._cloud_only(10, 'photos/cold.jpg', 'other', 'STANDARD', 'a' * 64)

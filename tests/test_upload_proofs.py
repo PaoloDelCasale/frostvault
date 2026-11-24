@@ -15,6 +15,7 @@ import unittest
 import psycopg
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services import upload_provenance as provenance
 from app.services.upload_provenance import UploadBlocked
 from app.services.upload_snapshot import (
@@ -41,8 +42,9 @@ class _Fixture(FrostVaultTestCase):
         self.addCleanup(self.connection.close)
         seed_vault(self.connection, id=2, source_root="/source")
         self.catalog = ArchiveCatalog(self.connection)
+        self.local_copies = LocalCopies(self.connection)
         self.snapshot = self.hashed(b"content-a")
-        self.file_id = self.catalog.observe_local_copy(
+        self.file_id = self.local_copies.observe_local_copy(
             vault_id=2, path="a.txt", file_type="regular", size=self.snapshot.size,
             mtime_ns=MTIME_NS, observed_at=T0)
         self.job = self.new_job()
@@ -428,7 +430,7 @@ class NoWriteTests(_Fixture):
 
 class IntegrityTests(_Fixture):
     def other_file(self) -> tuple[str, dict]:
-        file_id = self.catalog.observe_local_copy(
+        file_id = self.local_copies.observe_local_copy(
             vault_id=2, path="b.txt", file_type="regular", size=1, mtime_ns=1, observed_at=T0)
         return file_id, self.new_job(file_id=file_id, status="queued")
 

@@ -19,6 +19,7 @@ from tests.snapshot_s3_stub import VersionedS3Stub
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.services.job_admission import queue_jobs
 from app.services import job_queue
@@ -86,7 +87,7 @@ def _prepare_plain_vault(
         seed_vault(connection, id=2, source_root=str(source))
         from app.services.vault_relocation import enroll_vault_root_identity
         enroll_vault_root_identity(connection, 2, str(source))
-        ArchiveCatalog(connection).observe_local_copy(
+        LocalCopies(connection).observe_local_copy(
             vault_id=2,
             path=relative_path,
             file_type="regular",
@@ -543,7 +544,7 @@ class PlainUploadVerificationTests(FrostVaultTestCase):
                     # The watcher observes the change: a newer generation,
                     # which the publication never matches (ADR-0035).
                     with self.database.connect() as connection:
-                        ArchiveCatalog(connection).observe_local_copy(
+                        LocalCopies(connection).observe_local_copy(
                             vault_id=2, path="report.txt", file_type="regular",
                             size=len(mutated), mtime_ns=local_file.stat().st_mtime_ns,
                             observed_at="2026-07-21T10:05:00+00:00")
@@ -620,8 +621,9 @@ class PlainUploadVerificationTests(FrostVaultTestCase):
                 info = local_file.stat()
                 with self.database.connect() as connection:
                     catalog = ArchiveCatalog(connection)
+                    local_copies = LocalCopies(connection)
                     before = catalog_probe.get_file_by_path(catalog, 2, "report.txt")["generation"]
-                    catalog.observe_local_copies_batch(
+                    local_copies.observe_local_copies_batch(
                         vault_id=2,
                         entries=[("report.txt", "regular", info.st_size,
                                   info.st_mtime_ns, "2026-07-21T10:05:00+00:00")],

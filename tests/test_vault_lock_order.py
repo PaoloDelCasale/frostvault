@@ -20,7 +20,7 @@ import psycopg
 from watchfiles import Change
 
 from app import storage
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services import directory_aggregates as aggregates
 from app.services import notifications, worker_errors
 from app.services.catalog_events import record_catalog_revision
@@ -44,9 +44,9 @@ class DatabaseCase(FrostVaultTestCase):
     def seed_unflushed(self, vault_id=2, count=3):
         """Committed catalog rows with durable dirty marks and NO aggregates."""
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             for index in range(count):
-                catalog.observe_local_copy(
+                local_copies.observe_local_copy(
                     vault_id=vault_id, path=f"moved/dir{index}/leaf/file.bin",
                     file_type="regular", size=4, mtime_ns=1, observed_at=STAMP,
                 )

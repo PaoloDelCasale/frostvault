@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 from app import storage
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services import directory_aggregates as aggregates
 from tests.stress_profile import stress_file_count
 from tests.upload_support import claimed_job_row, job_row, queue_upload
@@ -134,13 +135,13 @@ class AggregateDeadlockTests(FrostVaultTestCase):
     def seed(self, count=1, prefix="0"):
         jobs = []
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             for index in range(count):
                 path = f"{prefix}/{index % 8:04d}/{index % 19:04d}/leaf/{index}.bin"
                 target = self.source / path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(PAYLOAD)
-                file_id = catalog.observe_local_copy(vault_id=2, path=path, file_type="regular",
+                file_id = local_copies.observe_local_copy(vault_id=2, path=path, file_type="regular",
                     size=len(PAYLOAD), mtime_ns=target.stat().st_mtime_ns, observed_at=STAMP)
                 jobs.append(queue_upload(connection, file_id, total_bytes=len(PAYLOAD), requested_at=STAMP))
             aggregates.flush_directory_aggregates(connection, vault_id=2)
@@ -913,7 +914,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
         local = self.source / path
         local.write_bytes(b"old")
         with self.database.connect() as connection:
-            ArchiveCatalog(connection).observe_local_copy(vault_id=2, path=path, file_type="regular",
+            LocalCopies(connection).observe_local_copy(vault_id=2, path=path, file_type="regular",
                 size=3, mtime_ns=local.stat().st_mtime_ns, observed_at=STAMP)
         self.assertTrue(self.run_job(first))
         with self.database.connect() as connection:
@@ -922,7 +923,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
         old_version = self.provider.puts[0][1]
         local.write_bytes(PAYLOAD)
         with self.database.connect() as connection:
-            ArchiveCatalog(connection).observe_local_copy(vault_id=2, path=path, file_type="regular",
+            LocalCopies(connection).observe_local_copy(vault_id=2, path=path, file_type="regular",
                 size=len(PAYLOAD), mtime_ns=local.stat().st_mtime_ns, observed_at=STAMP)
             jobs = [queue_upload(connection, job["file_id"], total_bytes=len(PAYLOAD), requested_at=STAMP)]
         original_promote = ArchiveCatalog.promote_replacement

@@ -31,7 +31,7 @@ for _flag, _value in (
     if not hasattr(os, _flag):
         setattr(os, _flag, _value)
 
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.services.job_queue import select_fair_jobs
 from app import storage as storage_module
@@ -441,9 +441,9 @@ class SchedulerCase(FrostVaultTestCase):
         with self.database.connect() as connection:
             for vault_id, slug in ((10, "alpha"), (20, "beta")):
                 seed_vault(connection, id=vault_id, source_root=f"/source/{slug}", name=slug)
-                catalog = ArchiveCatalog(connection)
+                local_copies = LocalCopies(connection)
                 for name in ("a.txt", "b.txt"):
-                    self.file_ids[(vault_id, name)] = catalog.observe_local_copy(
+                    self.file_ids[(vault_id, name)] = local_copies.observe_local_copy(
                         vault_id=vault_id,
                         path=name,
                         file_type="regular",

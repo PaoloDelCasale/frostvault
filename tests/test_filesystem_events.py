@@ -27,7 +27,7 @@ class ReleaseWatcherRaceTests(test_local_release.LocalReleaseWorkerCase):
     # relying on file size, sleeps or the kernel's scheduling of a large hash.
     def test_watcher_during_hash_does_not_invalidate_local_release(self):
         real_hash = storage.hash_stable_regular_file
-        self.catalog.mark_local_path_missing.side_effect = lambda **_: self.target.update(local_presence="missing")
+        self.local_copies.mark_local_path_missing.side_effect = lambda **_: self.target.update(local_presence="missing")
         access = SimpleNamespace(local_operations_allowed=True, volume_alias=None)
         connection = self.stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
         connection.execute.return_value.fetchone.return_value = None
@@ -76,7 +76,7 @@ class ReleaseWatcherRaceTests(test_local_release.LocalReleaseWorkerCase):
         claims = list(self.path.parent.glob(".*.cleanup-*.tmp"))
         self.assertEqual(len(claims), 1)
         self.assertEqual(claims[0].read_bytes(), b"photo")
-        self.catalog.observe_replaced_local_copy.assert_called_once()
+        self.local_copies.observe_replaced_local_copy.assert_called_once()
 
     def test_one_gib_file_with_active_watcher_is_released(self):
         size = 1 << 30
@@ -273,9 +273,9 @@ class WatcherSubtreeTests(unittest.TestCase):
             local_observation.remember(126, "new/photo.jpg", recovered.stat(), hashlib.sha256(b"photo").hexdigest())
             connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = None
-            catalog = stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
+            local_copies = stack.enter_context(patch("app.storage.LocalCopies")).return_value
             invalidated = []
-            catalog.observe_local_copies_batch.side_effect = (
+            local_copies.observe_local_copies_batch.side_effect = (
                 lambda **kw: invalidated.extend(kw.get("invalidate_paths") or ())
             )
             stack.enter_context(patch("app.storage._validate_enrolled_scan_root"))
@@ -287,7 +287,7 @@ class WatcherSubtreeTests(unittest.TestCase):
                 (Change.added, str(recovered.parent)),
                 (Change.added, str(recovered)),
             })
-            self.assertTrue(catalog.observe_local_copies_batch.called)
+            self.assertTrue(local_copies.observe_local_copies_batch.called)
             self.assertEqual(invalidated, ["new/external.jpg"])
             # A later file echo cannot repair a digest the subtree has erased.
             self.assertTrue(local_observation.consume(126, "new/photo.jpg", recovered))
@@ -303,16 +303,16 @@ class WatcherSubtreeTests(unittest.TestCase):
             incoming.rename(root / "incoming")
             connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = None
-            catalog = stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
+            local_copies = stack.enter_context(patch("app.storage.LocalCopies")).return_value
             observed = []
-            catalog.observe_local_copy.side_effect = lambda **kwargs: observed.append(kwargs["path"])
-            catalog.observe_local_copies_batch.side_effect = lambda **kwargs: observed.extend(entry[0] for entry in kwargs["entries"])
+            local_copies.observe_local_copy.side_effect = lambda **kwargs: observed.append(kwargs["path"])
+            local_copies.observe_local_copies_batch.side_effect = lambda **kwargs: observed.extend(entry[0] for entry in kwargs["entries"])
             stack.enter_context(patch("app.storage._validate_enrolled_scan_root"))
             stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True, volume_alias=None)))
             stack.enter_context(patch("app.storage.record_catalog_revision"))
             storage.apply_filesystem_changes({"id": 2, "source_root": str(root)}, {(Change.added, str(root / "incoming"))})
             self.assertIn("incoming/nested/file.bin", observed)
-            catalog.observe_local_copies_batch.reset_mock()
+            local_copies.observe_local_copies_batch.reset_mock()
             # The catalog now holds the folder: its one-level listing (#721)
             # finds nothing unknown, so a metadata change walks nothing.
             connection.execute.return_value.fetchall.return_value = [
@@ -321,7 +321,7 @@ class WatcherSubtreeTests(unittest.TestCase):
             self.assertEqual(storage.apply_filesystem_changes(
                 {"id": 2, "source_root": str(root)}, {(Change.modified, str(root / "incoming"))},
             ), 0)
-            catalog.observe_local_copies_batch.assert_not_called()
+            local_copies.observe_local_copies_batch.assert_not_called()
 
 
 class SubtreeContainmentTests(unittest.TestCase):
@@ -341,9 +341,9 @@ class SubtreeContainmentTests(unittest.TestCase):
                 (outside / "incoming" / "outside-only.txt").write_bytes(b"private")
             connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = None
-            catalog = stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
+            local_copies = stack.enter_context(patch("app.storage.LocalCopies")).return_value
             observed = []
-            catalog.observe_local_copies_batch.side_effect = lambda **kwargs: observed.extend(entry[0] for entry in kwargs["entries"])
+            local_copies.observe_local_copies_batch.side_effect = lambda **kwargs: observed.extend(entry[0] for entry in kwargs["entries"])
             stack.enter_context(patch("app.storage._validate_enrolled_scan_root"))
             stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True, volume_alias=None)))
             stack.enter_context(patch("app.storage.record_catalog_revision"))
@@ -417,7 +417,7 @@ class ReleaseRepairVaultIdentityTests(test_local_release.LocalReleaseWorkerCase)
               patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(local_operations_allowed=True))):
             storage._repair_failed_local_release(self.job, self.target, self.path)
         validate.assert_called_with(vault)
-        self.catalog.publish_local_fingerprint.assert_called_once()
+        self.local_copies.publish_local_fingerprint.assert_called_once()
 
     def test_missing_actual_vault_never_falls_back_to_unenrolled_job(self):
         self.job.update(id=100, vault_id=2)
@@ -514,9 +514,9 @@ class UnsupportedNameWalkTests(unittest.TestCase):
             root = self.make_tree(Path(directory))
             connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = None
-            catalog = stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
+            local_copies = stack.enter_context(patch("app.storage.LocalCopies")).return_value
             observed = []
-            catalog.observe_local_copies_batch.side_effect = lambda **kw: observed.extend(e[0] for e in kw["entries"])
+            local_copies.observe_local_copies_batch.side_effect = lambda **kw: observed.extend(e[0] for e in kw["entries"])
             problems = []
             stack.enter_context(patch("app.storage.report_problem", side_effect=lambda *a, **kw: problems.append(kw)))
             resolved = []
@@ -552,7 +552,7 @@ class UnsupportedNameWalkTests(unittest.TestCase):
             root = self.make_tree(Path(directory))
             connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = None
-            stack.enter_context(patch("app.storage.ArchiveCatalog"))
+            stack.enter_context(patch("app.storage.LocalCopies"))
             stack.enter_context(patch("app.storage.report_problem"))
             resolved = stack.enter_context(patch("app.storage.resolve_stale_path_problems"))
             stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(

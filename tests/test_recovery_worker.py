@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from app import storage
-from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 from tests import test_upload_worker as fixtures
 from tests.test_upload_worker import A, B, sha
@@ -44,7 +44,7 @@ class RecoveryWorkerTests(fixtures.UploadWorkerCase):
     def lose_local_copy(self) -> None:
         self.file.unlink()
         with self.db() as connection:
-            ArchiveCatalog(connection).mark_local_copy_missing(
+            LocalCopies(connection).mark_local_copy_missing(
                 self.file_id, observed_at=storage.now_iso())
 
     def admit(self, action: str) -> int:

@@ -152,9 +152,9 @@ class ScanTreePruneTests(unittest.TestCase):
             root = _tree(directory)
             connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = None
-            catalog = stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
+            local_copies = stack.enter_context(patch("app.storage.LocalCopies")).return_value
             observed: list[str] = []
-            catalog.observe_local_copies_batch.side_effect = lambda **kw: observed.extend(e[0] for e in kw["entries"])
+            local_copies.observe_local_copies_batch.side_effect = lambda **kw: observed.extend(e[0] for e in kw["entries"])
             stack.enter_context(patch("app.storage.report_problem"))
             stack.enter_context(patch("app.storage.resolve_stale_path_problems"))
             stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(
@@ -172,7 +172,7 @@ class ScanTreePruneTests(unittest.TestCase):
         self.assertEqual(plan.excluded, {"backups"})
         self.assertIn("backups", plan.directories)
         self.assertFalse(plan)  # Not a gap: no re-check, no unconfirmed Vault.
-        kwargs = catalog.mark_unseen_local_copies_missing.call_args.kwargs
+        kwargs = local_copies.mark_unseen_local_copies_missing.call_args.kwargs
         self.assertIs(kwargs["excluded_folders"], folders)
 
     def test_a_removed_excluded_folder_stays_out_of_the_plan_while_its_rule_holds(self):
@@ -182,7 +182,7 @@ class ScanTreePruneTests(unittest.TestCase):
             root = _tree(directory)
             connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = None
-            stack.enter_context(patch("app.storage.ArchiveCatalog"))
+            stack.enter_context(patch("app.storage.LocalCopies"))
             stack.enter_context(patch("app.storage.resolve_stale_path_problems"))
             stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(
                 local_operations_allowed=True, volume_alias=None, volume_health="healthy",

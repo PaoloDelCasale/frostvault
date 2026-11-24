@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.storage import scan_cloud
 from tests.catalog_support import fingerprint, sha256_hex
 from tests.fixtures import FrostVaultTestCase, seed_vault
@@ -62,7 +63,8 @@ class SnapshotScanStaleCatalogTests(FrostVaultTestCase):
         with self.database.connect() as connection:
             seed_vault(connection, id=2, uuid=VAULT_UUID, source_root="/source")
             catalog = ArchiveCatalog(connection)
-            self.file_id = catalog.observe_local_copy(
+            local_copies = LocalCopies(connection)
+            self.file_id = local_copies.observe_local_copy(
                 vault_id=2, path="report.txt", file_type="regular", size=4,
                 mtime_ns=1, observed_at="2026-07-21T09:00:00+00:00",
             )

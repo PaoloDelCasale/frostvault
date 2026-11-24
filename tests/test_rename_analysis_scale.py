@@ -17,6 +17,7 @@ from typing import Any
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.operation_policies import queue_auto_uploads
 from tests.fixtures import FrostVaultTestCase, seed_vault
 
@@ -129,7 +130,7 @@ class RenameAnalysisScaleTests(FrostVaultTestCase):
 
     def identify(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         recorder = _Recorder(self.connection)
-        rows = ArchiveCatalog(recorder).local_copies_to_identify(VAULT_ID)
+        rows = LocalCopies(recorder).local_copies_to_identify(VAULT_ID)
         self.assertEqual(len(recorder.statements), 1)
         return rows, recorder.statements[0]
 

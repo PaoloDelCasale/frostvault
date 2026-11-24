@@ -28,6 +28,7 @@ for _flag, _value in (
         setattr(os, _flag, _value)
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.services.job_admission import JobAdmission, queue_jobs
 from app.storage import UPLOAD_RETRY_MAX_ATTEMPTS, process_jobs_once
@@ -50,7 +51,7 @@ def _observe(database: Database, local: Path, relative_path: str = "report.txt")
     which an upload publication never matches (ADR-0035)."""
     with database.connect() as connection:
         stat = local.stat()
-        ArchiveCatalog(connection).observe_local_copy(
+        LocalCopies(connection).observe_local_copy(
             vault_id=2, path=relative_path, file_type="regular", size=stat.st_size,
             mtime_ns=stat.st_mtime_ns, observed_at="2026-07-21T10:05:00+00:00")
 

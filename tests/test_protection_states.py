@@ -9,6 +9,7 @@ from dataclasses import replace
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 from app.routes.browse import list_files, stats
 from app.services import directory_aggregates as aggregates
@@ -150,13 +151,14 @@ class ProtectionStateFixture(FrostVaultTestCase):
         self.connection = self.enterContext(self.database.connect())
         seed_vault(self.connection, id=9, name='Files', source_root="/source")
         self.catalog = ArchiveCatalog(self.connection)
+        self.local_copies = LocalCopies(self.connection)
         aggregates.set_maintenance_scheduling_enabled(False)
         self.addCleanup(aggregates.set_maintenance_scheduling_enabled, True)
 
     def seed(self, name, *, local=True, archive=False, verified=False, availability='available', match=True, path=None, file_type='regular'):
         """One Vault File; ``archive`` uploads a replacement, ``verified`` makes it Current."""
         path = path or f'photos/{name}.jpg'
-        file_id = self.catalog.observe_local_copy(vault_id=9, path=path, file_type=file_type, size=12, mtime_ns=1, observed_at=T)
+        file_id = self.local_copies.observe_local_copy(vault_id=9, path=path, file_type=file_type, size=12, mtime_ns=1, observed_at=T)
         version_id = None
         if archive:
             if file_type == 'regular':
@@ -171,7 +173,7 @@ class ProtectionStateFixture(FrostVaultTestCase):
                 if availability != 'available':
                     self.connection.execute('UPDATE archive_versions SET availability=%s WHERE id=%s', (availability, version_id))
         if not local:
-            self.catalog.mark_local_copy_missing(file_id, observed_at=T)
+            self.local_copies.mark_local_copy_missing(file_id, observed_at=T)
         return file_id, version_id
 
 class ProtectionStatePostgresTests(ProtectionStateFixture):
@@ -373,7 +375,7 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         self.connection.execute("UPDATE jobs SET status='cancelled', message_key='job.upload_stopped', "
                                 "finished_at=requested_at WHERE id=%s", (manual,))
         # Changed content is observed after the stop: automatic upload resumes.
-        self.catalog.observe_local_copy(vault_id=9, path='photos/sub/stopped.jpg', file_type='regular',
+        self.local_copies.observe_local_copy(vault_id=9, path='photos/sub/stopped.jpg', file_type='regular',
                                         size=13, mtime_ns=2, observed_at='2026-11-03T10:10:00+00:00')
         self.assertEqual(self.catalog.summary(9)['states'], {'protected': 1, 'stopped': 1, 'pending': 1})
         states = {row['path']: row['state'] for row in catalog_probe.list_file_rows(self.catalog, 9)}
@@ -498,7 +500,7 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         self.connection.execute('UPDATE files SET held_version_id=%s WHERE id=%s', (version, conflict_id))
         # A reconciliation block replaces the v0.5 mismatch state (#587).
         blocked_id, _ = self.seed('mismatch', archive=True)
-        self.catalog.block_reconciliation(blocked_id, reason='proof_mismatch', at=T)
+        self.local_copies.block_reconciliation(blocked_id, reason='proof_mismatch', at=T)
         self.seed('unverified', archive=True)
         self.seed('missing-local', archive=True, verified=True, availability='missing')
         states = {row['path']: row for row in catalog_probe.list_file_rows(self.catalog, 9)}

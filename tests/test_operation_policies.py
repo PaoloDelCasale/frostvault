@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 
 from app.services.operation_policies import (
     OperationPolicy,
@@ -335,13 +336,13 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
 
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             for name, path in (
                 ("ready.txt", stable),
                 ("fresh.txt", fresh),
                 ("skip.bin", ignored),
             ):
-                catalog.observe_local_copy(
+                local_copies.observe_local_copy(
                     vault_id=2,
                     path=name,
                     file_type="regular",
@@ -385,7 +386,7 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
         os.utime(target, (old, old))
         now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
         with self.database.connect() as connection:
-            ArchiveCatalog(connection).observe_local_copy(
+            LocalCopies(connection).observe_local_copy(
                 vault_id=2,
                 path="ready.txt",
                 file_type="regular",
@@ -421,7 +422,8 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
         digest = hashlib.sha256(original).hexdigest()
         with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
-            catalog.observe_local_copy(
+            local_copies = LocalCopies(connection)
+            local_copies.observe_local_copy(
                 vault_id=2,
                 path="ready.txt",
                 file_type="regular",
@@ -445,7 +447,7 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
 
             target.write_bytes(changed)
             os.utime(target, (old, old))
-            catalog.observe_local_copy(
+            local_copies.observe_local_copy(
                 vault_id=2,
                 path="ready.txt",
                 file_type="regular",
@@ -474,7 +476,7 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
         target.write_bytes(content)
         old = datetime(2026, 7, 1, 11, 0, tzinfo=timezone.utc).timestamp()
         os.utime(target, (old, old))
-        file_id = ArchiveCatalog(connection).observe_local_copy(
+        file_id = LocalCopies(connection).observe_local_copy(
             vault_id=2, path=name, file_type="regular",
             size=target.stat().st_size, mtime_ns=target.stat().st_mtime_ns,
             observed_at="2026-07-01T11:00:00+00:00",
@@ -489,7 +491,7 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
 
     def _rescan(self, connection, target: Path, *, invalidate: bool = False) -> None:
         stat_result = target.stat()
-        ArchiveCatalog(connection).observe_local_copies_batch(
+        LocalCopies(connection).observe_local_copies_batch(
             vault_id=2,
             entries=[(target.name, "regular", stat_result.st_size,
                       stat_result.st_mtime_ns, "2026-07-01T11:30:00+00:00")],
@@ -569,7 +571,8 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
         digest = hashlib.sha256(payload).hexdigest()
         with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
-            catalog.observe_local_copy(
+            local_copies = LocalCopies(connection)
+            local_copies.observe_local_copy(
                 vault_id=2,
                 path="ready.txt",
                 file_type="regular",
@@ -630,6 +633,7 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
         due_version_id = None
         with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             for name, verified_at in (
                 ("due.txt", "2026-07-01T12:00:00+00:00"),
                 ("not-due.txt", "2026-07-02T12:00:00+00:00"),
@@ -650,7 +654,7 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
                 ).timestamp()
                 os.utime(target, (local_mtime, local_mtime))
                 digest = hashlib.sha256(content).hexdigest()
-                catalog.observe_local_copy(
+                local_copies.observe_local_copy(
                     vault_id=2,
                     path=name,
                     file_type="regular",
@@ -725,13 +729,14 @@ class AutoUploadEligibilityTests(FrostVaultTestCase):
         names = ("a.txt", "priv/b.txt", "priv/secret/c.txt")
         with self.database.connect() as connection:
             catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             for name in names:
                 target = self.source / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(name.encode())
                 stamp = datetime.fromisoformat(verified_at).timestamp()
                 os.utime(target, (stamp, stamp))
-                catalog.observe_local_copy(
+                local_copies.observe_local_copy(
                     vault_id=2, path=name, file_type="regular", size=len(name.encode()),
                     mtime_ns=target.stat().st_mtime_ns, observed_at=verified_at,
                 )

@@ -130,9 +130,9 @@ class ScanTreeReplacedFolderTests(unittest.TestCase):
         connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
         connection.execute.return_value.fetchone.return_value = None
         connection.execute.return_value.rowcount = 1
-        catalog = stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
+        local_copies = stack.enter_context(patch("app.storage.LocalCopies")).return_value
         observed: list[list[str]] = []
-        catalog.observe_local_copies_batch.side_effect = lambda **kw: observed.append([e[0] for e in kw["entries"]])
+        local_copies.observe_local_copies_batch.side_effect = lambda **kw: observed.append([e[0] for e in kw["entries"]])
         problems: list[dict] = []
         stack.enter_context(patch("app.storage.report_problem", side_effect=lambda *a, **kw: problems.append(kw)))
         resolved: list[dict] = []
@@ -169,7 +169,7 @@ class ScanTreeReplacedFolderTests(unittest.TestCase):
             )
         return SimpleNamespace(
             observed=observed, problems=problems, resolved=resolved, restored=restored,
-            journal=journal, logs=logs.output, catalog=catalog,
+            journal=journal, logs=logs.output, local_copies=local_copies,
         )
 
     def test_the_replaced_folder_is_compensated_and_walked_again_and_the_rest_stands(self):
@@ -185,7 +185,7 @@ class ScanTreeReplacedFolderTests(unittest.TestCase):
         self.assertFalse(result.journal.get("incomplete", False))
         self.assertEqual(result.problems, [])
         # The full scan can still finalize missing copies.
-        result.catalog.mark_unseen_local_copies_missing.assert_called_once()
+        result.local_copies.mark_unseen_local_copies_missing.assert_called_once()
         self.assertEqual(len(result.logs), 1)
         self.assertIn("upload/aa/07", result.logs[0])
 
@@ -200,7 +200,7 @@ class ScanTreeReplacedFolderTests(unittest.TestCase):
         # Its last walk was undone too: it keeps its last known state.
         self.assertTrue(all(path.startswith("upload/aa/07") for path in result.restored))
         self.assertTrue(result.journal["incomplete"])
-        result.catalog.mark_unseen_local_copies_missing.assert_not_called()
+        result.local_copies.mark_unseen_local_copies_missing.assert_not_called()
         folder_resolved = [r for r in result.resolved if r["event"] == "folder_changed_during_scan"]
         self.assertEqual(folder_resolved[0]["keep_paths"], {"upload/aa/07"})
         self.assertTrue(any("kept changing" in line and "upload/aa/07" in line for line in result.logs))
@@ -210,7 +210,7 @@ class ScanTreeReplacedFolderTests(unittest.TestCase):
             root = _tree(directory)
             connection = stack.enter_context(patch("app.storage.db")).return_value.__enter__.return_value
             connection.execute.return_value.fetchone.return_value = None
-            stack.enter_context(patch("app.storage.ArchiveCatalog"))
+            stack.enter_context(patch("app.storage.LocalCopies"))
             stack.enter_context(patch("app.storage.source_layout.vault_local_access", return_value=SimpleNamespace(
                 local_operations_allowed=True, volume_alias=None, volume_health="healthy",
             )))

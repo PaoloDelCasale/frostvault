@@ -230,6 +230,7 @@ class LocalReleaseWorkerCase(unittest.TestCase):
         }
         self.catalog = self.stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
         self.catalog.get_job_target.side_effect = lambda _: dict(self.target)
+        self.local_copies = self.stack.enter_context(patch("app.storage.LocalCopies")).return_value
         self.confirmed = self.stack.enter_context(patch("app.storage.local_release_is_confirmed", return_value=True))
         self.stack.enter_context(patch("app.storage.get_policy", return_value=OperationPolicy(local_release_after_days=90)))
         self.stack.enter_context(patch("app.storage.s3_client", return_value=SimpleNamespace(head_object=self.head)))

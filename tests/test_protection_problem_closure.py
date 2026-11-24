@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 from app import storage
 from app.catalog import ArchiveCatalog
+from app.services.local_copies import LocalCopies
 from app.services import job_admission
 from app.services import notifications as inbox
 from app.services import protection_notifications as monitor
@@ -84,7 +85,7 @@ class ProtectionProblemClosureTests(FrostVaultTestCase):
         super().setUp()
         with self.connect() as c:
             self.vault_id = seed_vault(c)["id"]
-            ArchiveCatalog(c).observe_local_copy(vault_id=self.vault_id, path="a.txt", file_type="regular",
+            LocalCopies(c).observe_local_copy(vault_id=self.vault_id, path="a.txt", file_type="regular",
                                                   size=1, mtime_ns=1, observed_at=(NOW-timedelta(hours=25)).isoformat())
             self.file_id = str(self.file_of(c, "a.txt"))
             self.job_id = self.failed_job(c, self.file_id, at=NOW-timedelta(hours=1),
@@ -110,8 +111,9 @@ class ProtectionProblemClosureTests(FrostVaultTestCase):
 
     def protect(self, c, *, path="a.txt", completed=True, action="upload"):
         catalog = ArchiveCatalog(c)
+        local_copies = LocalCopies(c)
         if path != "a.txt":
-            catalog.observe_local_copy(vault_id=self.vault_id, path=path, file_type="regular", size=1,
+            local_copies.observe_local_copy(vault_id=self.vault_id, path=path, file_type="regular", size=1,
                                        mtime_ns=1, observed_at=NOW.isoformat())
         fingerprint(catalog, self.vault_id, path, self.DIGEST)
         version = protect_current(catalog, self.vault_id, path, self.DIGEST,
@@ -237,7 +239,7 @@ class ProtectionProblemClosureTests(FrostVaultTestCase):
             for _ in range(inbox.GROUP_THRESHOLD + 2):
                 failed = self.failed_job(c, self.file_id)
                 inbox.enqueue_job_terminal_notification(c, job_id=failed)
-            ArchiveCatalog(c).observe_local_copy(vault_id=self.vault_id, path="b.txt", file_type="regular",
+            LocalCopies(c).observe_local_copy(vault_id=self.vault_id, path="b.txt", file_type="regular",
                                                   size=1, mtime_ns=1, observed_at=NOW.isoformat())
             failed = self.failed_job(c, self.file_of(c, "b.txt"))
             inbox.enqueue_job_terminal_notification(c, job_id=failed)
@@ -268,7 +270,7 @@ class ProtectionProblemClosureTests(FrostVaultTestCase):
 
     def test_approval_persists_unrounded_cost_and_english_fallback(self):
         with self.connect() as c:
-            ArchiveCatalog(c).observe_local_copy(vault_id=self.vault_id, path="r.txt", file_type="regular",
+            LocalCopies(c).observe_local_copy(vault_id=self.vault_id, path="r.txt", file_type="regular",
                                                   size=1, mtime_ns=1, observed_at=NOW.isoformat())
             group = str(uuid.uuid4())
             c.execute("INSERT INTO job_groups(id,vault_id) VALUES (%s,%s)", (group,self.vault_id))

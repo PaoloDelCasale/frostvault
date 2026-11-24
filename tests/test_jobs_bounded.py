@@ -96,12 +96,12 @@ class BoundedJobsHttpTests(job_messages.JobHttpFixture):
         self.assertEqual(self.client.get(f"/api/vaults/{self.vault_id}/jobs?path=../private").status_code,422)
 
     def test_matching_group_identity_in_another_vault_never_leaks_members_or_totals(self):
-        from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
         import psycopg
         self.seed_group(3)
         with self.database.connect() as connection:
             other = seed_vault(connection, name="Other", source_root="/other-source")["id"]
-            secret = ArchiveCatalog(connection).observe_local_copy(vault_id=other,path="secret.txt",file_type="regular",
+            secret = LocalCopies(connection).observe_local_copy(vault_id=other,path="secret.txt",file_type="regular",
                                                                   size=999,mtime_ns=1,observed_at="2026-11-11")
         # The schema itself scopes a group to its Vault: another Vault's Job
         # can never join it.
@@ -144,15 +144,15 @@ class BoundedJobsHttpTests(job_messages.JobHttpFixture):
         self.assertEqual(len(set(ids)),102)
 
     def test_active_group_cursor_does_not_move_when_newest_member_completes(self):
-        from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
         with self.database.connect() as connection:
             # 53 active Jobs, one file each: 51 single-Job groups plus LONG,
             # which holds the oldest and the newest Job.
-            catalog = ArchiveCatalog(connection)
+            local_copies = LocalCopies(connection)
             add_group(connection, LONG, self.vault_id)
             for n in range(53):
                 path = f"cursor-{n}.txt"
-                file_id = catalog.observe_local_copy(
+                file_id = local_copies.observe_local_copy(
                     vault_id=self.vault_id,path=path,file_type="regular",
                     size=100,mtime_ns=1,observed_at="2026-11-11")
                 group = LONG if n in (0, 52) else connection.execute(

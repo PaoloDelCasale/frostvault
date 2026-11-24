@@ -584,7 +584,7 @@ class VaultBucketEndToEndTests(FrostVaultTestCase):
         import uuid as uuid_module
 
         from app import storage
-        from app.catalog import ArchiveCatalog
+        from app.services.local_copies import LocalCopies
         from app.services.vault_relocation import enroll_vault_root_identity
         from tests.upload_provenance_provider import VersionedProvider
 
@@ -599,7 +599,7 @@ class VaultBucketEndToEndTests(FrostVaultTestCase):
             seed_vault(connection, id=2, name="Docs", source_root=str(self.source),
                        bucket=self.BUCKET, target={"key_layout": "bucket_root"})
             enroll_vault_root_identity(connection, 2, str(self.source))
-            ArchiveCatalog(connection).observe_local_copy(
+            LocalCopies(connection).observe_local_copy(
                 vault_id=2, path="photos/report.txt", file_type="regular", size=len(self.payload),
                 mtime_ns=self.file.stat().st_mtime_ns, observed_at=storage.now_iso())
         self.enterContext(patch("app.storage.validate_cloud_vault"))

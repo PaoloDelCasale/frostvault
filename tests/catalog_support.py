@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.services.job_admission import JobAdmission
+from app.services.local_copies import LocalCopies
 from tests import catalog_probe
 
 
@@ -27,7 +28,7 @@ def fingerprint(catalog: Any, vault_id: int, path: str, digest: str) -> bool:
     """Publish ``digest`` for the Local Copy currently observed at ``path``."""
     row = catalog_probe.get_file_by_path(catalog, vault_id, path)
     local = row["local_copy"]
-    return catalog.publish_local_fingerprint(
+    return LocalCopies(catalog.connection).publish_local_fingerprint(
         row["id"],
         generation=row["generation"],
         plaintext_sha256=digest,
