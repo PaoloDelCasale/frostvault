@@ -1,8 +1,8 @@
 # One source for the HTTP contract and one address for a Vault
 
-Status: accepted by the Owner on 2026-11-23 (issue #805, epic #788). This ADR
-records the decision; the code follows in the pull requests listed under
-"Migration".
+Status: accepted by the Owner on 2026-11-23 (issue #805, epic #788).
+Implemented: all four steps under "Migration" are done (step 4 completed on
+2026-11-24). The Context below describes the code before the migration.
 
 ## Context
 
@@ -229,7 +229,10 @@ notes. Sizes exclude the generated `openapi.json` and TypeScript.
      `response_model()`, `documented_schemas()` and the merge in `app/main.py`
      are deleted. About 100 lines.
 
-   Until the last one, the merge keeps serving the schemas not yet moved.
+   Until the last one, the merge kept serving the schemas not yet moved. After
+   it, `ApiErrorResponse` is a Pydantic model in `app/routes/deps.py`, the
+   module that declares the documented refusals, and FastAPI's own
+   `app.openapi()` writes the document.
 
 Pydantic writes JSON Schema differently from the hand-written file (titles,
 `anyOf` for nullable fields). Each schema pull request shows the diff of
@@ -264,6 +267,11 @@ callers see did not change, apart from the mismatches it lists.
   consumers still use Session selection" no longer applies to them. A script
   or bookmark calling an old address gets 404; the release
   notes list the table above.
+- Every response model, and every model it nests, derives from
+  `ResponseModel` (`app/api_models.py`), which sets Pydantic's `defer_build`:
+  production never validates with these models, so they are built when the
+  document is generated or a test checks an answer, not at import. Defining
+  the classes still costs at import; only building their validators moves.
 - A field added to a route without its model fails the tests when the model is
   closed; for an open model the check covers only the declared fields. Whether
   a model is open or closed is copied from the hand-written schema it

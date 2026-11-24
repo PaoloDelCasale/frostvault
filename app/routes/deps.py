@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Depends, Path, Request, Response
+from pydantic import ConfigDict
 
+from ..api_models import ResponseModel
 from ..config import settings
-from ..errors import Invalid, NotFound, ReauthRequired, Unauthenticated
+from ..errors import STATUS, Invalid, NotFound, ReauthRequired, Unauthenticated
 from ..i18n import DEFAULT_LOCALE, LOCALE_COOKIE_NAME, normalize_locale, resolve_locale, translate
 from ..database import db
 from ..proxy import parse_networks, resolve_client_ip
@@ -17,19 +19,23 @@ from ..sessions import is_reauth_recent, resolve_session, session_actor
 from ..services.vault_paths import InvalidLogicalPath, safe_relative_path
 
 
+# What every refusal of the API answers: the single handler in ``app.main``
+# (#797). A comment, not a docstring, keeps the documented schema unchanged.
+class ApiErrorResponse(ResponseModel):
+    model_config = ConfigDict(extra="forbid")
+    detail: str
+    code: Literal[*STATUS]
+    message_key: str
+    message_params: dict[str, Any]
+
+
 # Deliberate API error contracts for domain validation. Keep these separate
 # from FastAPI's generic validation response so unrelated programming errors
 # still surface as 500s.
 LOGICAL_PATH_ERROR_RESPONSES = {
     422: {
         "description": "The logical path is empty, absolute, or traverses outside the Vault",
-        "content": {
-            "application/json": {
-                "schema": {
-                    "$ref": "#/components/schemas/ApiErrorResponse"
-                }
-            }
-        },
+        "model": ApiErrorResponse,
     }
 }
 
@@ -37,13 +43,7 @@ LOGICAL_PATH_ERROR_RESPONSES = {
 SCOPED_NOT_FOUND_RESPONSES = {
     404: {
         "description": "The requested Vault-scoped resource is absent, stale, or foreign",
-        "content": {
-            "application/json": {
-                "schema": {
-                    "$ref": "#/components/schemas/ApiErrorResponse"
-                }
-            }
-        },
+        "model": ApiErrorResponse,
     }
 }
 

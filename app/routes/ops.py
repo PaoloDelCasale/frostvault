@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import mimetypes
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import ConfigDict
 
-from ..api_models import JsonObjectResponse
+from ..api_models import ResponseModel, passthrough
 from ..config import settings
 from ..diagnostics import require_metrics_token
 from ..services import health as health_service
@@ -54,13 +56,35 @@ def index():
     return _spa_index_response()
 
 
-@router.get("/health", response_model=JsonObjectResponse)
+# The answers of the probes (ADR-0056). Both are closed: fixed keys, built here.
+
+class HealthResponse(ResponseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["ok"]
+
+
+class ReadinessChecks(ResponseModel):
+    model_config = ConfigDict(extra="forbid")
+    database: bool
+    worker: bool
+    config: bool
+    sources_layout: bool
+
+
+class ReadinessResponse(ResponseModel):
+    """The 200 answer; a 503 answers the same object with status not_ready."""
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["ready", "not_ready"]
+    checks: ReadinessChecks
+
+
+@router.get("/health", response_model=passthrough(HealthResponse))
 def health():
     """Process liveness probe — does not inspect dependencies."""
     return {"status": "ok"}
 
 
-@router.get("/ready", response_model=JsonObjectResponse)
+@router.get("/ready", response_model=passthrough(ReadinessResponse))
 def ready():
     """Dependency-aware readiness: database, worker heartbeat, and config."""
     report = health_service.readiness_report()

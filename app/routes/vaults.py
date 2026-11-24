@@ -7,7 +7,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from pydantic import MISSING, BaseModel, ConfigDict, Field
 
-from ..api_models import passthrough
+from ..api_models import ResponseModel, passthrough
 from ..database import db
 from ..errors import Conflict, NotFound, VaultNotFound
 from ..services.source_layout import source_volume_inventory
@@ -131,7 +131,7 @@ class MirrorCleanupUpdate(BaseModel):
 VaultLifecycle = Literal["provisioning", "active", "reconnect_required", "stopping", "tombstone"]
 
 
-class VaultPauseResponse(BaseModel):
+class VaultPauseResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
     paused: bool
@@ -156,7 +156,7 @@ def _set_vault_pause(vault_id: int, paused: bool, request: Request, user: dict[s
                                        locale=_request_locale(request))
 
 
-class VaultListItem(BaseModel):
+class VaultListItem(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
     uuid: str
@@ -165,7 +165,7 @@ class VaultListItem(BaseModel):
     lifecycle: VaultLifecycle
 
 
-class VaultsResponse(BaseModel):
+class VaultsResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     items: list[VaultListItem]
 
@@ -184,7 +184,7 @@ def list_vaults(_: dict[str, Any] = Depends(current_user)):
     return {"items": rows}
 
 
-class VaultBucketStatus(BaseModel):
+class VaultBucketStatus(ResponseModel):
     """A Vault's bucket (#735). While a new Vault is provisioning, the state of its Vault Bucket creation: creating, failed, or settling (verified, active at active_at, 15 minutes after the verification)."""
 
     model_config = ConfigDict(extra="forbid")
@@ -205,7 +205,7 @@ class VaultBucketStatus(BaseModel):
 type VaultCreationMode = Literal["empty", "adopt"]
 
 
-class VaultCreateResponse(BaseModel):
+class VaultCreateResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
     uuid: str
@@ -265,7 +265,7 @@ def vault_bucket_status(vault_id: int, _: dict[str, Any] = Depends(current_user)
     return state
 
 
-class RetainedVersions(BaseModel):
+class RetainedVersions(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     count: int
     bytes: int
@@ -278,7 +278,7 @@ class RetainedVersions(BaseModel):
     next_attempt_at: str | None
 
 
-class RetentionLockStatus(BaseModel):
+class RetentionLockStatus(ResponseModel):
     """A Vault's Governance Retention Lock, fixed at creation (#736), and the superseded versions it holds back until their RetainUntilDate."""
 
     model_config = ConfigDict(extra="forbid")
@@ -323,7 +323,7 @@ def retry_vault_bucket(vault_id: int, background_tasks: BackgroundTasks,
     return state
 
 
-class VaultCreationCancelled(BaseModel):
+class VaultCreationCancelled(ResponseModel):
     """A cancelled Vault creation (#735). The Vault left the catalog; a bucket already created is not deleted: bucket_left says whether it was created (created) or an attempt may have reached AWS (possible)."""
 
     model_config = ConfigDict(extra="forbid")
@@ -350,14 +350,14 @@ def cancel_vault_creation(vault_id: int, request: Request,
     return vault_buckets_service.cancel_creation(vault_id, actor=_actor(request))
 
 
-class StopProtectionJob(BaseModel):
+class StopProtectionJob(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
     status: str
     pending_until: str | None
 
 
-class StopProtectionStatus(BaseModel):
+class StopProtectionStatus(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     vault_id: int
     vault_name: str
@@ -415,7 +415,7 @@ def _vault_deletion_preview(vault_id: int) -> dict[str, Any]:
     return vault_deletion_service.preview(client, target, database=db)
 
 
-class RetentionLockPreview(BaseModel):
+class RetentionLockPreview(ResponseModel):
     """Files of a deletion a Governance Retention Lock still holds when it executes (#736). Dates are estimates: each version's creation plus the bucket default days. They are deleted from that date, never earlier."""
 
     model_config = ConfigDict(extra="forbid")
@@ -427,7 +427,7 @@ class RetentionLockPreview(BaseModel):
     locked_until: str | None = Field(description="When the last of them can be deleted.")
 
 
-class VaultDeletionClass(BaseModel):
+class VaultDeletionClass(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     storage_class: str
     version_count: int
@@ -438,7 +438,7 @@ class VaultDeletionClass(BaseModel):
     early_deletion_byte_count: int | MISSING = MISSING
 
 
-class VaultDeletionPreview(BaseModel):
+class VaultDeletionPreview(ResponseModel):
     # A Vault Deletion request keeps the preview it was confirmed with: one
     # recorded by an earlier release lacks the keys added since (#731, #736).
     model_config = ConfigDict(extra="forbid")
@@ -462,7 +462,7 @@ class VaultDeletionPreview(BaseModel):
     retention_lock: RetentionLockPreview | None | MISSING = MISSING
 
 
-class VaultDeletionRequestState(BaseModel):
+class VaultDeletionRequestState(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal["pending", "running", "failed"]
     requested_at: str
@@ -480,7 +480,7 @@ class VaultDeletionRequestState(BaseModel):
     delete_bucket: bool = Field(description="The Owner asked to delete the empty Vault Bucket too (#739).")
 
 
-class VaultDeletionStatus(BaseModel):
+class VaultDeletionStatus(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     vault_id: int
     vault_name: str
@@ -536,7 +536,7 @@ def retry_vault_deletion(vault_id: int, request: Request,
                                             actor=_actor(request))
 
 
-class MinimumStorageDeletionClass(BaseModel):
+class MinimumStorageDeletionClass(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     storage_class: str
     minimum_days: int
@@ -545,7 +545,7 @@ class MinimumStorageDeletionClass(BaseModel):
     remaining_cost: float
 
 
-class MinimumStorageDeletion(BaseModel):
+class MinimumStorageDeletion(ResponseModel):
     """Files of a deletion still within their Minimum Storage Duration when it executes, and what deleting them then still bills: a Cost Estimate from AWS list prices (#731)."""
 
     model_config = ConfigDict(extra="forbid")
@@ -562,7 +562,7 @@ class MinimumStorageDeletion(BaseModel):
     evaluated_at: str
 
 
-class CleanupLastOutcome(BaseModel):
+class CleanupLastOutcome(ResponseModel):
     # Recorded by the daily run; an earlier run recorded fewer counters.
     model_config = ConfigDict(extra="forbid")
     outcome: Literal["scheduled", "none", "capped", "skipped"]
@@ -582,7 +582,7 @@ class CleanupLastOutcome(BaseModel):
     savings_from: str | None | MISSING = MISSING
 
 
-class CleanupPendingGroup(BaseModel):
+class CleanupPendingGroup(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     group_id: str
     file_count: int
@@ -591,13 +591,13 @@ class CleanupPendingGroup(BaseModel):
     cancellable: bool
 
 
-class CleanupAmount(BaseModel):
+class CleanupAmount(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     count: int
     bytes: int
 
 
-class CleanupWaiting(BaseModel):
+class CleanupWaiting(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     count: int
     bytes: int
@@ -605,14 +605,14 @@ class CleanupWaiting(BaseModel):
     earliest_deletion_at: str | None
 
 
-class CleanupTotals(BaseModel):
+class CleanupTotals(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     deleted_count: int
     deleted_bytes: int
     last_deleted_at: str | None
 
 
-class DuplicateCleanupStatus(BaseModel):
+class DuplicateCleanupStatus(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool
     grace_days: int
@@ -659,7 +659,7 @@ def update_duplicate_cleanup(vault_id: int, action: DuplicateCleanupUpdate, requ
             connection, vault_id=vault_id, actor=_actor(request), values=values)
 
 
-class MirrorCloudLife(BaseModel):
+class MirrorCloudLife(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     days_after_disappearance: int
     storage_class: str
@@ -698,13 +698,13 @@ def update_mirror_cleanup(vault_id: int, action: MirrorCleanupUpdate, request: R
             require_reauth=lambda: require_recent_reauth(request, user))
 
 
-class MinimumStorageVersions(BaseModel):
+class MinimumStorageVersions(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     count: int
     bytes: int
 
 
-class MinimumStorageClass(BaseModel):
+class MinimumStorageClass(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     storage_class: str
     minimum_days: int
@@ -714,14 +714,14 @@ class MinimumStorageClass(BaseModel):
     estimated_count: int
 
 
-class MinimumStorageRelease(BaseModel):
+class MinimumStorageRelease(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     month: str
     count: int
     bytes: int
 
 
-class MinimumStorageSummary(BaseModel):
+class MinimumStorageSummary(ResponseModel):
     """Minimum Storage Duration of a Vault's versions (#731): a Cost Estimate from AWS list prices."""
 
     model_config = ConfigDict(extra="forbid")
@@ -746,7 +746,7 @@ def minimum_storage_summary(vault_id: int, _: dict[str, Any] = Depends(current_u
         return minimum_storage_service.load_vault_summary(connection, vault_id)
 
 
-class CloudUsageEstimateClass(BaseModel):
+class CloudUsageEstimateClass(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     storage_class: str
     versions: int
@@ -754,7 +754,7 @@ class CloudUsageEstimateClass(BaseModel):
     monthly_cost: float
 
 
-class CloudUsageEstimate(BaseModel):
+class CloudUsageEstimate(ResponseModel):
     """The catalog's versions not known to be missing, by class, with a Cost Estimate from AWS list prices."""
 
     model_config = ConfigDict(extra="forbid")
@@ -767,14 +767,14 @@ class CloudUsageEstimate(BaseModel):
     by_storage_class: list[CloudUsageEstimateClass]
 
 
-class CloudUsageRead(BaseModel):
+class CloudUsageRead(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     attempted_at: str
     outcome: Literal["ok", "no_data", "access_denied", "failed"]
     error_code: str | None
 
 
-class CloudUsageDay(BaseModel):
+class CloudUsageDay(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     day: str
     bytes: int
@@ -782,7 +782,7 @@ class CloudUsageDay(BaseModel):
     object_count: int | None
 
 
-class CloudUsageOverhead(BaseModel):
+class CloudUsageOverhead(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     storage_type: str = Field(description="The CloudWatch StorageType dimension value.")
     kind: Literal["object_overhead", "size_overhead", "staging"]
@@ -790,7 +790,7 @@ class CloudUsageOverhead(BaseModel):
     bytes: int
 
 
-class CloudUsageMeasuredClass(BaseModel):
+class CloudUsageMeasuredClass(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     storage_class: str
     bytes: int = Field(description="The objects' own bytes in this class.")
@@ -798,7 +798,7 @@ class CloudUsageMeasuredClass(BaseModel):
     overhead: list[CloudUsageOverhead]
 
 
-class CloudUsageMeasured(BaseModel):
+class CloudUsageMeasured(ResponseModel):
     """Daily S3 storage metrics read from CloudWatch GetMetricStatistics (#737)."""
 
     # A shared or provisioning bucket answers its status only; the newest data
@@ -816,7 +816,7 @@ class CloudUsageMeasured(BaseModel):
     by_storage_class: list[CloudUsageMeasuredClass] | MISSING = MISSING
 
 
-class VaultCloudUsage(BaseModel):
+class VaultCloudUsage(ResponseModel):
     """A Vault's cloud usage (#737): the catalog's Cost Estimate next to the CloudWatch sizes of its Vault Bucket."""
 
     model_config = ConfigDict(extra="forbid")
@@ -837,7 +837,7 @@ def vault_cloud_usage(vault_id: int, _: dict[str, Any] = Depends(current_user)):
         return bucket_metrics_service.vault_usage(connection, vault_id)
 
 
-class BilledCategories(BaseModel):
+class BilledCategories(ResponseModel):
     """Billed amounts by category, in the billing currency; every category is present."""
 
     model_config = ConfigDict(extra="forbid")
@@ -859,7 +859,7 @@ BillingExportError = Literal[
 ]
 
 
-class BillingExportFields(BaseModel):
+class BillingExportFields(ResponseModel):
     """The billing export's state, shared by the installation and each Vault (#738)."""
 
     model_config = ConfigDict(extra="forbid")
@@ -877,7 +877,7 @@ class BillingExportFields(BaseModel):
     error_detail: str | None = Field(description="An S3 action and AWS error code, column or currency names: never a provider message.")
 
 
-class VaultBilledPeriod(BaseModel):
+class VaultBilledPeriod(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     period: str = Field(description="YYYY-MM")
     total: float
@@ -901,7 +901,7 @@ def vault_billed_cost(vault_id: int, _: dict[str, Any] = Depends(current_user)):
         return billed_cost_service.vault_view(connection, vault_id)
 
 
-class BilledVaultBucket(BaseModel):
+class BilledVaultBucket(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     vault_id: int
     name: str | None
@@ -910,7 +910,7 @@ class BilledVaultBucket(BaseModel):
     categories: BilledCategories
 
 
-class BilledInstallationBucket(BaseModel):
+class BilledInstallationBucket(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     role: Literal["system", "shared"]
     bucket: str
@@ -918,7 +918,7 @@ class BilledInstallationBucket(BaseModel):
     categories: BilledCategories
 
 
-class BillingExportPeriod(BaseModel):
+class BillingExportPeriod(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     period: str = Field(description="YYYY-MM")
     total: float = Field(description="Every row of the period: Vaults and installation.")
@@ -940,7 +940,7 @@ def billing_export_status(_: dict[str, Any] = Depends(current_user)):
         return billed_cost_service.installation_view(connection)
 
 
-class VaultSelectResponse(BaseModel):
+class VaultSelectResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     message: str
     message_key: str
@@ -973,7 +973,7 @@ def select_vault(
     return {**_api_message(request, "api.vault_selected")}
 
 
-class SourceVolumeInventoryItem(BaseModel):
+class SourceVolumeInventoryItem(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     alias: str
     path: str
@@ -984,7 +984,7 @@ class SourceVolumeInventoryItem(BaseModel):
     diagnostic_code: str | None
 
 
-class SourceVolumeInventoryResponse(BaseModel):
+class SourceVolumeInventoryResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     items: list[SourceVolumeInventoryItem]
 
@@ -995,13 +995,13 @@ def general_source_volumes(user: dict[str, Any] = Depends(current_user)):
     return {"items": source_volume_inventory()}
 
 
-class SourceDirectoryOccupation(BaseModel):
+class SourceDirectoryOccupation(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["vault"]
     vault_name: str
 
 
-class SourceDirectoryEntry(BaseModel):
+class SourceDirectoryEntry(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
     relative_path: str
@@ -1010,7 +1010,7 @@ class SourceDirectoryEntry(BaseModel):
     occupation: SourceDirectoryOccupation | None
 
 
-class SourceDirectoryBrowseResponse(BaseModel):
+class SourceDirectoryBrowseResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     volume_alias: str
     relative_path: str
@@ -1037,7 +1037,7 @@ def browse_source_volume(
         )
 
 
-class GeneralVault(BaseModel):
+class GeneralVault(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     id: int
     uuid: str
@@ -1055,7 +1055,7 @@ class GeneralVault(BaseModel):
     bucket_provisioning: VaultBucketStatus | None
 
 
-class GeneralVaultsResponse(BaseModel):
+class GeneralVaultsResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     items: list[GeneralVault]
 
@@ -1066,7 +1066,7 @@ def general_vaults(_: dict[str, Any] = Depends(current_user)):
         return {"items": list_vault_inventory(connection)}
 
 
-class GeneralVaultReconnectResponse(BaseModel):
+class GeneralVaultReconnectResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     vault_id: int
     source_root: str

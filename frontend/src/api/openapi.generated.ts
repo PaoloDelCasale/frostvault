@@ -1800,6 +1800,22 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ApiErrorResponse */
+        ApiErrorResponse: {
+            /** Detail */
+            detail: string;
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "bad_request" | "unauthenticated" | "forbidden" | "reauth_required" | "not_found" | "conflict" | "invalid" | "rate_limited" | "failed" | "upstream_failed" | "unavailable";
+            /** Message Key */
+            message_key: string;
+            /** Message Params */
+            message_params: {
+                [key: string]: unknown;
+            };
+        };
         /** ArchiveListItem */
         ArchiveListItem: components["schemas"]["VaultFileListItem"] | components["schemas"]["DirectoryListItem"];
         /** ArchiveVersionItem */
@@ -2860,6 +2876,14 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** HealthResponse */
+        HealthResponse: {
+            /**
+             * Status
+             * @constant
+             */
+            status: "ok";
+        };
         /** I18nCatalogResponse */
         I18nCatalogResponse: {
             /** Locale */
@@ -2994,13 +3018,6 @@ export interface components {
             locale: string;
             /** Next Groups Before Id */
             next_groups_before_id: number | null;
-        };
-        /**
-         * JsonObjectResponse
-         * @description A JSON object response that never filters nested or extension fields.
-         */
-        JsonObjectResponse: {
-            [key: string]: unknown;
         };
         /** LifecycleGuidedProfile */
         LifecycleGuidedProfile: {
@@ -3586,6 +3603,29 @@ export interface components {
             items: components["schemas"]["NotificationItem"][];
             /** Open Problem Count */
             open_problem_count: number;
+        };
+        /** ReadinessChecks */
+        ReadinessChecks: {
+            /** Database */
+            database: boolean;
+            /** Worker */
+            worker: boolean;
+            /** Config */
+            config: boolean;
+            /** Sources Layout */
+            sources_layout: boolean;
+        };
+        /**
+         * ReadinessResponse
+         * @description The 200 answer; a 503 answers the same object with status not_ready.
+         */
+        ReadinessResponse: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "not_ready";
+            checks: components["schemas"]["ReadinessChecks"];
         };
         /** ReauthRequest */
         ReauthRequest: {
@@ -5000,15 +5040,6 @@ export interface components {
             bytes_per_second: number | null;
             /** Average Bytes Per Second */
             average_bytes_per_second: number | null;
-        };
-        ApiErrorResponse: {
-            /** @enum {string} */
-            code: "bad_request" | "unauthenticated" | "forbidden" | "reauth_required" | "not_found" | "conflict" | "invalid" | "rate_limited" | "failed" | "upstream_failed" | "unavailable";
-            detail: string;
-            message_key: string;
-            message_params: {
-                [key: string]: unknown;
-            };
         };
     };
     responses: never;
@@ -7949,7 +7980,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["HealthResponse"];
                 };
             };
         };
@@ -7969,7 +8000,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["ReadinessResponse"];
                 };
             };
         };

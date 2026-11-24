@@ -7,7 +7,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..api_models import passthrough
+from ..api_models import ResponseModel, passthrough
 from ..config import settings
 from ..services.audit_events import audit_log
 from ..database import db
@@ -90,7 +90,7 @@ class GlobPreviewRequest(BaseModel):
 UploadVerification = Literal["s3_checksum", "read_back"]
 
 
-class OperationPolicy(BaseModel):
+class OperationPolicy(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     auto_upload: bool
     local_release_after_days: Literal[90, 180, 365, 730] | None
@@ -103,20 +103,20 @@ class OperationPolicy(BaseModel):
     fixed_exclude_globs: list[str] = Field(description="Fixed noise exclusions applied to every Vault; read only.")
 
 
-class GlobPreviewResponse(BaseModel):
+class GlobPreviewResponse(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     included: list[str]
     excluded: list[str]
 
 
-class ExcludedFolder(BaseModel):
+class ExcludedFolder(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
     path: str
     rule: str
 
 
-class DiskListingEntry(BaseModel):
+class DiskListingEntry(ResponseModel):
     """An entry read from disk inside an Excluded Folder: not catalogued, not protected."""
 
     model_config = ConfigDict(extra="forbid")
@@ -127,7 +127,7 @@ class DiskListingEntry(BaseModel):
     modified_at: str
 
 
-class ExcludedFolderListing(BaseModel):
+class ExcludedFolderListing(ResponseModel):
     """One Vault level read from disk (#754): Excluded Folders of a catalogued level, or the entries of an Excluded Folder."""
 
     model_config = ConfigDict(extra="forbid")
@@ -139,7 +139,7 @@ class ExcludedFolderListing(BaseModel):
     truncated: bool
 
 
-class VaultItemExclusionStatus(BaseModel):
+class VaultItemExclusionStatus(ResponseModel):
     model_config = ConfigDict(extra="forbid")
     path: str
     is_directory: bool
