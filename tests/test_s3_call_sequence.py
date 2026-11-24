@@ -84,14 +84,14 @@ class S3CallSequenceTests(CopyWorkerFixture):
         self.assertEqual(self.sequence(), STORAGE_CLASS_COPY)
 
     def test_rename_copy(self) -> None:
-        from app.catalog import ArchiveCatalog
+        from app.services.file_renames import FileRenames
         self.protected()
         self.sequence()
         target = self.source / "renamed.txt"
         os.replace(self.file, target)
         self.file = target
         with self.db() as connection:
-            ArchiveCatalog(connection).rename_file(
+            FileRenames(connection).rename_file(
                 self.file_id, new_path="renamed.txt", changed_at=storage.now_iso(), vault_id=2)
         job_id = self.admit("rename", "renamed.txt")
         self.run_job(job_id)

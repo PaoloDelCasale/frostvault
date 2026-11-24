@@ -5,7 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
-from app.catalog import ArchiveCatalog
+from app.services.file_listing import FileListing
 from app.services.job_admission import queue_jobs
 from app.services.job_queries import list_jobs
 from app.services.recovery_progress import project_recovery
@@ -86,7 +86,7 @@ class RecoveryInProgressCatalogTests(FrostVaultTestCase):
 
     def _item(self):
         with self.database.connect() as connection:
-            return ArchiveCatalog(connection).get_file_item(VAULT, "cold/c0.bin")
+            return FileListing(connection).get_file_item(VAULT, "cold/c0.bin")
 
     def _requested_at(self):
         with self.database.connect() as connection:
@@ -105,7 +105,7 @@ class RecoveryInProgressCatalogTests(FrostVaultTestCase):
 
     def test_list_page_carries_the_recovery(self):
         with self.database.connect() as connection:
-            page = ArchiveCatalog(connection).list_files_page(VAULT, directory="cold")
+            page = FileListing(connection).list_files_page(VAULT, directory="cold")
         [item] = [row for row in page["items"] if row["type"] == "file"]
         self.assertEqual(item["recovery"]["state"], "waiting_for_cloud")
         self.assertFalse(item["recover_eligible"])

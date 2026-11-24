@@ -527,7 +527,15 @@ class FrostVaultTestCase(unittest.TestCase):
     settings_overrides: dict[str, Any] = {}
 
     def setUp(self) -> None:
+        from unittest.mock import patch
+
+        from app.services.runtime_status import runtime_status
+
         super().setUp()
+        # Scan state is process-wide and keyed by Vault id, and every fresh
+        # database numbers its Vaults from 1 again: a test neither sees the
+        # scan state another test left nor leaves its own behind.
+        self.enterContext(patch.dict(runtime_status, clear=True))
         self.database = self.enterContext(fresh_database())
         if self.owner is not None:
             with self.database.connect() as connection:

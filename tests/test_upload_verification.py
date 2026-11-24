@@ -2,7 +2,7 @@
 
 Seams under test:
 - Upload Job worker (`process_upload` / `process_jobs_once`) observed through
-  Job status and Archive Version Integrity via ArchiveCatalog.
+  Job status and Archive Version Integrity via the catalog.
 - Binary SDK stream, S3 HeadObject, source stability, and retry boundaries.
 """
 
@@ -18,7 +18,7 @@ from pathlib import Path
 from tests.snapshot_s3_stub import VersionedS3Stub
 from unittest.mock import patch
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
 from app.services.local_copies import LocalCopies
 
 from app.services.job_admission import queue_jobs
@@ -41,7 +41,7 @@ def _observed(connection, path: str) -> dict:
     Current, the replacement in progress or an abandoned (mismatched)
     replacement awaiting cleanup: whichever upload wrote last.
     """
-    row = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, path)
+    row = catalog_probe.get_file_by_path(connection, 2, path)
     latest = connection.execute(
         """SELECT av.* FROM archive_versions av WHERE av.file_id=%s
            ORDER BY av.created_at DESC, av.id LIMIT 1""", (row["id"],)).fetchone()
@@ -61,14 +61,13 @@ def _versions(connection, path: str) -> list[dict]:
 
 def _seed_previous_current(connection, path: str, content: bytes, provider_version_id: str) -> tuple[str, str]:
     """A verified Current with older content at the Vault namespace key."""
-    catalog = ArchiveCatalog(connection)
-    row = catalog_probe.get_file_by_path(catalog, 2, path)
+    row = catalog_probe.get_file_by_path(connection, 2, path)
     uuid = connection.execute("SELECT uuid FROM vaults WHERE id=2").fetchone()["uuid"]
     key = f"vaults/{uuid}/{path}"
-    version = catalog.begin_replacement(
+    version = ArchiveVersions(connection).begin_replacement(
         row["id"], object_key=key, provider_version_id=provider_version_id,
         size=len(content), storage_class="STANDARD", created_at="2026-07-20T00:00:00+00:00")
-    catalog.promote_replacement(row["id"], archive_version_id=version,
+    ArchiveVersions(connection).promote_replacement(row["id"], archive_version_id=version,
         plaintext_sha256=_sha256_hex(content), verified_at="2026-07-20T00:00:00+00:00")
     return version, key
 
@@ -197,7 +196,6 @@ class PlainUploadVerificationTests(FrostVaultTestCase):
                 previous, key = _seed_previous_current(connection, "report.txt", b"old", "previous-only-copy")
             _run_plain_upload(self.database, relative_path="report.txt", read_back_bytes=payload, exact_version_bytes=b"evil")
             with self.database.connect() as connection:
-                catalog = ArchiveCatalog(connection)
                 versions = _versions(connection, "report.txt")
                 old = next(row for row in versions if row["id"] == previous)
                 current = next(row for row in versions if row["id"] != previous)
@@ -235,9 +233,8 @@ class PlainUploadVerificationTests(FrostVaultTestCase):
             )
 
             with self.database.connect() as connection:
-                catalog = ArchiveCatalog(connection)
                 observed = _observed(connection, "report.txt")
-                listed = catalog_probe.list_file_rows(catalog, 2)
+                listed = catalog_probe.list_file_rows(connection, 2)
                 job = connection.execute(
                     "SELECT status, message FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                     ("report.txt",),
@@ -272,9 +269,8 @@ class PlainUploadVerificationTests(FrostVaultTestCase):
             )
 
             with self.database.connect() as connection:
-                catalog = ArchiveCatalog(connection)
                 observed = _observed(connection, "report.txt")
-                listed = catalog_probe.list_file_rows(catalog, 2)
+                listed = catalog_probe.list_file_rows(connection, 2)
                 job = connection.execute(
                     "SELECT status FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                     ("report.txt",),
@@ -305,9 +301,8 @@ class PlainUploadVerificationTests(FrostVaultTestCase):
             )
 
             with self.database.connect() as connection:
-                catalog = ArchiveCatalog(connection)
                 observed = _observed(connection, "report.txt")
-                listed = catalog_probe.list_file_rows(catalog, 2)
+                listed = catalog_probe.list_file_rows(connection, 2)
                 job = connection.execute(
                     "SELECT status, message FROM jobs WHERE file_id=(SELECT id FROM files WHERE path=%s)",
                     ("report.txt",),
@@ -620,16 +615,15 @@ class PlainUploadVerificationTests(FrostVaultTestCase):
                     return
                 info = local_file.stat()
                 with self.database.connect() as connection:
-                    catalog = ArchiveCatalog(connection)
                     local_copies = LocalCopies(connection)
-                    before = catalog_probe.get_file_by_path(catalog, 2, "report.txt")["generation"]
+                    before = catalog_probe.get_file_by_path(connection, 2, "report.txt")["generation"]
                     local_copies.observe_local_copies_batch(
                         vault_id=2,
                         entries=[("report.txt", "regular", info.st_size,
                                   info.st_mtime_ns, "2026-07-21T10:05:00+00:00")],
                         seen_at="2026-07-21T10:05:00+00:00",
                     )
-                    after = catalog_probe.get_file_by_path(catalog, 2, "report.txt")["generation"]
+                    after = catalog_probe.get_file_by_path(connection, 2, "report.txt")["generation"]
                 generations.extend((before, after))
 
             def fake_stream(*args, **kwargs) -> int:

@@ -55,7 +55,8 @@ def _migrate() -> None:
 def _seed(paths: dict[str, Path]) -> dict:
     # Import after the isolated PostgreSQL DSN and filesystem env are prepared.
     sys.path.insert(0, str(REPO_ROOT))
-    from app.catalog import ArchiveCatalog
+    from app.services.archive_versions import ArchiveVersions
+    from app.services.file_renames import FileRenames
     from app.services.local_copies import LocalCopies
     from tests import catalog_probe
     from app.database import db
@@ -83,7 +84,6 @@ def _seed(paths: dict[str, Path]) -> dict:
         primary_id = vault(PRIMARY_UUID, "Family Archive", paths["source_primary"])
         secondary_id = vault(SECONDARY_UUID, "Secondary Archive", paths["source_secondary"])
         prefixes = {primary_id: f"vaults/{PRIMARY_UUID}/", secondary_id: f"vaults/{SECONDARY_UUID}/"}
-        catalog = ArchiveCatalog(connection)
         local_copies = LocalCopies(connection)
 
         def cloud_file(vault_id: int, path: str) -> str:
@@ -97,11 +97,11 @@ def _seed(paths: dict[str, Path]) -> dict:
         def protect(file_id: str, vault_id: int, path: str, *, version: str, size: int,
                     digest: str, storage_class: str = "STANDARD", generation: int | None = None) -> str:
             """Fixed cloud evidence: one verified Current at the exact key."""
-            version_id = catalog.begin_replacement(
+            version_id = ArchiveVersions(connection).begin_replacement(
                 file_id, object_key=prefixes[vault_id] + path, provider_version_id=version,
                 size=size, storage_class=storage_class, created_at="2026-07-01T11:00:00+00:00",
             )
-            catalog.promote_replacement(
+            ArchiveVersions(connection).promote_replacement(
                 file_id, archive_version_id=version_id, plaintext_sha256=digest,
                 verified_at="2026-07-01T12:00:00+00:00", local_generation=generation,
             )
@@ -116,7 +116,7 @@ def _seed(paths: dict[str, Path]) -> dict:
             mtime_ns=1_700_000_000_000_000_000,
             observed_at="2026-07-01T10:00:00+00:00",
         )
-        catalog.rename_file(
+        FileRenames(connection).rename_file(
             readme_id,
             new_path="reports/readme.txt",
             changed_at="2026-07-01T12:00:00+00:00",
@@ -136,7 +136,7 @@ def _seed(paths: dict[str, Path]) -> dict:
             observed_at="2026-07-02T10:00:00+00:00",
         )
         note_digest = hashlib.sha256(note_path.read_bytes()).hexdigest()
-        note = catalog_probe.get_file(catalog, note_id, vault_id=primary_id)
+        note = catalog_probe.get_file(connection, note_id, vault_id=primary_id)
         local_copies.publish_local_fingerprint(
             note_id, generation=note["generation"], plaintext_sha256=note_digest,
             size=note_stat.st_size, mtime_ns=note_stat.st_mtime_ns,
@@ -171,7 +171,7 @@ def _seed(paths: dict[str, Path]) -> dict:
             size=conflict_path.stat().st_size, mtime_ns=conflict_path.stat().st_mtime_ns,
             observed_at='2026-07-01T13:00:00Z',
         )
-        conflict = catalog_probe.get_file(catalog, conflict_file, vault_id=primary_id)
+        conflict = catalog_probe.get_file(connection, conflict_file, vault_id=primary_id)
         local_copies.publish_local_fingerprint(
             conflict_file, generation=conflict["generation"],
             plaintext_sha256=hashlib.sha256(conflict_path.read_bytes()).hexdigest(),

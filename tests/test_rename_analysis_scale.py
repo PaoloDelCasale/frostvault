@@ -16,7 +16,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import patch
 
-from app.catalog import ArchiveCatalog
 from app.services.local_copies import LocalCopies
 from app.services.operation_policies import queue_auto_uploads
 from tests.fixtures import FrostVaultTestCase, seed_vault
@@ -100,7 +99,6 @@ class RenameAnalysisScaleTests(FrostVaultTestCase):
             {"vault": VAULT_ID, "at": OBSERVED_AT, "count": 2 * PER_KIND},
         )
         self.connection.execute("ANALYZE files")
-        self.catalog = ArchiveCatalog(self.connection)
 
     def add_rename_pair(self) -> str:
         """A fingerprinted Local Copy gone, and a new one of its size: a rename."""

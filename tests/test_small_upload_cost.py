@@ -44,7 +44,7 @@ import psycopg
 from psycopg.pq import TransactionStatus
 
 from app import storage
-from app.catalog import ArchiveCatalog
+from app.services.file_renames import FileRenames
 from app.services.local_copies import LocalCopies
 from app.services import cloud_preflight_gate
 from tests import test_upload_worker as worker_fixture
@@ -304,7 +304,7 @@ class SmallUploadCostTests(worker_fixture.UploadWorkerCase):
         self.assertEqual(self.provider.puts, 0)
         with self.db() as connection:
             # The file leaves the path; a new Vault File takes it.
-            ArchiveCatalog(connection).rename_file(
+            FileRenames(connection).rename_file(
                 self.file_id, new_path="renamed.txt", changed_at=storage.now_iso(), vault_id=2)
         self.new_file("report.txt")
         self.assertEqual(self.rows("SELECT * FROM archive_versions"), [])

@@ -228,8 +228,8 @@ class LocalReleaseWorkerCase(unittest.TestCase):
             "relocation_state": "ready", "decommission_state": "active",
             "generation": 3,  # the repair publishes its fingerprint at the observed generation
         }
-        self.catalog = self.stack.enter_context(patch("app.storage.ArchiveCatalog")).return_value
-        self.catalog.get_job_target.side_effect = lambda _: dict(self.target)
+        self.versions = self.stack.enter_context(patch("app.storage.ArchiveVersions")).return_value
+        self.versions.get_job_target.side_effect = lambda _: dict(self.target)
         self.local_copies = self.stack.enter_context(patch("app.storage.LocalCopies")).return_value
         self.confirmed = self.stack.enter_context(patch("app.storage.local_release_is_confirmed", return_value=True))
         self.stack.enter_context(patch("app.storage.get_policy", return_value=OperationPolicy(local_release_after_days=90)))
@@ -318,7 +318,7 @@ class LocalReleaseWorkerTests(LocalReleaseWorkerCase):
                 self.assertTrue(self.path.exists())
 
     def test_cloud_identity_change_after_head_restores_claim(self):
-        self.catalog.get_job_target.side_effect = [dict(self.target), dict(self.target, provider_version_id="new-placement")]
+        self.versions.get_job_target.side_effect = [dict(self.target), dict(self.target, provider_version_id="new-placement")]
         with self.assertRaisesRegex(RuntimeError, "protection changed"):
             storage.process_free_space(self.job)
         self.assertEqual(self.path.read_bytes(), b"photo")

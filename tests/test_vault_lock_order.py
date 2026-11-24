@@ -115,7 +115,7 @@ class AggregateVaultLockOrderTests(DatabaseCase):
         publisher_waiting = threading.Event()
 
         def scanner():
-            # Scanner order: Vault row first (``_vault_lock_touch``), then the
+            # Scanner order: Vault row first (``vault_lock_touch``), then the
             # aggregates it flushes at the end of its batch.
             try:
                 with self.database.connect() as connection:

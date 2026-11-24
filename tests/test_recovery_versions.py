@@ -11,7 +11,8 @@ from __future__ import annotations
 import hashlib
 import unittest
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
+from app.services.file_listing import FileListing
 from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 
@@ -28,7 +29,6 @@ class VersionSelectionTests(FrostVaultTestCase):
         """``v-old`` superseded, ``v-new`` Current, ``v-bad`` the replacement in progress."""
         with self.database.connect() as connection:
             seed_vault(connection, source_root=str(self.tmp_path / "source"), id=2)
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             file_id = local_copies.observe_local_copy(
                 vault_id=2, path="notes.txt", file_type="regular", size=4, mtime_ns=1,
@@ -36,10 +36,10 @@ class VersionSelectionTests(FrostVaultTestCase):
             ids = {}
             for name, payload, stamp in (("v-old", b"old!", "2026-07-20T10:00:00+00:00"),
                                          ("v-new", b"new!", "2026-07-21T10:00:00+00:00")):
-                fingerprint(catalog, 2, "notes.txt", _sha(payload))
-                ids[name] = protect(catalog, 2, "notes.txt", _sha(payload), provider_version_id=name,
+                fingerprint(connection, 2, "notes.txt", _sha(payload))
+                ids[name] = protect(connection, 2, "notes.txt", _sha(payload), provider_version_id=name,
                                     created_at=stamp, verified_at=stamp)
-            ids["v-bad"] = catalog.begin_replacement(
+            ids["v-bad"] = ArchiveVersions(connection).begin_replacement(
                 file_id, object_key="vaults/x/notes.txt", provider_version_id="v-bad", size=4,
                 storage_class="STANDARD", created_at="2026-07-22T10:00:00+00:00")
             # Recovery restores a file whose Local Copy is gone.
@@ -50,7 +50,7 @@ class VersionSelectionTests(FrostVaultTestCase):
     def test_list_versions_marks_non_selectable_with_reason(self) -> None:
         ids = self._fixture()
         with self.database.connect() as connection:
-            versions = ArchiveCatalog(connection).list_versions(2, "notes.txt")
+            versions = FileListing(connection).list_versions(2, "notes.txt")
             by_provider = {row["provider_version_id"]: row for row in versions}
             # A superseded version is never offered.
             self.assertEqual(set(by_provider), {"v-new", "v-bad"})
@@ -61,7 +61,7 @@ class VersionSelectionTests(FrostVaultTestCase):
             connection.execute(
                 "UPDATE archive_versions SET availability='missing', availability_checked_at=now() "
                 "WHERE id=%s", (ids["v-new"],))
-            current = next(row for row in ArchiveCatalog(connection).list_versions(2, "notes.txt")
+            current = next(row for row in FileListing(connection).list_versions(2, "notes.txt")
                            if row["role"] == "current")
             self.assertFalse(current["recoverable"])
             self.assertEqual(current["not_selectable_reason"], "missing")

@@ -14,7 +14,6 @@ for _flag, _value in (
     if not hasattr(os, _flag):
         setattr(os, _flag, _value)
 
-from app.catalog import ArchiveCatalog
 from app.services.local_copies import LocalCopies
 
 from app.services.catalog_audit import audit_vault_catalog
@@ -39,16 +38,15 @@ class CatalogIncidentTests(FrostVaultTestCase):
             self.vault = dict(connection.execute(
                 "SELECT id, uuid FROM vaults WHERE id=1"
             ).fetchone(), s3_bucket="bucket", s3_key_layout="vault_prefix")
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             local_copies.observe_local_copy(
                 vault_id=1, path="docs/report.pdf", file_type="regular",
                 size=10, mtime_ns=1, observed_at="2026-01-01T00:00:00+00:00",
             )
             digest = sha256_hex(b"report")
-            fingerprint(catalog, 1, "docs/report.pdf", digest)
-            self.version_id = protect(catalog, 1, "docs/report.pdf", digest)
-            self.file_id = catalog_probe.get_file_by_path(catalog, 1, "docs/report.pdf")["id"]
+            fingerprint(connection, 1, "docs/report.pdf", digest)
+            self.version_id = protect(connection, 1, "docs/report.pdf", digest)
+            self.file_id = catalog_probe.get_file_by_path(connection, 1, "docs/report.pdf")["id"]
             self.key = "vaults/x/docs/report.pdf"
 
     def _problems(self, connection) -> list[dict]:

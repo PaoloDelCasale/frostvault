@@ -1,7 +1,8 @@
 """What the clusters of the catalog share (#803).
 
-``ArchiveCatalog`` is being divided along its clusters, each in a Module of its
-own. This Module holds what more than one of them needs, so that none has to
+The catalog is divided along its clusters, each in a Module of its own
+(``archive_versions``, ``file_listing``, ``file_renames``, ``local_copies``,
+``job_admission``). This Module holds what more than one of them needs, so that none has to
 reach into another: the boundary conversions of timestamps, digests and ids, the
 error of a Vault File that is not there, the Vault lock an identity creation
 takes first, and the revocation of pending Delayed Cloud Deletions that a

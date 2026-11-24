@@ -25,7 +25,8 @@ from __future__ import annotations
 import unittest
 import uuid
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
+from app.services.file_listing import FileListing
 from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 from app.services import directory_aggregates as aggregates
@@ -39,7 +40,6 @@ class ChangedContentAdmissionTests(FrostVaultTestCase):
         super().setUp()
         self.connection = self.enterContext(self.database.connect())
         seed_vault(self.connection, source_root=str(self.tmp_path / "source"), id=2)
-        self.catalog = ArchiveCatalog(self.connection)
         self.local_copies = LocalCopies(self.connection)
 
     def observe(self, path: str, size: int, mtime_ns: int) -> str:
@@ -50,8 +50,8 @@ class ChangedContentAdmissionTests(FrostVaultTestCase):
     def protected(self, path: str, payload: bytes) -> str:
         """Observe, fingerprint and protect ``payload``: Current, matched."""
         self.observe(path, len(payload), 1)
-        fingerprint(self.catalog, 2, path, sha256_hex(payload))
-        return protect(self.catalog, 2, path, sha256_hex(payload))
+        fingerprint(self.connection, 2, path, sha256_hex(payload))
+        return protect(self.connection, 2, path, sha256_hex(payload))
 
     def queue(self, path: str = "report.txt") -> tuple[list[int], int]:
         job_ids, _, eligible = JobAdmission(self.connection).queue_jobs(
@@ -61,49 +61,49 @@ class ChangedContentAdmissionTests(FrostVaultTestCase):
 
     def test_changed_content_can_queue_second_archive_version(self) -> None:
         self.protected("report.txt", b"alpha")
-        file_id = catalog_probe.get_file_by_path(self.catalog, 2, "report.txt")["id"]
+        file_id = catalog_probe.get_file_by_path(self.connection, 2, "report.txt")["id"]
         self.assertEqual(self.queue(), ([], 0), "matched content is protected")
         self.observe("report.txt", len(b"alpha") + 4, 2)
         job_ids, eligible = self.queue()
         self.assertEqual((len(job_ids), eligible), (1, 1))
-        row = catalog_probe.list_file_rows(self.catalog, 2)[0]
+        row = catalog_probe.list_file_rows(self.connection, 2)[0]
         self.assertEqual(row["state"], "pending")
         self.assertTrue(row["previous_snapshot_protected"])
         self.assertTrue(row["upload_eligible"])
         self.assertFalse(row["cleanup_eligible"])
-        after = catalog_probe.get_file_by_path(self.catalog, 2, "report.txt")
+        after = catalog_probe.get_file_by_path(self.connection, 2, "report.txt")
         self.assertEqual(after["id"], file_id, "the same Vault File gets the new version")
         self.assertIsNone(after["local_copy"]["plaintext_sha256"])
 
     def test_protected_content_does_not_queue_duplicate(self) -> None:
         self.protected("report.txt", b"same-bytes")
         self.assertEqual(self.queue(), ([], 0))
-        row = catalog_probe.list_file_rows(self.catalog, 2)[0]
+        row = catalog_probe.list_file_rows(self.connection, 2)[0]
         self.assertFalse(row["upload_eligible"])
         self.assertTrue(row["cleanup_eligible"])
 
     def test_list_and_aggregates_mark_changed_content_upload_eligible(self) -> None:
         self.protected("notes/report.txt", b"alpha")
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        before_dir = self.catalog.list_files_page(2)["items"][0]
-        before_file = self.catalog.list_files_page(2, directory="notes")["items"][0]
+        before_dir = FileListing(self.connection).list_files_page(2)["items"][0]
+        before_file = FileListing(self.connection).list_files_page(2, directory="notes")["items"][0]
         self.assertEqual(before_dir["available_actions"]["upload"], 0)
         self.assertFalse(before_file["upload_eligible"])
 
         self.observe("notes/report.txt", len(b"alpha") + 8, 2)
         aggregates.flush_directory_aggregates(self.connection, vault_id=2)
-        after_dir = self.catalog.list_files_page(2)["items"][0]
-        after_file = self.catalog.list_files_page(2, directory="notes")["items"][0]
+        after_dir = FileListing(self.connection).list_files_page(2)["items"][0]
+        after_file = FileListing(self.connection).list_files_page(2, directory="notes")["items"][0]
         self.assertEqual((after_dir["available_actions"]["upload"], after_dir["state"]), (1, "pending"))
         self.assertTrue(after_file["upload_eligible"])
         self.assertEqual(after_file["state"], "pending")
 
     def test_an_unverified_replacement_is_upload_eligible_to_resume(self) -> None:
         file_id = self.observe("report.txt", 4, 1)
-        self.catalog.begin_replacement(
+        ArchiveVersions(self.connection).begin_replacement(
             file_id, object_key="vaults/x/report.txt", provider_version_id="s3-unverified",
             size=4, storage_class="STANDARD", created_at="2026-07-21T10:00:00+00:00")
-        row = catalog_probe.list_file_rows(self.catalog, 2)[0]
+        row = catalog_probe.list_file_rows(self.connection, 2)[0]
         self.assertTrue(row["upload_eligible"])
         self.assertEqual(self.queue()[1], 1)
 

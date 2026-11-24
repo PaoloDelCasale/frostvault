@@ -292,7 +292,7 @@ class SchedulerFileIsolationTests(unittest.TestCase):
         }
         self.catalog.claim_job.return_value = self.healthy
         self.enterContext(patch("app.storage.db", return_value=connection))
-        self.enterContext(patch("app.storage.ArchiveCatalog", return_value=self.catalog))
+        self.enterContext(patch("app.storage.ArchiveVersions", return_value=self.catalog))
         self.enterContext(patch("app.storage.JobQueue", return_value=self.catalog))
         self.enterContext(patch("app.services.job_queue.JobQueue", return_value=self.catalog))
         self.enterContext(patch("app.storage.reconcile_interrupted_jobs"))

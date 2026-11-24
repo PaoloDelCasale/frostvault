@@ -13,7 +13,7 @@ from unittest.mock import patch
 from cryptography.fernet import Fernet
 from fastapi.routing import APIRoute
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
 from app.services.local_copies import LocalCopies
 from app.routes import browse
 from app.services import directory_aggregates as aggregates
@@ -77,10 +77,9 @@ class BrowseResponsesTests(FrostVaultTestCase):
         self.addCleanup(aggregates.set_maintenance_scheduling_enabled, True)
         with self.database.connect() as connection:
             seed_vault(connection, id=9, name="Files", source_root="/source")
-            catalog = ArchiveCatalog(connection)
-            self.seed(catalog, "photos/protected.jpg", archive=True)
-            self.seed(catalog, "photos/cloud.jpg", archive=True, local=False)
-            self.seed(catalog, "note.txt")
+            self.seed(connection, "photos/protected.jpg", archive=True)
+            self.seed(connection, "photos/cloud.jpg", archive=True, local=False)
+            self.seed(connection, "note.txt")
             aggregates.rebuild_vault_directory_aggregates(connection, 9)
             notifications.enqueue_notification(
                 connection, vault_id=9, event="upload_verified", title="Upload verified", body="ok")
@@ -91,19 +90,19 @@ class BrowseResponsesTests(FrostVaultTestCase):
         self.sign_in(send_csrf_header=True, reauthenticated_until="2099-01-01T00:00:00+00:00")
 
     @staticmethod
-    def seed(catalog: ArchiveCatalog, path: str, *, archive: bool = False, local: bool = True) -> None:
+    def seed(connection: Any, path: str, *, archive: bool = False, local: bool = True) -> None:
         """A Vault File at ``path``; ``archive`` gives it a verified Current."""
-        local_copies = LocalCopies(catalog.connection)
+        local_copies = LocalCopies(connection)
         file_id = local_copies.observe_local_copy(
             vault_id=9, path=path, file_type="regular", size=12, mtime_ns=1, observed_at=T)
         if archive:
-            fingerprint(catalog, 9, path, "a" * 64)
-            version = catalog.begin_replacement(
+            fingerprint(connection, 9, path, "a" * 64)
+            version = ArchiveVersions(connection).begin_replacement(
                 file_id, object_key=f"vaults/x/{path}", provider_version_id=path, size=12,
                 storage_class="STANDARD", created_at=T)
-            catalog.promote_replacement(
+            ArchiveVersions(connection).promote_replacement(
                 file_id, archive_version_id=version, plaintext_sha256="a" * 64, verified_at=T,
-                local_generation=catalog_probe.get_file_by_path(catalog, 9, path)["generation"])
+                local_generation=catalog_probe.get_file_by_path(connection, 9, path)["generation"])
         if not local:
             local_copies.mark_local_copy_missing(file_id, observed_at=T)
 

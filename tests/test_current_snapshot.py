@@ -28,7 +28,7 @@ for _flag, _value in (
     if not hasattr(os, _flag):
         setattr(os, _flag, _value)
 
-from app.catalog import ArchiveCatalog
+from app.services.file_listing import FileListing
 
 from app.services import source_layout
 from app.services import vaults as vaults_service
@@ -70,7 +70,7 @@ class CurrentSnapshotUploadTests(worker.UploadWorkerCase):
         self.assertIn((self.key, previous["provider_version_id"]), self.provider.objects)
         self.assertEqual(self.file_row()["current_version_id"], previous["id"])
         with self.db() as connection:
-            versions = ArchiveCatalog(connection).list_versions(2, "report.txt")
+            versions = FileListing(connection).list_versions(2, "report.txt")
         prior = next(row for row in versions if row["provider_version_id"] == previous["provider_version_id"])
         self.assertTrue(prior["recoverable"])
         self.assertFalse(any(str(row["id"]) != str(previous["id"]) and row["integrity"] == "verified"

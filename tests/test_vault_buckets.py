@@ -613,7 +613,6 @@ class VaultBucketEndToEndTests(FrostVaultTestCase):
 
     def test_upload_scan_and_audit_use_the_bucket_root(self) -> None:
         from app import storage
-        from app.catalog import ArchiveCatalog
         from app.services.job_admission import queue_jobs
         from app.services.catalog_audit import audit_vault_catalog
         from tests.upload_support import claimed_job_row
@@ -632,7 +631,7 @@ class VaultBucketEndToEndTests(FrostVaultTestCase):
         with self.database.connect() as connection:
             done = connection.execute("SELECT status, message FROM jobs WHERE id=%s", (job_id,)).fetchone()
             self.assertEqual(done["status"], "completed", done["message"])
-            current = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "photos/report.txt")["current_version"]
+            current = catalog_probe.get_file_by_path(connection, 2, "photos/report.txt")["current_version"]
         # The key is the relative path: no vaults/<uuid>/ prefix in a Vault Bucket.
         self.assertEqual(current["object_key"], "photos/report.txt")
         self.assertEqual([key for key, _ in self.provider.objects], ["photos/report.txt"])

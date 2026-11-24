@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-from app.catalog import ArchiveCatalog
 from app.services.local_copies import LocalCopies
 
 from app.services.catalog_audit import audit_vault_catalog
@@ -20,15 +19,14 @@ class CatalogAuditTests(FrostVaultTestCase):
             self.vault = dict(connection.execute(
                 "SELECT id, uuid FROM vaults WHERE id=1"
             ).fetchone(), s3_bucket="bucket", s3_key_layout="vault_prefix")
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             local_copies.observe_local_copy(
                 vault_id=1, path="docs/report.pdf", file_type="regular",
                 size=10, mtime_ns=1, observed_at="2026-01-01T00:00:00+00:00",
             )
             digest = sha256_hex(b"report")
-            fingerprint(catalog, 1, "docs/report.pdf", digest)
-            protect(catalog, 1, "docs/report.pdf", digest)
+            fingerprint(connection, 1, "docs/report.pdf", digest)
+            protect(connection, 1, "docs/report.pdf", digest)
             self.key = "vaults/x/docs/report.pdf"
 
     def _paginator(self, versions: list[dict], markers: list[dict] | None = None):

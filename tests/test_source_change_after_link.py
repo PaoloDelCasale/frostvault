@@ -27,7 +27,6 @@ for _flag, _value in (
     if not hasattr(os, _flag):
         setattr(os, _flag, _value)
 
-from app.catalog import ArchiveCatalog
 from app.services.local_copies import LocalCopies
 
 from app.services.job_admission import JobAdmission, queue_jobs
@@ -247,7 +246,6 @@ class SourceChangeAfterLinkTests(FrostVaultTestCase):
                 return len(mutated)
 
             with self.database.connect() as connection:
-                catalog = ArchiveCatalog(connection)
                 job_ids, _, eligible = JobAdmission(connection).queue_jobs(
                     vault_id=2,
                     path="report.txt",
@@ -256,7 +254,7 @@ class SourceChangeAfterLinkTests(FrostVaultTestCase):
                     group_id=str(uuid.uuid4()),
                     is_directory=False,
                 )
-                row = catalog_probe.list_file_rows(catalog, 2)[0]
+                row = catalog_probe.list_file_rows(connection, 2)[0]
             self.assertEqual(len(job_ids), 1)
             self.assertEqual(eligible, 1)
             self.assertTrue(row["upload_eligible"])

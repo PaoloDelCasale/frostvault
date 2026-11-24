@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from app.services.archive_versions import ArchiveVersions
 from app.services.job_admission import JobAdmission
 from app.services.local_copies import LocalCopies
 from tests import catalog_probe
@@ -24,11 +25,11 @@ def sha256_hex(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def fingerprint(catalog: Any, vault_id: int, path: str, digest: str) -> bool:
+def fingerprint(connection: Any, vault_id: int, path: str, digest: str) -> bool:
     """Publish ``digest`` for the Local Copy currently observed at ``path``."""
-    row = catalog_probe.get_file_by_path(catalog, vault_id, path)
+    row = catalog_probe.get_file_by_path(connection, vault_id, path)
     local = row["local_copy"]
-    return LocalCopies(catalog.connection).publish_local_fingerprint(
+    return LocalCopies(connection).publish_local_fingerprint(
         row["id"],
         generation=row["generation"],
         plaintext_sha256=digest,
@@ -38,7 +39,7 @@ def fingerprint(catalog: Any, vault_id: int, path: str, digest: str) -> bool:
 
 
 def protect(
-    catalog: Any,
+    connection: Any,
     vault_id: int,
     path: str,
     digest: str,
@@ -48,9 +49,9 @@ def protect(
     verified_at: str = "2026-07-21T10:02:00+00:00",
 ) -> str:
     """Upload and verify Current for the fingerprinted Local Copy at ``path``."""
-    row = catalog_probe.get_file_by_path(catalog, vault_id, path)
+    row = catalog_probe.get_file_by_path(connection, vault_id, path)
     size = row["local_copy"]["size"] if row["local_copy"] else 1
-    version_id = catalog.begin_replacement(
+    version_id = ArchiveVersions(connection).begin_replacement(
         row["id"],
         object_key=f"vaults/x/{path}",
         provider_version_id=provider_version_id,
@@ -58,7 +59,7 @@ def protect(
         storage_class="STANDARD",
         created_at=created_at,
     )
-    catalog.promote_replacement(
+    ArchiveVersions(connection).promote_replacement(
         row["id"],
         archive_version_id=version_id,
         plaintext_sha256=digest,

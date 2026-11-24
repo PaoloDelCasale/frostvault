@@ -2,7 +2,7 @@
 
 Seams under test:
 - Recovery Job worker (`process_recover` / `process_jobs_once`) observed through
-  Job status and Local Copy fingerprint via ArchiveCatalog.
+  Job status and Local Copy fingerprint via the catalog.
 - Exact-version download adapter (`download_exact_version_plaintext`): must pin
   S3 VersionId; path-only current-object download is forbidden. Crypt recover
   must address S3 from Archive Version ``object_key``, not solely
@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
 from app.services.local_copies import LocalCopies
 
 from app.routes.jobs import cancel_job_group
@@ -123,7 +123,6 @@ def _add_cloud_only_version(
 ) -> str:
     """One more file of Vault 2 whose verified Current is its only copy."""
     with database.connect() as connection:
-        catalog = ArchiveCatalog(connection)
         local_copies = LocalCopies(connection)
         file_id = local_copies.observe_local_copy(
             vault_id=2,
@@ -133,13 +132,13 @@ def _add_cloud_only_version(
             mtime_ns=1_700_000_000_000_000_000,
             observed_at="2026-07-21T10:00:00+00:00",
         )
-        generation = catalog_probe.get_file_by_path(catalog, 2, relative_path)["generation"]
-        version_id = catalog.begin_replacement(
+        generation = catalog_probe.get_file_by_path(connection, 2, relative_path)["generation"]
+        version_id = ArchiveVersions(connection).begin_replacement(
             file_id, object_key=object_key, provider_version_id=provider_version_id,
             size=len(payload), storage_class=storage_class,
             created_at="2026-07-21T10:00:00+00:00",
         )
-        catalog.promote_replacement(
+        ArchiveVersions(connection).promote_replacement(
             file_id, archive_version_id=version_id, plaintext_sha256=_sha256_hex(payload),
             verified_at="2026-07-21T10:01:00+00:00", local_generation=generation,
         )
@@ -269,7 +268,7 @@ class PlainRecoveryVerificationTests(FrostVaultTestCase):
             self.assertEqual(summary, {"completed": 1, "requeued": 0, "failed": 0})
             self.assertEqual(destination.read_bytes(), payload)
             with self.database.connect() as connection:
-                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
+                observed = catalog_probe.get_file_by_path(connection, 
                     2, "report.txt"
                 )
                 local = connection.execute(
@@ -311,7 +310,7 @@ class PlainRecoveryVerificationTests(FrostVaultTestCase):
             self.assertEqual(summary, {"completed": 0, "requeued": 0, "failed": 1})
             self.assertEqual(destination.read_bytes(), conflict)
             with self.database.connect() as connection:
-                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
+                observed = catalog_probe.get_file_by_path(connection, 
                     2, "report.txt"
                 )
                 job = connection.execute(
@@ -408,9 +407,8 @@ class PlainRecoveryVerificationTests(FrostVaultTestCase):
             client.sdk_upload.assert_not_called()
 
             with self.database.connect() as connection:
-                catalog = ArchiveCatalog(connection)
-                observed = catalog_probe.get_file_by_path(catalog, 2, "report.txt")
-                listed = catalog_probe.list_file_rows(catalog, 2)
+                observed = catalog_probe.get_file_by_path(connection, 2, "report.txt")
+                listed = catalog_probe.list_file_rows(connection, 2)
                 job = connection.execute(
                     "SELECT j.status, j.message FROM jobs j JOIN files f ON f.id=j.file_id WHERE f.path=%s",
                     ("report.txt",),
@@ -511,7 +509,7 @@ class PlainRecoveryVerificationTests(FrostVaultTestCase):
             self.assertEqual(list(source.glob("**/.*.restore-*.tmp")), [])
 
             with self.database.connect() as connection:
-                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
+                observed = catalog_probe.get_file_by_path(connection, 
                     2, "report.txt"
                 )
                 job = connection.execute(
@@ -578,7 +576,7 @@ class PlainRecoveryVerificationTests(FrostVaultTestCase):
             destination.write_bytes(preexisting)
 
             with self.database.connect() as connection:
-                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
+                observed = catalog_probe.get_file_by_path(connection, 
                     2, "report.txt"
                 )
             self.assertEqual(observed["local_copy"]["presence"], "missing")
@@ -597,7 +595,7 @@ class PlainRecoveryVerificationTests(FrostVaultTestCase):
             self.assertEqual(list(source.glob("**/.*.restore-*.tmp")), [])
 
             with self.database.connect() as connection:
-                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
+                observed = catalog_probe.get_file_by_path(connection, 
                     2, "report.txt"
                 )
                 job = connection.execute(
@@ -697,7 +695,7 @@ class GlacierRestoreWorkflowTests(FrostVaultTestCase):
                         queued["job_ids"][0],
                     ),
                 )
-                ArchiveCatalog(connection).update_restore_state(
+                ArchiveVersions(connection).update_restore_state(
                     version_id,
                     state="restoring",
                     expiry=restore_expiry,

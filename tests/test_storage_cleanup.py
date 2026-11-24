@@ -42,7 +42,6 @@ from unittest.mock import MagicMock, Mock, patch
 from watchfiles import Change
 
 from app import storage
-from app.catalog import ArchiveCatalog
 from app.services.local_copies import LocalCopies
 
 from app.routes.jobs import FileAction, cancel_job_group, free_space, jobs
@@ -203,12 +202,11 @@ class StorageCleanupTests(FrostVaultTestCase):
             )
 
             with self.database.connect() as connection:
-                catalog = ArchiveCatalog(connection)
-                visible = catalog_probe.get_file_by_path(catalog, 2, "visible.txt")
-                temporary = catalog_probe.get_file_by_path(catalog, 
+                visible = catalog_probe.get_file_by_path(connection, 2, "visible.txt")
+                temporary = catalog_probe.get_file_by_path(connection, 
                     2, f".archive.zip.restore-{restore_id}.tmp"
                 )
-                partial = catalog_probe.get_file_by_path(catalog, 
+                partial = catalog_probe.get_file_by_path(connection, 
                     2, f".archive.zip.restore-{restore_id}.tmp.deadbeef.partial"
                 )
 
@@ -232,7 +230,7 @@ class StorageCleanupTests(FrostVaultTestCase):
             )
 
             with self.database.connect() as connection:
-                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "visible.txt")
+                observed = catalog_probe.get_file_by_path(connection, 2, "visible.txt")
 
             self.assertEqual(count, 1)
             self.assertEqual(observed["local_copy"]["presence"], "present")
@@ -326,7 +324,7 @@ class StorageCleanupTests(FrostVaultTestCase):
                 process_jobs_once()
 
             with self.database.connect() as connection:
-                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "report.txt")
+                observed = catalog_probe.get_file_by_path(connection, 2, "report.txt")
 
             # Without a completed read-back the sent version stays Replacing:
             # catalogued, unverified, never Current (ADR-0035).
@@ -377,10 +375,9 @@ class StorageCleanupTests(FrostVaultTestCase):
                 )
 
             with self.database.connect() as database:
-                catalog = ArchiveCatalog(database)
-                added_file = catalog_probe.get_file_by_path(catalog, 2, "docs/added.txt")
-                deleted_file = catalog_probe.get_file_by_path(catalog, 2, "docs/deleted.txt")
-                partial_file = catalog_probe.get_file_by_path(catalog, 
+                added_file = catalog_probe.get_file_by_path(database, 2, "docs/added.txt")
+                deleted_file = catalog_probe.get_file_by_path(database, 2, "docs/deleted.txt")
+                partial_file = catalog_probe.get_file_by_path(database, 
                     2, f"docs/{partial.name}"
                 )
 
@@ -493,7 +490,7 @@ class StorageCleanupTests(FrostVaultTestCase):
             self.assertTrue(claim.is_file())
 
             with self.database.connect() as connection:
-                file_row = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
+                file_row = catalog_probe.get_file_by_path(connection, 
                     2, "docs/file.txt"
                 )
                 job_id = connection.execute(
@@ -533,7 +530,7 @@ class StorageCleanupTests(FrostVaultTestCase):
                     "SELECT status, message FROM jobs WHERE id=%s",
                     (job_id,),
                 ).fetchone()
-                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
+                observed = catalog_probe.get_file_by_path(connection, 
                     2, "docs/file.txt"
                 )
             self.assertEqual(job["status"], "queued")
@@ -598,7 +595,7 @@ class StorageCleanupTests(FrostVaultTestCase):
             target.rename(claim)
 
             with self.database.connect() as connection:
-                file_row = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
+                file_row = catalog_probe.get_file_by_path(connection, 
                     2, "docs/file.txt"
                 )
                 job_id = connection.execute(
@@ -745,7 +742,6 @@ class StorageCleanupTests(FrostVaultTestCase):
             seed_vault(connection, id=2, name="Docs", source_root=str(source), bucket="bucket-test")
             from app.services.vault_relocation import enroll_vault_root_identity
             enroll_vault_root_identity(connection, 2, str(source))
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             local_copies.observe_local_copy(
                 vault_id=2,
@@ -755,8 +751,8 @@ class StorageCleanupTests(FrostVaultTestCase):
                 mtime_ns=target.stat().st_mtime_ns,
                 observed_at="2026-07-21T10:00:00+00:00",
             )
-            fingerprint(catalog, 2, "docs/file.txt", digest)
-            protect(catalog, 2, "docs/file.txt", digest, provider_version_id="s3-version-1",
+            fingerprint(connection, 2, "docs/file.txt", digest)
+            protect(connection, 2, "docs/file.txt", digest, provider_version_id="s3-version-1",
                     created_at="2026-07-21T10:00:00+00:00", verified_at="2026-07-21T10:01:00+00:00")
         return target
 
@@ -806,7 +802,7 @@ class StorageCleanupTests(FrostVaultTestCase):
 
             self.assertFalse(target.exists())
             with self.database.connect() as connection:
-                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
+                observed = catalog_probe.get_file_by_path(connection, 
                     2, "docs/file.txt"
                 )
             self.assertEqual(observed["local_copy"]["presence"], "missing")
@@ -854,7 +850,7 @@ class StorageCleanupTests(FrostVaultTestCase):
             self.assertEqual(processed, 1)
             self.assertFalse(target.exists())
             with self.database.connect() as connection:
-                file_row = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
+                file_row = catalog_probe.get_file_by_path(connection, 
                     2, "docs/file.txt"
                 )
                 events = connection.execute(
@@ -1026,7 +1022,7 @@ class StorageCleanupTests(FrostVaultTestCase):
                 "newer content",
             )
             with self.database.connect() as connection:
-                observed = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 
+                observed = catalog_probe.get_file_by_path(connection, 
                     2, "docs/file.txt"
                 )
             self.assertEqual(observed["local_copy"]["presence"], "present")
@@ -1038,7 +1034,7 @@ class StorageCleanupTests(FrostVaultTestCase):
             payload = target.read_bytes()
             target.unlink()
             with self.database.connect() as connection:
-                file = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "docs/file.txt")
+                file = catalog_probe.get_file_by_path(connection, 2, "docs/file.txt")
                 LocalCopies(connection).mark_local_copy_missing(
                     file["id"], observed_at="2026-07-21T11:00:00+00:00"
                 )

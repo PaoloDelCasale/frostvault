@@ -28,7 +28,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app import storage
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
+from app.services.file_renames import FileRenames
 from app.services.local_copies import LocalCopies
 from app.services.job_admission import queue_jobs
 from app.services import upload_provenance as provenance
@@ -170,10 +171,9 @@ class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
         # A later Local Copy observation is not the archived timestamp.
         os.utime(renamed, ns=(original + 1000, original + 1000))
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             timestamp = storage.now_iso()
-            catalog.rename_file(self.file_id, new_path="renamed.txt", changed_at=timestamp, vault_id=2)
+            FileRenames(connection).rename_file(self.file_id, new_path="renamed.txt", changed_at=timestamp, vault_id=2)
             local_copies.observe_local_copy(vault_id=2, path="renamed.txt", file_type="regular",
                 size=len(A), mtime_ns=renamed.stat().st_mtime_ns, observed_at=timestamp)
             generation = connection.execute("SELECT generation FROM files WHERE id=%s", (self.file_id,)).fetchone()["generation"]
@@ -686,9 +686,8 @@ class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
         renamed = self.source / "renamed.txt"
         self.file.rename(renamed)
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
-            catalog.rename_file(self.file_id, new_path="renamed.txt", changed_at=storage.now_iso(), vault_id=2)
+            FileRenames(connection).rename_file(self.file_id, new_path="renamed.txt", changed_at=storage.now_iso(), vault_id=2)
             local_copies.observe_local_copy(vault_id=2, path="renamed.txt", file_type="regular", size=len(A),
                 mtime_ns=renamed.stat().st_mtime_ns, observed_at=storage.now_iso())
         with self.database.connect() as connection:
@@ -736,9 +735,8 @@ class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
         renamed = self.source / "renamed.txt"
         self.file.rename(renamed)
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
-            catalog.rename_file(self.file_id, new_path="renamed.txt", changed_at=storage.now_iso(), vault_id=2)
+            FileRenames(connection).rename_file(self.file_id, new_path="renamed.txt", changed_at=storage.now_iso(), vault_id=2)
             local_copies.observe_local_copy(vault_id=2, path="renamed.txt", file_type="regular", size=len(A),
                 mtime_ns=renamed.stat().st_mtime_ns, observed_at=storage.now_iso())
         # Another file now lives at the old path with identical bytes and its
@@ -829,7 +827,7 @@ class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
         # Verification evidence, integrity, Current and the Local Copy CAS
         # commit in one fenced unit: a serialization abort replays only that
         # unit, never the filesystem observation or the provider.
-        publish = ArchiveCatalog.promote_replacement
+        publish = ArchiveVersions.promote_replacement
         transactions = []
         def promote(catalog, file_id, **kwargs):
             publish(catalog, file_id, **kwargs)
@@ -842,7 +840,7 @@ class UploadProvenanceWorkerTests(UploadProvenanceWorkerCase):
             if len(transactions) == 1:
                 catalog.connection.execute("DO $$ BEGIN RAISE EXCEPTION 'proof commit abort' USING ERRCODE='40001'; END $$")
         job = self.queue()
-        with patch.object(ArchiveCatalog, "promote_replacement", promote), \
+        with patch.object(ArchiveVersions, "promote_replacement", promote), \
                 patch.object(storage, "prepare_upload_snapshot", wraps=storage.prepare_upload_snapshot) as hashed:
             self.run_job(job)
         self.assert_keeper(job)

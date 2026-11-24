@@ -18,7 +18,6 @@ from unittest.mock import patch
 
 import psycopg
 
-from app.catalog import ArchiveCatalog
 from app.services import local_copies as local_copies_module
 from app.services.local_copies import LocalCopies
 
@@ -237,7 +236,6 @@ class CatalogScanBatchStatementCountTests(FrostVaultTestCase):
         self.connection = self.database.connect()
         self.connection.__enter__()
         _seed_vault(self.connection, 2)
-        self.catalog = ArchiveCatalog(self.connection)
         self.local_copies = LocalCopies(self.connection)
 
     def tearDown(self) -> None:

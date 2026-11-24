@@ -26,7 +26,7 @@ for _flag, _value in (
     if not hasattr(os, _flag):
         setattr(os, _flag, _value)
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
 from app.services.local_copies import LocalCopies
 
 from app.storage import CLOUD_SCAN_WRITE_BATCH_SIZE, scan_cloud
@@ -50,22 +50,21 @@ def _known_version(
     connection: psycopg.Connection, path: str, provider_version_id: str, *, verify: bool = False
 ) -> str:
     """A version the catalog already knows by its exact key and VersionId."""
-    catalog = ArchiveCatalog(connection)
     local_copies = LocalCopies(connection)
     local_copies.observe_local_copy(
         vault_id=2, path=path, file_type="regular", size=1, mtime_ns=1,
         observed_at="2026-07-20T10:00:00+00:00",
     )
-    row = catalog_probe.get_file_by_path(catalog, 2, path)
-    version_id = catalog.begin_replacement(
+    row = catalog_probe.get_file_by_path(connection, 2, path)
+    version_id = ArchiveVersions(connection).begin_replacement(
         row["id"], object_key=PREFIX + path, provider_version_id=provider_version_id,
         size=1, storage_class="STANDARD", created_at="2026-07-20T10:00:00+00:00",
     )
     if verify:
         digest = sha256_hex(path.encode())
-        fingerprint(catalog, 2, path, digest)
-        row = catalog_probe.get_file_by_path(catalog, 2, path)
-        catalog.promote_replacement(
+        fingerprint(connection, 2, path, digest)
+        row = catalog_probe.get_file_by_path(connection, 2, path)
+        ArchiveVersions(connection).promote_replacement(
             row["id"], archive_version_id=version_id, plaintext_sha256=digest,
             verified_at="2026-07-20T10:01:00+00:00", local_generation=row["generation"],
         )
@@ -194,7 +193,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
 
             with database.connect() as connection:
                 self.assertEqual(_availability(connection, kept), "available")
-                current = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "kept.txt")
+                current = catalog_probe.get_file_by_path(connection, 2, "kept.txt")
             self.assertEqual(current["current_version"]["id"], kept)
 
     def test_complete_listing_marks_unseen_missing(self) -> None:
@@ -261,7 +260,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
                 files = connection.execute(
                     "SELECT count(*) AS n FROM files"
                 ).fetchone()["n"]
-                current = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "a.txt")
+                current = catalog_probe.get_file_by_path(connection, 2, "a.txt")
             self.assertEqual([row["provider_version_id"] for row in versions], ["a-v1"])
             self.assertEqual(files, before)
             self.assertEqual(current["current_version"]["id"], known)
@@ -381,7 +380,7 @@ class CloudScanLockAndBatchTests(unittest.TestCase):
             with database.connect() as connection:
                 _seed_vault(connection)
                 _known_version(connection, "held.txt", "held-v1")
-                file_id = catalog_probe.get_file_by_path(ArchiveCatalog(connection), 2, "held.txt")["id"]
+                file_id = catalog_probe.get_file_by_path(connection, 2, "held.txt")["id"]
                 job_id = connection.execute(
                     """
                     INSERT INTO jobs(vault_id, file_id, action, status)

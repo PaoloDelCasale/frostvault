@@ -1,4 +1,5 @@
 """CI-only PostgreSQL global-search/sole-copy regressions (#430)."""
+from app.services.archive_versions import ArchiveVersions
 from tests import test_protection_states as fixtures
 from tests.catalog_support import fingerprint
 from tests import catalog_probe
@@ -11,13 +12,13 @@ class EssentialSearchPostgresTests(fixtures.ProtectionStateFixture):
         stamp = '2026-11-03T10:00:00Z'
         file_id = self.local_copies.observe_local_copy(
             vault_id=vault_id, path=path, file_type='regular', size=12, mtime_ns=1, observed_at=stamp)
-        fingerprint(self.catalog, vault_id, path, digest)
-        version = self.catalog.begin_replacement(
+        fingerprint(self.connection, vault_id, path, digest)
+        version = ArchiveVersions(self.connection).begin_replacement(
             file_id, object_key=f'vaults/x/{path}', provider_version_id=provider_version_id,
             size=12, storage_class=storage_class, created_at=stamp)
-        self.catalog.promote_replacement(
+        ArchiveVersions(self.connection).promote_replacement(
             file_id, archive_version_id=version, plaintext_sha256=digest, verified_at=stamp,
-            local_generation=catalog_probe.get_file_by_path(self.catalog, vault_id, path)['generation'])
+            local_generation=catalog_probe.get_file_by_path(self.connection, vault_id, path)['generation'])
         self.local_copies.mark_local_copy_missing(file_id, observed_at=stamp)
         return version
 
@@ -65,13 +66,13 @@ class EssentialSearchPostgresTests(fixtures.ProtectionStateFixture):
         seed_vault(self.connection, id=10, name='Second', source_root='/second')
         second = self._cloud_only(10, 'photos/same.jpg', 'second-copy', 'DEEP_ARCHIVE', 'b' * 64)
         vaults = [{'id':9,'name':'Files','unconfirmed':False}, {'id':10,'name':'Second','unconfirmed':False}]
-        one = self.catalog.search_protected_vaults(vaults, search='photos/same', state='cloud_only', page=1, page_size=1)
-        two = self.catalog.search_protected_vaults(vaults, search='photos/same', state='cloud_only', page=2, page_size=1)
+        one = self.listing.search_protected_vaults(vaults, search='photos/same', state='cloud_only', page=1, page_size=1)
+        two = self.listing.search_protected_vaults(vaults, search='photos/same', state='cloud_only', page=2, page_size=1)
         self.assertEqual(one['total'], 2)
         self.assertEqual([one['items'][0]['vault_id'],two['items'][0]['vault_id']], [9,10])
         self.assertEqual(two['items'][0]['vault_name'], 'Second')
         vaults[1]['unconfirmed'] = True
-        missing = self.catalog.search_protected_vaults(vaults, search='same', state='cloud_only', page=1, page_size=100)
+        missing = self.listing.search_protected_vaults(vaults, search='same', state='cloud_only', page=1, page_size=100)
         self.assertEqual(missing['total'],1)
         self.assertEqual(missing['items'][0]['vault_id'],9)
         # Read-only search must never mutate or discard either sole cloud copy.

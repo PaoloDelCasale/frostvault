@@ -14,7 +14,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from app import storage
-from app.catalog import ArchiveCatalog
 from app.services.local_copies import LocalCopies
 from app.services import job_admission
 from app.services import notifications as inbox
@@ -110,13 +109,12 @@ class ProtectionProblemClosureTests(FrostVaultTestCase):
             (self.vault_id, file_id, message_key, at.isoformat(), at.isoformat())).fetchone()["id"]
 
     def protect(self, c, *, path="a.txt", completed=True, action="upload"):
-        catalog = ArchiveCatalog(c)
         local_copies = LocalCopies(c)
         if path != "a.txt":
             local_copies.observe_local_copy(vault_id=self.vault_id, path=path, file_type="regular", size=1,
                                        mtime_ns=1, observed_at=NOW.isoformat())
-        fingerprint(catalog, self.vault_id, path, self.DIGEST)
-        version = protect_current(catalog, self.vault_id, path, self.DIGEST,
+        fingerprint(c, self.vault_id, path, self.DIGEST)
+        version = protect_current(c, self.vault_id, path, self.DIGEST,
                                   provider_version_id="provider-"+path)
         job_id = c.execute("""INSERT INTO jobs(vault_id,file_id,action,status,origin,requested_at,updated_at,archive_version_id)
             VALUES (%s,%s,%s,%s,'manual',%s,%s,%s) RETURNING id""",

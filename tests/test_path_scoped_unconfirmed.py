@@ -11,7 +11,6 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from app.catalog import ArchiveCatalog
 from app.services.local_copies import LocalCopies
 from app.i18n import DEFAULT_LOCALE, translate
 from app.services import directory_aggregates as aggregates
@@ -49,15 +48,14 @@ class PathScopedDisplayedStateTests(FrostVaultTestCase):
         super().setUp()
         with self.database.connect() as connection:
             seed_vault(connection, source_root="/source", id=2)
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             for index, name in enumerate(FILES):
                 payload = name.encode()
                 local_copies.observe_local_copy(
                     vault_id=2, path=name, file_type="regular", size=len(payload), mtime_ns=1,
                     observed_at="2026-11-15T10:00:00+00:00")
-                fingerprint(catalog, 2, name, sha256_hex(payload))
-                protect(catalog, 2, name, sha256_hex(payload), provider_version_id=f"v{index}")
+                fingerprint(connection, 2, name, sha256_hex(payload))
+                protect(connection, 2, name, sha256_hex(payload), provider_version_id=f"v{index}")
             aggregates.rebuild_vault_directory_aggregates(connection, 2)
             record_component_health(connection, vault_id=2, component="source", ok=False,
                                     error=SOURCE_SCAN_INCOMPLETE)

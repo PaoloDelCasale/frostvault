@@ -23,7 +23,7 @@ import uuid
 from unittest.mock import patch
 
 from app import storage
-from app.catalog import ArchiveCatalog
+from app.services.file_renames import FileRenames
 from app.services.job_admission import JobAdmission
 from app.services import vault_relocation
 from app.services.s3_copy import COPY_TOKEN_KEY
@@ -85,7 +85,7 @@ class RenameWorkerTests(CopyWorkerFixture):
         os.replace(self.file, target)
         self.file = target
         with self.db() as connection:
-            ArchiveCatalog(connection).rename_file(
+            FileRenames(connection).rename_file(
                 self.file_id, new_path=new_path, changed_at=storage.now_iso(), vault_id=2)
         self.old_key, self.key = self.key, f"vaults/{self.uuid}/{new_path}"
 

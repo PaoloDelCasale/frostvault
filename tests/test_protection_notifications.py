@@ -425,18 +425,16 @@ class FixedNotificationPostgresTests(FrostVaultTestCase):
         self.assertIn(f'Last verified backup: no. {verified} from ',en)
 
     def test_resolved_catalog_incident_is_read_without_dismissing_open_problems(self):
-        from app.catalog import ArchiveCatalog
         from app.services.local_copies import LocalCopies
         from app.services.catalog_incidents import remember_missing_archives, resolve_archive_version_incidents
         from tests.catalog_support import fingerprint, protect, sha256_hex
         with self.connect() as c:
-            catalog = ArchiveCatalog(c)
             local_copies = LocalCopies(c)
             local_copies.observe_local_copy(vault_id=self.vault_id,path='lost.jpg',file_type='regular',size=2,
                                        mtime_ns=1,observed_at=NOW)
             digest = sha256_hex(b'lost')
-            fingerprint(catalog,self.vault_id,'lost.jpg',digest)
-            version = protect(catalog,self.vault_id,'lost.jpg',digest)
+            fingerprint(c,self.vault_id,'lost.jpg',digest)
+            version = protect(c,self.vault_id,'lost.jpg',digest)
             row = c.execute('SELECT av.id, f.vault_id, f.path, av.provider_version_id FROM archive_versions av '
                             'JOIN files f ON f.id=av.file_id WHERE av.id=%s',(version,)).fetchone()
             # The problem is derived from the version's availability, never stored apart.
@@ -453,12 +451,10 @@ class FixedNotificationPostgresTests(FrostVaultTestCase):
             self.assertEqual(c.execute('SELECT count(*) AS n FROM archive_versions WHERE id=%s',(version,)).fetchone()['n'],1)
 
     def test_summary_reads_success_dates_freed_space_cost_and_every_state(self):
-        from app.catalog import ArchiveCatalog
         from app.services.local_copies import LocalCopies
         from app.services.component_health import record_component_health
         from tests.catalog_support import fingerprint, protect, sha256_hex
         with self.connect() as c, patch('app.services.source_layout.vault_local_access',return_value=ONLINE):
-            catalog = ArchiveCatalog(c)
             local_copies = LocalCopies(c)
             digest = sha256_hex(b'content')
             for state in monitor.STATES:
@@ -471,18 +467,18 @@ class FixedNotificationPostgresTests(FrostVaultTestCase):
                     c.execute("INSERT INTO jobs(vault_id,file_id,action,status,origin,message_key,requested_at,"
                               "updated_at,finished_at) VALUES (%s,%s,'upload','cancelled','manual',"
                               "'job.upload_stopped',%s,%s,%s)",
-                              (self.vault_id,catalog_probe.get_file_by_path(catalog, self.vault_id,name)['id'],NOW,NOW,NOW))
+                              (self.vault_id,catalog_probe.get_file_by_path(c, self.vault_id,name)['id'],NOW,NOW,NOW))
                 if state in ('pending', 'stopped', 'excluded', 'unsupported'):
                     continue
-                fingerprint(catalog,self.vault_id,name,digest)
-                version = protect(catalog,self.vault_id,name,digest,provider_version_id=state)
+                fingerprint(c,self.vault_id,name,digest)
+                version = protect(c,self.vault_id,name,digest,provider_version_id=state)
                 availability = {'problem':'missing','unconfirmed':'unknown'}.get(state,'available')
                 c.execute("UPDATE archive_versions SET availability=%s WHERE id=%s",(availability,version))
                 if state == 'cloud_only':
-                    local_copies.mark_local_copy_missing(catalog_probe.get_file_by_path(catalog, self.vault_id,name)['id'],observed_at=NOW)
+                    local_copies.mark_local_copy_missing(catalog_probe.get_file_by_path(c, self.vault_id,name)['id'],observed_at=NOW)
             record_component_health(c,vault_id=self.vault_id,component='source',ok=True,at='2026-11-02T10:00:00+00:00')
             record_component_health(c,vault_id=self.vault_id,component='audit',ok=True,at='2026-11-01T10:00:00+00:00')
-            protected = catalog_probe.get_file_by_path(catalog, self.vault_id,'protected.jpg')['id']
+            protected = catalog_probe.get_file_by_path(c, self.vault_id,'protected.jpg')['id']
             for status, age in (('completed',1),('completed',9),('failed',1)):
                 c.execute("INSERT INTO jobs(vault_id,file_id,action,status,origin,requested_at,updated_at,total_bytes) "
                           "VALUES (%s,%s,'free-space',%s,'manual',%s,%s,1048576)",

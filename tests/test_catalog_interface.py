@@ -1,4 +1,4 @@
-"""ArchiveCatalog through one interface on the schema head.
+"""The catalog through its owning Modules on the schema head.
 
 Domain specification kept from the v0.5 suite (ADR-0035), ported by #587 to
 the rebuilt ``files`` table: one row per Vault File with explicit Current and
@@ -14,13 +14,11 @@ from tests.fixtures import fresh_database, seed_vault
 
 class CatalogInterfaceTests(unittest.TestCase):
     def test_catalog_observes_a_new_local_file_through_one_interface(self) -> None:
-        from app.catalog import ArchiveCatalog
         from app.services.local_copies import LocalCopies
 
         with fresh_database() as database:
             with database.connect() as connection:
                 seed_vault(connection, id=2, source_root="/source")
-                catalog = ArchiveCatalog(connection)
                 local_copies = LocalCopies(connection)
                 file_id = local_copies.observe_local_copy(
                     vault_id=2,
@@ -30,7 +28,7 @@ class CatalogInterfaceTests(unittest.TestCase):
                     mtime_ns=1_750_000_000_250_000_000,
                     observed_at="2026-07-21T10:00:00+00:00",
                 )
-                observed = catalog_probe.get_file_by_path(catalog, 2, "reports/annual.txt")
+                observed = catalog_probe.get_file_by_path(connection, 2, "reports/annual.txt")
 
             self.assertEqual(observed["id"], file_id)
             self.assertEqual(observed["local_copy"]["presence"], "present")
@@ -39,13 +37,12 @@ class CatalogInterfaceTests(unittest.TestCase):
             self.assertIsNone(observed["replacing_version"])
 
     def test_confirmed_rename_preserves_identity_and_path_history(self) -> None:
-        from app.catalog import ArchiveCatalog
+        from app.services.file_renames import FileRenames
         from app.services.local_copies import LocalCopies
 
         with fresh_database() as database:
             with database.connect() as connection:
                 seed_vault(connection, name="Photos", id=2, source_root="/source")
-                catalog = ArchiveCatalog(connection)
                 local_copies = LocalCopies(connection)
                 file_id = local_copies.observe_local_copy(
                     vault_id=2,
@@ -55,17 +52,17 @@ class CatalogInterfaceTests(unittest.TestCase):
                     mtime_ns=10,
                     observed_at="2026-07-21T10:00:00+00:00",
                 )
-                catalog.rename_file(
+                FileRenames(connection).rename_file(
                     file_id,
                     new_path="test/fotodefinitiva.jpg",
                     changed_at="2026-07-21T11:00:00+00:00",
                     vault_id=2,
                 )
-                renamed = catalog_probe.get_file_by_path(catalog, 
+                renamed = catalog_probe.get_file_by_path(connection, 
                     2, "test/fotodefinitiva.jpg"
                 )
-                old_path = catalog_probe.get_file_by_path(catalog, 2, "test/fototest.jpg")
-                history = catalog_probe.list_path_history(catalog, file_id, vault_id=2)
+                old_path = catalog_probe.get_file_by_path(connection, 2, "test/fototest.jpg")
+                history = catalog_probe.list_path_history(connection, file_id, vault_id=2)
 
             self.assertEqual(renamed["id"], file_id)
             self.assertIsNone(old_path)
@@ -75,13 +72,12 @@ class CatalogInterfaceTests(unittest.TestCase):
             )
 
     def test_stale_cloud_scan_does_not_hide_a_concurrent_upload(self) -> None:
-        from app.catalog import ArchiveCatalog
+        from app.services.archive_versions import ArchiveVersions
         from app.services.local_copies import LocalCopies
 
         with fresh_database() as database:
             with database.connect() as connection:
                 seed_vault(connection, id=2, source_root="/source")
-                catalog = ArchiveCatalog(connection)
                 local_copies = LocalCopies(connection)
                 ids = {}
                 for name in ("old.txt", "new.txt"):
@@ -91,7 +87,7 @@ class CatalogInterfaceTests(unittest.TestCase):
                     )
                 # The old version predates the scan; the new one is an upload
                 # that completed while the scan was listing.
-                catalog.begin_replacement(
+                ArchiveVersions(connection).begin_replacement(
                     ids["old.txt"],
                     object_key="vaults/x/old.txt",
                     provider_version_id="old-version",
@@ -99,7 +95,7 @@ class CatalogInterfaceTests(unittest.TestCase):
                     storage_class="STANDARD",
                     created_at="2026-07-21T09:00:00+00:00",
                 )
-                catalog.begin_replacement(
+                ArchiveVersions(connection).begin_replacement(
                     ids["new.txt"],
                     object_key="vaults/x/new.txt",
                     provider_version_id="new-version",
@@ -107,13 +103,13 @@ class CatalogInterfaceTests(unittest.TestCase):
                     storage_class="STANDARD",
                     created_at="2026-07-21T11:00:00+00:00",
                 )
-                missing = catalog.mark_unseen_archive_versions_missing(
+                missing = ArchiveVersions(connection).mark_unseen_archive_versions_missing(
                     vault_id=2,
                     scan_id="2026-07-21T10:00:00+00:00",
                     scan_started_at="2026-07-21T10:00:00+00:00",
                 )
-                old = catalog_probe.get_file_by_path(catalog, 2, "old.txt")
-                new = catalog_probe.get_file_by_path(catalog, 2, "new.txt")
+                old = catalog_probe.get_file_by_path(connection, 2, "old.txt")
+                new = catalog_probe.get_file_by_path(connection, 2, "new.txt")
 
             self.assertEqual(old["replacing_version"]["availability"], "missing")
             self.assertEqual(new["replacing_version"]["availability"], "available")

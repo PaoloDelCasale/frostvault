@@ -23,7 +23,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
 from app.services.local_copies import LocalCopies
 from app.services import duplicate_cleanup, minimum_storage, source_layout
 from app.services import vaults as vaults_service
@@ -61,13 +61,12 @@ class ClassEntryFixture(FrostVaultTestCase):
             created_at: datetime = LONG_AGO) -> str:
         """A version uploaded by a direct PUT (``begin_replacement``)."""
         with self.database.connect() as connection:
-            catalog = ArchiveCatalog(connection)
             local_copies = LocalCopies(connection)
             local_copies.observe_local_copy(
                 vault_id=2, path=path, file_type="regular", size=size, mtime_ns=1,
                 observed_at=created_at.isoformat())
-            row = catalog_probe.get_file_by_path(catalog, 2, path)
-            return catalog.begin_replacement(
+            row = catalog_probe.get_file_by_path(connection, 2, path)
+            return ArchiveVersions(connection).begin_replacement(
                 row["id"], object_key=PREFIX + path, provider_version_id=f"{path}-v1",
                 size=size, storage_class=storage_class, created_at=created_at.isoformat())
 
@@ -173,7 +172,7 @@ class RestoreCheckTests(ClassEntryFixture):
 
     def check(self, version_id: str, storage_class: str | None, checked_at: datetime) -> None:
         with self.database.connect() as connection:
-            ArchiveCatalog(connection).update_restore_state(
+            ArchiveVersions(connection).update_restore_state(
                 version_id, state=None, expiry=None, checked_at=checked_at.isoformat(),
                 storage_class=storage_class)
 

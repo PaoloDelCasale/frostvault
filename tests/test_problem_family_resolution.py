@@ -6,7 +6,6 @@ has no domain rule stays open; the Problems of a stopped Vault close.
 """
 from datetime import datetime, timedelta, timezone
 
-from app.catalog import ArchiveCatalog
 from app.services.local_copies import LocalCopies
 from app.services import notifications as inbox
 from tests.catalog_support import fingerprint, protect, sha256_hex
@@ -41,13 +40,12 @@ class ProblemFamilyResolutionTests(FrostVaultTestCase):
 
     def protected_file(self, c, path="a.txt"):
         """A Vault File with one verified Archive Version; returns (file id, version id)."""
-        catalog = ArchiveCatalog(c)
         local_copies = LocalCopies(c)
         local_copies.observe_local_copy(vault_id=self.vault_id, path=path, file_type="regular",
                                    size=1, mtime_ns=1, observed_at=NOW.isoformat())
         digest = sha256_hex(b"a")
-        fingerprint(catalog, self.vault_id, path, digest)
-        version = protect(catalog, self.vault_id, path, digest)
+        fingerprint(c, self.vault_id, path, digest)
+        version = protect(c, self.vault_id, path, digest)
         file_id = c.execute("SELECT id FROM files WHERE vault_id=%s AND path=%s",
                             (self.vault_id, path)).fetchone()["id"]
         return file_id, version

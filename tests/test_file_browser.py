@@ -4,7 +4,7 @@ import unittest
 
 from app.errors import Invalid
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
 from app.services.local_copies import LocalCopies
 
 from app.routes.browse import list_files
@@ -220,7 +220,6 @@ class FileBrowserTests(unittest.TestCase):
         with fresh_database() as database:
             with database.connect() as connection:
                 seed_vault(connection, id=2, name="Docs", source_root="/source")
-                catalog = ArchiveCatalog(connection)
                 local_copies = LocalCopies(connection)
                 file_id = local_copies.observe_local_copy(
                     vault_id=2,
@@ -230,7 +229,7 @@ class FileBrowserTests(unittest.TestCase):
                     mtime_ns=10,
                     observed_at="2026-07-21T10:00:00+00:00",
                 )
-                pending = catalog.begin_replacement(
+                pending = ArchiveVersions(connection).begin_replacement(
                     file_id,
                     object_key="vaults/x/reports/annual.txt",
                     provider_version_id="version-1",

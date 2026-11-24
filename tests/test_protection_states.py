@@ -8,7 +8,8 @@ from collections import Counter
 from dataclasses import replace
 from unittest.mock import patch
 
-from app.catalog import ArchiveCatalog
+from app.services.archive_versions import ArchiveVersions
+from app.services.file_listing import FileListing
 from app.services.local_copies import LocalCopies
 from app.services.job_admission import JobAdmission
 from app.routes.browse import list_files, stats
@@ -150,8 +151,8 @@ class ProtectionStateFixture(FrostVaultTestCase):
         super().setUp()
         self.connection = self.enterContext(self.database.connect())
         seed_vault(self.connection, id=9, name='Files', source_root="/source")
-        self.catalog = ArchiveCatalog(self.connection)
         self.local_copies = LocalCopies(self.connection)
+        self.listing = FileListing(self.connection)
         aggregates.set_maintenance_scheduling_enabled(False)
         self.addCleanup(aggregates.set_maintenance_scheduling_enabled, True)
 
@@ -162,14 +163,14 @@ class ProtectionStateFixture(FrostVaultTestCase):
         version_id = None
         if archive:
             if file_type == 'regular':
-                fingerprint(self.catalog, 9, path, ('a' if match else 'b') * 64)
-            version_id = self.catalog.begin_replacement(
+                fingerprint(self.connection, 9, path, ('a' if match else 'b') * 64)
+            version_id = ArchiveVersions(self.connection).begin_replacement(
                 file_id, object_key=f'vaults/x/{path}', provider_version_id=name, size=12,
                 storage_class='STANDARD', created_at=T)
             if verified:
-                self.catalog.promote_replacement(
+                ArchiveVersions(self.connection).promote_replacement(
                     file_id, archive_version_id=version_id, plaintext_sha256='a' * 64, verified_at=T,
-                    local_generation=catalog_probe.get_file_by_path(self.catalog, 9, path)['generation'])
+                    local_generation=catalog_probe.get_file_by_path(self.connection, 9, path)['generation'])
                 if availability != 'available':
                     self.connection.execute('UPDATE archive_versions SET availability=%s WHERE id=%s', (availability, version_id))
         if not local:
@@ -186,15 +187,15 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         self.seed('cloud', local=False, archive=True, verified=True)
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
         expected = {'pending': 2, 'protected': 1, 'problem': 1, 'unconfirmed': 1, 'cloud_only': 1}
-        rows = catalog_probe.list_file_rows(self.catalog, 9)
+        rows = catalog_probe.list_file_rows(self.connection, 9)
         self.assertEqual(dict(Counter(row['state'] for row in rows)), expected)
-        self.assertEqual(self.catalog.summary(9)['states'], expected)
-        folder = self.catalog.list_files_page(9)['items'][0]
+        self.assertEqual(self.listing.summary(9)['states'], expected)
+        folder = self.listing.list_files_page(9)['items'][0]
         self.assertEqual(folder['state_counts'], expected)
         self.assertEqual(folder['state'], 'problem')
         for state, count in expected.items():
-            page = self.catalog.list_files_page(9, directory='photos', state=state)
-            search = self.catalog.list_files_page(9, search='.jpg', state=state)
+            page = self.listing.list_files_page(9, directory='photos', state=state)
+            search = self.listing.list_files_page(9, search='.jpg', state=state)
             self.assertEqual(page['total'], count)
             self.assertEqual(search['total'], count)
             self.assertTrue(all(item['state'] == state for item in page['items']))
@@ -204,7 +205,7 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         # Dirty SQL rollup and streamed full rebuild are identical.
         aggregates.mark_directory_dirty(self.connection, 9, 'photos')
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
-        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], expected)
+        self.assertEqual(self.listing.list_files_page(9)['items'][0]['state_counts'], expected)
 
     def test_default_excluded_files_have_their_own_state_and_do_not_block_protection(self):
         # #498: macOS metadata is skipped by automatic upload, so it is neither
@@ -215,20 +216,20 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
         self.connection.commit()
         expected = {'protected': 1, 'excluded': 3}
-        summary = self.catalog.summary(9)
+        summary = self.listing.summary(9)
         self.assertEqual(summary['states'], expected)
         self.assertEqual(summary['protection_state'], 'protected')
-        folder = self.catalog.list_files_page(9)['items'][0]
+        folder = self.listing.list_files_page(9)['items'][0]
         self.assertEqual(folder['state_counts'], expected)
         self.assertEqual(folder['state'], 'protected')
-        self.assertEqual(self.catalog.list_files_page(9, directory='photos', state='pending')['total'], 0)
+        self.assertEqual(self.listing.list_files_page(9, directory='photos', state='pending')['total'], 0)
         # Two excluded files sit directly in photos/, the third in its sub-folder.
-        page = self.catalog.list_files_page(9, directory='photos', state='excluded')
+        page = self.listing.list_files_page(9, directory='photos', state='excluded')
         self.assertEqual([item['type'] for item in page['items']], ['directory', 'file', 'file'])
         self.assertTrue(all(item['state'] == 'excluded' for item in page['items'] if item['type'] == 'file'))
-        page = self.catalog.list_files_page(9, directory='photos', state='protected')
+        page = self.listing.list_files_page(9, directory='photos', state='protected')
         self.assertEqual(page['total'], 1)
-        self.assertEqual(self.catalog.list_files_page(9, search='ds_store', state='excluded')['total'], 1)
+        self.assertEqual(self.listing.list_files_page(9, search='ds_store', state='excluded')['total'], 1)
         with patch('app.routes.browse.vault_local_access', return_value=VaultLocalAccess(True, True, None, 'ok')):
             payload = stats({'id': 9, 'source_root': '/source'})
         self.assertEqual(payload['states'], expected)
@@ -237,8 +238,8 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         self.seed('waiting')
         aggregates.mark_directory_dirty(self.connection, 9, 'photos')
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
-        self.assertEqual(self.catalog.summary(9)['protection_state'], 'pending')
-        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {**expected, 'pending': 1})
+        self.assertEqual(self.listing.summary(9)['protection_state'], 'pending')
+        self.assertEqual(self.listing.list_files_page(9)['items'][0]['state_counts'], {**expected, 'pending': 1})
 
     def test_unsupported_entries_have_their_own_state_and_do_not_make_the_vault_a_problem(self):
         # #524: symlinks are never followed and FIFOs cannot be archived; the
@@ -249,14 +250,14 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
         self.connection.commit()
         expected = {'protected': 1, 'unsupported': 2}
-        summary = self.catalog.summary(9)
+        summary = self.listing.summary(9)
         self.assertEqual(summary['states'], expected)
         self.assertEqual(summary['protection_state'], 'protected')
-        folder = self.catalog.list_files_page(9)['items'][0]
+        folder = self.listing.list_files_page(9)['items'][0]
         self.assertEqual(folder['state_counts'], expected)
         self.assertEqual(folder['state'], 'protected')
-        self.assertEqual(self.catalog.list_files_page(9, directory='photos', state='problem')['total'], 0)
-        page = self.catalog.list_files_page(9, directory='photos', state='unsupported')
+        self.assertEqual(self.listing.list_files_page(9, directory='photos', state='problem')['total'], 0)
+        page = self.listing.list_files_page(9, directory='photos', state='unsupported')
         self.assertEqual([item['type'] for item in page['items']], ['directory', 'file'])
         self.assertEqual(page['items'][1]['state'], 'unsupported')
         self.assertFalse(page['items'][1]['upload_eligible'])
@@ -267,33 +268,33 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         # The dirty SQL rollup agrees with the streamed rebuild.
         aggregates.mark_directory_dirty(self.connection, 9, 'photos')
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
-        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], expected)
+        self.assertEqual(self.listing.list_files_page(9)['items'][0]['state_counts'], expected)
 
     def test_only_excluded_files_are_reported_excluded_and_a_manual_upload_protects_them(self):
         file_id, _ = self.seed('._only', path='._only')
-        self.assertEqual(self.catalog.summary(9)['states'], {'excluded': 1})
-        self.assertEqual(self.catalog.summary(9)['protection_state'], 'excluded')
-        row = catalog_probe.list_file_rows(self.catalog, 9)[0]
+        self.assertEqual(self.listing.summary(9)['states'], {'excluded': 1})
+        self.assertEqual(self.listing.summary(9)['protection_state'], 'excluded')
+        row = catalog_probe.list_file_rows(self.connection, 9)[0]
         self.assertEqual(row['state'], 'excluded')
         # Manual operations stay explicit: the file remains uploadable...
         self.assertTrue(row['upload_eligible'])
         # ...and once verified in the cloud it is Protected like any other file.
-        fingerprint(self.catalog, 9, '._only', 'a' * 64)
-        protect(self.catalog, 9, '._only', 'a' * 64)
-        self.assertEqual(self.catalog.summary(9)['states'], {'protected': 1})
+        fingerprint(self.connection, 9, '._only', 'a' * 64)
+        protect(self.connection, 9, '._only', 'a' * 64)
+        self.assertEqual(self.listing.summary(9)['states'], {'protected': 1})
 
     def test_vault_exclusion_globs_define_excluded_and_removing_them_restores_pending(self):
         from app.services.operation_policies import OperationPolicy, set_policy
         self.seed('keep')
         self.seed('raw', path='photos/shot.raw')
-        self.assertEqual(self.catalog.summary(9)['states'], {'pending': 2})
+        self.assertEqual(self.listing.summary(9)['states'], {'pending': 2})
         set_policy(self.connection, 9, OperationPolicy(exclude_globs=('*.raw',)))
-        self.assertEqual(self.catalog.summary(9)['states'], {'pending': 1, 'excluded': 1})
-        self.assertEqual(self.catalog.list_files_page(9, directory='photos', state='excluded')['items'][0]['path'], 'photos/shot.raw')
+        self.assertEqual(self.listing.summary(9)['states'], {'pending': 1, 'excluded': 1})
+        self.assertEqual(self.listing.list_files_page(9, directory='photos', state='excluded')['items'][0]['path'], 'photos/shot.raw')
         set_policy(self.connection, 9, OperationPolicy(include_globs=('keep*',)))
-        self.assertEqual(self.catalog.summary(9)['states'], {'pending': 1, 'excluded': 1})
+        self.assertEqual(self.listing.summary(9)['states'], {'pending': 1, 'excluded': 1})
         set_policy(self.connection, 9, OperationPolicy())
-        self.assertEqual(self.catalog.summary(9)['states'], {'pending': 2})
+        self.assertEqual(self.listing.summary(9)['states'], {'pending': 2})
 
     def test_excluded_does_not_mask_problems_and_keeps_the_previous_cloud_copy_visible(self):
         failed_id, _ = self.seed('._failed', path='photos/._failed')
@@ -305,8 +306,8 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         self.seed('._stale', path='photos/._stale', archive=True, verified=True, match=False)
         # Availability unknown wins over the rule, yet the last known state is Excluded.
         self.seed('._unknown', path='photos/._unknown', archive=True, verified=True, availability='unknown', match=False)
-        self.assertEqual(self.catalog.summary(9)['states'], {'problem': 2, 'excluded': 1, 'unconfirmed': 1})
-        rows = {row['path']: row for row in catalog_probe.list_file_rows(self.catalog, 9)}
+        self.assertEqual(self.listing.summary(9)['states'], {'problem': 2, 'excluded': 1, 'unconfirmed': 1})
+        rows = {row['path']: row for row in catalog_probe.list_file_rows(self.connection, 9)}
         stale = rows['photos/._stale']
         self.assertEqual(stale['state'], 'excluded')
         self.assertTrue(stale['previous_snapshot_protected'])
@@ -334,10 +335,10 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
         self.connection.commit()
         expected = {'protected': 1, 'stopped': 2}
-        summary = self.catalog.summary(9)
+        summary = self.listing.summary(9)
         self.assertEqual(summary['states'], expected)
         self.assertEqual(summary['protection_state'], 'stopped')
-        rows = {row['path']: row for row in catalog_probe.list_file_rows(self.catalog, 9)}
+        rows = {row['path']: row for row in catalog_probe.list_file_rows(self.connection, 9)}
         stopped = rows['photos/sub/stopped.jpg']
         self.assertEqual((stopped['state'], stopped['last_known_state']), ('stopped', 'stopped'))
         # A manual upload stays possible.
@@ -349,36 +350,36 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         # Folders: the projection holds them as pending; the listing reads them live.
         for directory, name in (('', 'photos'), ('photos', 'photos/sub')):
             with self.subTest(directory=directory):
-                folder = next(item for item in self.catalog.list_files_page(9, directory=directory)['items']
+                folder = next(item for item in self.listing.list_files_page(9, directory=directory)['items']
                               if item['path'] == name)
                 self.assertEqual(folder['state_counts'], expected if name == 'photos' else {'stopped': 2})
                 self.assertEqual(folder['state'], 'stopped')
-                stopped_page = self.catalog.list_files_page(9, directory=directory, state='stopped')
+                stopped_page = self.listing.list_files_page(9, directory=directory, state='stopped')
                 self.assertEqual([item['path'] for item in stopped_page['items']], [name])
-                self.assertEqual(self.catalog.list_files_page(9, directory=directory, state='pending')['total'], 0)
-        page = self.catalog.list_files_page(9, directory='photos/sub', state='stopped')
+                self.assertEqual(self.listing.list_files_page(9, directory=directory, state='pending')['total'], 0)
+        page = self.listing.list_files_page(9, directory='photos/sub', state='stopped')
         self.assertEqual(page['total'], 2)
-        self.assertEqual(self.catalog.list_files_page(9, search='.jpg', state='stopped')['total'], 2)
+        self.assertEqual(self.listing.list_files_page(9, search='.jpg', state='stopped')['total'], 2)
         # The dirty SQL rollup agrees with the streamed rebuild.
         aggregates.mark_directory_dirty(self.connection, 9, 'photos/sub')
         aggregates.mark_directory_dirty(self.connection, 9, 'photos')
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
-        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], expected)
+        self.assertEqual(self.listing.list_files_page(9)['items'][0]['state_counts'], expected)
 
         # A manual upload the Owner asks for runs: the File is pending again.
         manual = self.job(stopped_id, 'queued', at='2026-11-03T10:06:00+00:00')
-        self.assertEqual(self.catalog.summary(9)['states'], {'protected': 1, 'stopped': 1, 'pending': 1})
-        folder = self.catalog.list_files_page(9)['items'][0]
+        self.assertEqual(self.listing.summary(9)['states'], {'protected': 1, 'stopped': 1, 'pending': 1})
+        folder = self.listing.list_files_page(9)['items'][0]
         self.assertEqual(folder['state_counts'], {'protected': 1, 'stopped': 1, 'pending': 1})
         self.assertEqual(folder['state'], 'pending')
-        self.assertEqual(self.catalog.list_files_page(9, state='pending')['total'], 1)
+        self.assertEqual(self.listing.list_files_page(9, state='pending')['total'], 1)
         self.connection.execute("UPDATE jobs SET status='cancelled', message_key='job.upload_stopped', "
                                 "finished_at=requested_at WHERE id=%s", (manual,))
         # Changed content is observed after the stop: automatic upload resumes.
         self.local_copies.observe_local_copy(vault_id=9, path='photos/sub/stopped.jpg', file_type='regular',
                                         size=13, mtime_ns=2, observed_at='2026-11-03T10:10:00+00:00')
-        self.assertEqual(self.catalog.summary(9)['states'], {'protected': 1, 'stopped': 1, 'pending': 1})
-        states = {row['path']: row['state'] for row in catalog_probe.list_file_rows(self.catalog, 9)}
+        self.assertEqual(self.listing.summary(9)['states'], {'protected': 1, 'stopped': 1, 'pending': 1})
+        states = {row['path']: row['state'] for row in catalog_probe.list_file_rows(self.connection, 9)}
         self.assertEqual(states['photos/sub/stopped.jpg'], 'pending')
         self.assertEqual(states['photos/sub/auto.jpg'], 'stopped')
 
@@ -396,12 +397,12 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         # An excluded path stays excluded even when its upload was stopped.
         noise, _ = self.seed('._noise', path='photos/._noise')
         self.job(noise, 'cancelled', key='job.upload_stopped')
-        states = {row['path']: row['state'] for row in catalog_probe.list_file_rows(self.catalog, 9)}
+        states = {row['path']: row['state'] for row in catalog_probe.list_file_rows(self.connection, 9)}
         self.assertEqual(states, {
             'photos/failed_auto.jpg': 'problem', 'photos/failed_manual.jpg': 'problem',
             'photos/removed.jpg': 'pending', 'photos/old.jpg': 'pending', 'photos/._noise': 'excluded',
         })
-        self.assertEqual(self.catalog.summary(9)['states'], {'problem': 2, 'pending': 2, 'excluded': 1})
+        self.assertEqual(self.listing.summary(9)['states'], {'problem': 2, 'pending': 2, 'excluded': 1})
 
     def test_a_stored_unsupported_glob_cannot_break_classification_or_rebuilds(self):
         # Saved before the glob was validated (or by hand): it must never reach
@@ -411,12 +412,12 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         self.connection.execute(
             "INSERT INTO vault_operation_policies(vault_id, auto_upload, stability_seconds, include_globs_json, exclude_globs_json) "
             "VALUES (9, TRUE, 300, '[]', %s)", (json.dumps(["[z-a]*", "a\u0000b", "[a-z[:digit:]]*", "*a" * 6500 + "*"]),))
-        self.assertEqual(self.catalog.summary(9)['states'], {'pending': 1, 'excluded': 1})
+        self.assertEqual(self.listing.summary(9)['states'], {'pending': 1, 'excluded': 1})
         aggregates.rebuild_vault_directory_aggregates(self.connection, 9)
         aggregates.mark_directory_dirty(self.connection, 9, 'photos')
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
-        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'pending': 1, 'excluded': 1})
-        self.assertEqual(self.catalog.list_files_page(9, directory='photos', state='excluded')['total'], 1)
+        self.assertEqual(self.listing.list_files_page(9)['items'][0]['state_counts'], {'pending': 1, 'excluded': 1})
+        self.assertEqual(self.listing.list_files_page(9, directory='photos', state='excluded')['total'], 1)
 
     def test_global_maintenance_skips_a_failing_vault_and_keeps_its_marks(self):
         seed_vault(self.connection, id=10, source_root='/other', name='Other')
@@ -488,10 +489,10 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         self.connection.commit()
         self.assertTrue(set_job(job, 'failed'))
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
-        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'problem': 1})
+        self.assertEqual(self.listing.list_files_page(9)['items'][0]['state_counts'], {'problem': 1})
         JobAdmission(self.connection).queue_jobs(vault_id=9, path='photos/failed.jpg', action='upload', requested_at=T, group_id=str(uuid.uuid4()), is_directory=False)
         aggregates.flush_directory_aggregates(self.connection, vault_id=9)
-        self.assertEqual(self.catalog.list_files_page(9)['items'][0]['state_counts'], {'pending': 1})
+        self.assertEqual(self.listing.list_files_page(9)['items'][0]['state_counts'], {'pending': 1})
 
     def test_failed_upload_mismatch_conflict_and_unverified_are_not_protected(self):
         failed_id, _ = self.seed('failed')
@@ -503,7 +504,7 @@ class ProtectionStatePostgresTests(ProtectionStateFixture):
         self.local_copies.block_reconciliation(blocked_id, reason='proof_mismatch', at=T)
         self.seed('unverified', archive=True)
         self.seed('missing-local', archive=True, verified=True, availability='missing')
-        states = {row['path']: row for row in catalog_probe.list_file_rows(self.catalog, 9)}
+        states = {row['path']: row for row in catalog_probe.list_file_rows(self.connection, 9)}
         for name in ('failed', 'conflict', 'mismatch', 'missing-local'):
             self.assertEqual(states[f'photos/{name}.jpg']['state'], 'problem')
             self.assertFalse(states[f'photos/{name}.jpg']['cleanup_eligible'])

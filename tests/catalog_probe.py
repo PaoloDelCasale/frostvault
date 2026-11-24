@@ -1,7 +1,7 @@
 """Catalog lookups that only tests need (#791).
 
 Production reads Vault Files through the browse, target and worker queries of
-``ArchiveCatalog``. Tests also need to look at one file's whole explicit state,
+``FileListing`` and ``ArchiveVersions``. Tests also need to look at one file's whole explicit state,
 at its Path History and at an unpaged listing; those reads live here so the
 catalog's interface shows production callers only.
 """
@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from app.catalog import ArchiveCatalog
 from app.services.catalog_shared import digest_hex, id_text
 from app.services.file_listing import FileListing
 from app.services.protection_states import VISIBLE_SQL
@@ -99,8 +98,8 @@ def _file_dict(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def get_file(catalog: ArchiveCatalog, vault_file_id: str, *, vault_id: int) -> dict[str, Any] | None:
-    row = catalog.connection.execute(
+def get_file(connection: Any, vault_file_id: str, *, vault_id: int) -> dict[str, Any] | None:
+    row = connection.execute(
         f"SELECT {_FILE_COLUMNS_SQL} FROM files f {_FILE_JOINS_SQL} "
         "WHERE f.id=%s AND f.vault_id=%s",
         (vault_file_id, vault_id),
@@ -108,8 +107,8 @@ def get_file(catalog: ArchiveCatalog, vault_file_id: str, *, vault_id: int) -> d
     return None if row is None else _file_dict(row)
 
 
-def get_file_by_path(catalog: ArchiveCatalog, vault_id: int, path: str) -> dict[str, Any] | None:
-    row = catalog.connection.execute(
+def get_file_by_path(connection: Any, vault_id: int, path: str) -> dict[str, Any] | None:
+    row = connection.execute(
         f"SELECT {_FILE_COLUMNS_SQL} FROM files f {_FILE_JOINS_SQL} "
         "WHERE f.vault_id=%s AND f.path=%s",
         (vault_id, path),
@@ -118,10 +117,10 @@ def get_file_by_path(catalog: ArchiveCatalog, vault_id: int, path: str) -> dict[
 
 
 def list_path_history(
-    catalog: ArchiveCatalog, vault_file_id: str, *, vault_id: int
+    connection: Any, vault_file_id: str, *, vault_id: int
 ) -> list[dict[str, Any]]:
     """Every path of the file in order: closed mappings, then the current one."""
-    rows = catalog.connection.execute(
+    rows = connection.execute(
         """
         SELECT path, valid_from, valid_to, 0 AS rank, id
         FROM file_path_history
@@ -141,7 +140,7 @@ def list_path_history(
 
 
 def list_file_rows(
-    catalog: ArchiveCatalog,
+    connection: Any,
     vault_id: int,
     *,
     search: str = "",
@@ -157,8 +156,8 @@ def list_file_rows(
         clauses.append("starts_with(f.path, %s)")
         params.append(f"{path_prefix}/")
     clauses.append(VISIBLE_SQL)
-    listing = FileListing(catalog.connection)
-    rows = catalog.connection.execute(
+    listing = FileListing(connection)
+    rows = connection.execute(
         listing.file_row_select_sql(clauses, vault_id) + " ORDER BY lower(f.path), f.path", params,
     ).fetchall()
     return listing.materialize_file_items(vault_id, rows, name_from_path=True)

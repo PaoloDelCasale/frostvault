@@ -31,7 +31,8 @@ from watchfiles import Change
 from .services.watch_process import awatch
 
 from .config import is_placeholder, settings
-from .catalog import ArchiveCatalog
+from .services.archive_versions import ArchiveVersions
+from .services.file_renames import FileRenames
 from .database import db
 from .services import audit_failures, source_layout
 from .services.upload_pipeline import UploadJournalHeld
@@ -1288,7 +1289,7 @@ def scan_cloud(
                     [entry[2] for entry in batch], int(vault["id"]),
                 ),
             ).fetchall()
-            ArchiveCatalog(connection).mark_archive_versions_listed(
+            ArchiveVersions(connection).mark_archive_versions_listed(
                 [str(row["id"]) for row in known], scan_id=scan_id,
             )
         count += len(known)
@@ -1311,7 +1312,7 @@ def scan_cloud(
     # prior catalog rows disappeared. Fail closed by retaining availability.
     if not invalid_keys and _cloud_scan_still_current(vault, scan_id):
         with db() as connection:
-            newly_missing = ArchiveCatalog(
+            newly_missing = ArchiveVersions(
                 connection
             ).mark_unseen_archive_versions_missing(
                 vault_id=vault["id"],
@@ -1440,10 +1441,10 @@ def _reconcile_restored_cloud(
         version_id = str(item["VersionId"])
         size = int(item.get("Size") or 0)
         with db() as connection:
-            catalog = ArchiveCatalog(connection)
+            versions = ArchiveVersions(connection)
             row = files.get(path)
             if row is None:
-                file_id = catalog.adopt_cloud_path(vault_id, path, at=scan_id)
+                file_id = versions.adopt_cloud_path(vault_id, path, at=scan_id)
                 replacing = None
             else:
                 file_id = str(row["id"])
@@ -1452,17 +1453,17 @@ def _reconcile_restored_cloud(
                 archive_version_id = pending_version
             else:
                 if replacing is not None:
-                    catalog.abandon_replacement(
+                    versions.abandon_replacement(
                         file_id, archive_version_id=str(replacing),
                     )
                 # Written when S3 says, not now: its Retention Lock estimate
                 # and Minimum Storage Duration start then (#743, #749).
-                archive_version_id = catalog.begin_replacement(
+                archive_version_id = versions.begin_replacement(
                     file_id, object_key=str(item["Key"]), provider_version_id=version_id,
                     size=size, storage_class=storage_class,
                     created_at=item.get("LastModified"), class_entry_recorded=False,
                 )
-            catalog.record_verification_evidence(
+            versions.record_verification_evidence(
                 archive_version_id, method="read_back", fallback=None, egress_bytes=size,
             )
         digest = hashlib.sha256()
@@ -1482,18 +1483,18 @@ def _reconcile_restored_cloud(
             if close is not None:
                 close()
         with db() as connection:
-            catalog = ArchiveCatalog(connection)
+            versions = ArchiveVersions(connection)
             if read != size:
-                catalog.abandon_replacement(
+                versions.abandon_replacement(
                     file_id, archive_version_id=archive_version_id,
                     mismatch=True, checked_at=now_iso(),
                 )
                 raise RuntimeError("Cloud version size differs from its listing")
-            catalog.promote_replacement(
+            versions.promote_replacement(
                 file_id, archive_version_id=archive_version_id,
                 plaintext_sha256=digest.digest(), verified_at=now_iso(),
             )
-            catalog.mark_archive_versions_listed([archive_version_id], scan_id=scan_id)
+            versions.mark_archive_versions_listed([archive_version_id], scan_id=scan_id)
             recovery_kit.remember_cloud_update(connection, file_id)
     if not _cloud_scan_still_current(vault, scan_id):
         raise RuntimeError("Reconnect scan superseded")
@@ -1502,7 +1503,7 @@ def _reconcile_restored_cloud(
             retention_lock_service.adopt_orphans(
                 connection, vault_id=vault_id, days=vault.get("s3_retention_lock_days"),
                 prefix=prefix, versions=entries, marker_keys=marker_keys or set())
-        closed = ArchiveCatalog(connection).close_absent_superseded_versions(
+        closed = ArchiveVersions(connection).close_absent_superseded_versions(
             vault_id=vault_id, scan_id=scan_id, provider=provider_identity(client),
             source_root=str(vault["source_root"]), root_identity=vault.get("root_identity"),
         )
@@ -2731,7 +2732,7 @@ def _apply_auto_renames(
     """
     summary = {"hashed": 0, "confirmed": 0, "queued": 0}
     confirmed_paths: list[str] = []
-    catalog = ArchiveCatalog(connection)
+    renames = FileRenames(connection)
     local_copies = LocalCopies(connection)
     from .services.catalog_incidents import settle_cloud_only_copies
     if hash_missing:
@@ -2766,10 +2767,10 @@ def _apply_auto_renames(
         # An unreadable subtree prevents proving a unique rename, but must
         # never bypass the hold/notification for a cloud-only conflict.
         return summary
-    candidates = catalog.list_rename_candidates(vault_id=vault["id"])
+    candidates = renames.list_rename_candidates(vault_id=vault["id"])
     changed_at = now_iso()
     for candidate in candidates:
-        catalog.confirm_file_rename(
+        renames.confirm_file_rename(
             vault_file_id=candidate["missing_vault_file_id"],
             new_path=candidate["new_path"],
             changed_at=changed_at,
@@ -2844,7 +2845,7 @@ def _identify_new_local_copies(
     (ADR-0001). Automatic admission skips the latter until this decided it, so
     an upload never races ahead of the rename.
     """
-    from .catalog import VaultFileNotFound
+    from .services.catalog_shared import VaultFileNotFound
     from .services.catalog_incidents import settle_cloud_only_copies
 
     vault_id = int(vault["id"])
@@ -2884,7 +2885,7 @@ def _identify_new_local_copies(
     with db() as connection:
         if "root_identity" in vault:
             _current_verified_scan_row(connection, vault)
-        catalog = ArchiveCatalog(connection)
+        renames = FileRenames(connection)
         local_copies = LocalCopies(connection)
         published: list[dict[str, Any]] = []
         for update in updates:
@@ -2908,11 +2909,11 @@ def _identify_new_local_copies(
         changed_at = now_iso()
         for digest in sorted({update["digest"] for update in published if not update["held"]}):
             # The same unique, in-window, history-free match a scan accepts.
-            for candidate in catalog.list_rename_candidates(vault_id, digest=digest):
+            for candidate in renames.list_rename_candidates(vault_id, digest=digest):
                 if candidate["new_vault_file_id"] not in new_ids:
                     continue
                 try:
-                    catalog.confirm_file_rename(
+                    renames.confirm_file_rename(
                         vault_file_id=candidate["missing_vault_file_id"],
                         new_path=candidate["new_path"],
                         changed_at=changed_at,
@@ -3418,7 +3419,7 @@ def _reconcile_interrupted_job(connection: Any, job: dict[str, Any], *, timestam
             job["source_root"], job["path"]
         )
         _remove_abandoned_restore_files(target_path)
-        recovery_target = ArchiveCatalog(connection).get_job_target(
+        recovery_target = ArchiveVersions(connection).get_job_target(
             int(job["id"])
         )
         outcome = _reconcile_recover_job(
@@ -3728,7 +3729,7 @@ def _automatic_upload_state(job: dict[str, Any]) -> str:
     observation, or a newer one): it is no authority for this Job (#689).
     """
     with owned_connection(db()) as connection:
-        local = ArchiveCatalog(connection).get_job_target(job["id"])
+        local = ArchiveVersions(connection).get_job_target(job["id"])
         if _upload_owes_cloud_work(connection, local, job["id"]):
             return UPLOAD_READY
         admitted = local.get("job_admitted_generation") if local else None
@@ -3803,7 +3804,7 @@ def _upload_source_confirmed_removed(job: dict[str, Any]) -> bool:
     (ADR-0025).
     """
     with owned_connection(db()) as connection:
-        target = ArchiveCatalog(connection).get_job_target(job["id"])
+        target = ArchiveVersions(connection).get_job_target(job["id"])
         if _upload_owes_cloud_work(connection, target, job["id"]):
             return False
         vault = connection.execute("SELECT * FROM vaults WHERE id=%s", (job["vault_id"],)).fetchone()
@@ -3853,7 +3854,7 @@ def _upload_key(job: dict[str, Any]) -> str:
 
 @retry_database_unit
 def _upload_catalog_unit(
-    job: dict[str, Any], mutation: Callable[[ArchiveCatalog], Any], *,
+    job: dict[str, Any], mutation: Callable[[ArchiveVersions], Any], *,
     shared: bool = False,
 ) -> Any:
     """Replay DB work only, never provider I/O.
@@ -3877,7 +3878,7 @@ def _upload_catalog_unit(
                 connection, job, key=_upload_key(job), provider="db-fence", shared=shared,
             ):
                 ensure_job_claim_owned_in_transaction(connection, job, "Upload claim was lost")
-                return mutation(ArchiveCatalog(connection))
+                return mutation(ArchiveVersions(connection))
 
 
 def cleanup_superseded_upload(
@@ -4021,7 +4022,7 @@ class _WorkerAdapter:
     def now_iso(self) -> str:
         return now_iso()
 
-    def catalog_unit(self, job: dict[str, Any], mutation: Callable[[ArchiveCatalog], Any], *,
+    def catalog_unit(self, job: dict[str, Any], mutation: Callable[[ArchiveVersions], Any], *,
                      shared: bool = False) -> Any:
         return _upload_catalog_unit(job, mutation, shared=shared)
 
@@ -4214,7 +4215,7 @@ def _checked_local_release_target(
     if connection is None:
         with db() as connection:
             return _checked_local_release_target(job, connection=connection)
-    target = ArchiveCatalog(connection).get_job_target(job["id"])
+    target = ArchiveVersions(connection).get_job_target(job["id"])
     if not local_release_is_confirmed(
         connection, int(job["vault_id"]), job["path"]
     ):
@@ -4449,7 +4450,7 @@ def _request_copy_restore(job: dict[str, Any], exc: Any) -> None:
         state, expiry = "restoring", None
     with db() as connection:
         ensure_job_claim_owned_in_transaction(connection, job, "Storage class claim was lost")
-        ArchiveCatalog(connection).update_restore_state(
+        ArchiveVersions(connection).update_restore_state(
             str(current["id"]), state=state, expiry=expiry, checked_at=now_iso(),
             storage_class=exc.storage_class)
     set_job(job["id"], "restoring", message_key="job.storage_class_restoring",
@@ -4656,7 +4657,7 @@ def process_recover(job: dict[str, Any]) -> None:
     ensure_job_active(job["id"], "Recovery stopped")
     validate_cloud_vault(job)
     with db() as connection:
-        target = _recovery_target(ArchiveCatalog(connection).get_job_target(job["id"]))
+        target = _recovery_target(ArchiveVersions(connection).get_job_target(job["id"]))
     if target["local_presence"] == "present":
         raise RuntimeError("A local copy is already present")
 
@@ -4720,7 +4721,7 @@ def process_recover(job: dict[str, Any]) -> None:
                 job,
                 "Recovery claim was lost",
             )
-            ArchiveCatalog(connection).update_restore_state(
+            ArchiveVersions(connection).update_restore_state(
                 archive_version_id,
                 state=restore_state if restore_state != "not_requested" else None,
                 expiry=restore_expiry,
@@ -4772,7 +4773,7 @@ def process_recover(job: dict[str, Any]) -> None:
                 raise RuntimeError("Recovered plaintext changed before publication")
             with db() as connection:
                 ensure_job_claim_owned_in_transaction(connection, job, "Recovery claim was lost")
-                live = _recovery_target(ArchiveCatalog(connection).get_job_target(job["id"]))
+                live = _recovery_target(ArchiveVersions(connection).get_job_target(job["id"]))
             if (str(live["archive_version_id"]), live["version_sha256"]) != (
                 archive_version_id, expected_digest,
             ) or live["local_presence"] == "present":
@@ -4799,7 +4800,7 @@ def process_recover(job: dict[str, Any]) -> None:
             recovered_at = now_iso()
             with db() as connection:
                 ensure_job_claim_owned_in_transaction(connection, job, "Recovery claim was lost")
-                catalog = ArchiveCatalog(connection)
+                versions = ArchiveVersions(connection)
                 published = LocalCopies(connection).publish_recovered_local_copy(
                     str(target["file_id"]),
                     generation=generation,
@@ -4814,7 +4815,7 @@ def process_recover(job: dict[str, Any]) -> None:
                         "Recovered Local Copy was preserved; a newer observation of the path won"
                     )
                 if needs_restore or target.get("restore_state"):
-                    catalog.update_restore_state(
+                    versions.update_restore_state(
                         archive_version_id,
                         state="available" if needs_restore else None,
                         expiry=restore_expiry if needs_restore else None,
