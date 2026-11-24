@@ -4,10 +4,10 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from typing import Any
 from unittest.mock import Mock, patch
 
 import httpx
-from fastapi.testclient import TestClient
 from httpx import ASGITransport
 from watchfiles import Change
 
@@ -25,7 +25,7 @@ from app.services.catalog_event_stream import (
 from app.services.catalog_events import CatalogEventStore, record_catalog_revision
 from app.sessions import revoke_session, set_session_vault
 from app.storage import apply_filesystem_changes
-from tests.fixtures import FrostVaultTestCase, seed_vault, sign_in
+from tests.fixtures import FrostVaultTestCase, http_client, seed_vault, sign_in
 from tests import catalog_event_probe
 
 
@@ -115,9 +115,7 @@ class CatalogEventsHttpTests(FrostVaultTestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-        self.client = TestClient(
-            app=main.app, client=("127.0.0.1", 50000), follow_redirects=False
-        )
+        self.client = http_client(follow_redirects=False)
         self.addCleanup(self.client.close)
 
         self.owner_token = self._owner_session(vault_id=1)
@@ -156,10 +154,8 @@ class CatalogEventsHttpTests(FrostVaultTestCase):
             ).fetchone()
         return str(row["id"])
 
-    def _client_for(self, token: str) -> TestClient:
-        client = TestClient(
-            app=main.app, client=("127.0.0.1", 50000), follow_redirects=False
-        )
+    def _client_for(self, token: str) -> Any:
+        client = http_client(follow_redirects=False)
         client.cookies.set(self.settings.session_cookie_name, token)
         return client
 

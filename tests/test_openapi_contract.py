@@ -82,8 +82,9 @@ class OpenApiResponseContractTests(unittest.TestCase):
             ],
         )
         self.assertIn({"type": "null"}, schemas["AuthMethod"]["anyOf"])
-        self.assertNotEqual(
-            schemas["ArchiveVersionItem"]["additionalProperties"], False
+        self.assertEqual(
+            schemas["JobRecord"]["properties"]["remediation"]["anyOf"],
+            [{"$ref": "#/components/schemas/UploadRemediation"}, {"type": "null"}],
         )
 
     def test_raw_download_metrics_and_catalog_sse_are_explicit_openapi_exceptions(
@@ -169,6 +170,25 @@ class OpenApiResponseContractTests(unittest.TestCase):
         self.assertLessEqual({"vault", "stopped_vault"}, set(schemas["MeResponse"]["required"]))
         self.assertEqual(set(schemas["MeStoppedVault"]["required"]),
                          set(schemas["MeStoppedVault"]["properties"]))
+
+    def test_job_answers_are_documented_from_their_models(self) -> None:
+        from app.routes import jobs
+        document = app.openapi()
+        schemas = document["components"]["schemas"]
+        for route in jobs.router.routes:
+            contract = fixtures._response_contract(route)
+            if contract is None:
+                continue
+            name = contract.__name__
+            with self.subTest(path=route.path):
+                [method] = [verb.lower() for verb in route.methods]
+                answer = document["paths"][route.path][method]["responses"][str(route.status_code or 200)]
+                self.assertEqual(answer["content"]["application/json"]["schema"],
+                                 {"$ref": f"#/components/schemas/{name}"})
+                self.assertIs(schemas[name]["additionalProperties"], False)
+                self.assertNotIn(name, documented_schemas())
+        self.assertIs(schemas["ArchiveVersionItem"]["additionalProperties"], False)
+        self.assertNotIn("FileOperationResponse", documented_schemas())
 
     def test_admin_vault_schema_is_a_closed_non_secret_contract(self) -> None:
         vault = app.openapi()["components"]["schemas"]["GeneralVault"]
@@ -300,9 +320,7 @@ class OpenApiResponseContractTests(unittest.TestCase):
                 reachable.add(name)
                 pending.extend(references(components[name]))
         hand_written = documented_schemas()
-        # The frontend types the untyped answers of ``recover`` and
-        # ``free-space`` with it; it goes when those routes declare their model.
-        self.assertEqual(set(components) - reachable, {"FileOperationResponse"})
+        self.assertEqual(set(components) - reachable, set())
         # None is dead text under a Pydantic model of the same name.
         self.assertEqual(
             [name for name, schema in hand_written.items() if components[name] != schema], [])

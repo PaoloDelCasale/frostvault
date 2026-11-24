@@ -4,6 +4,7 @@ import type {
   BulkUploadAdmissionResponse,
   CloudDeletionPreview,
   CloudDeletionSettings,
+  CloudPurgeResponse,
   DuplicateCleanupStatus,
   DuplicateCleanupUpdate,
   ExcludedFolderListing,
@@ -17,7 +18,6 @@ import type {
   GlobPreviewResponse,
   JobCancelResponse,
   JobRecord,
-  JsonObjectResponse,
   JobsResponse,
   LifecycleProfileSelection,
   LifecycleResponse,
@@ -26,6 +26,7 @@ import type {
   MirrorCleanupUpdate,
   OperationPolicy,
   OperationPolicyGlobEdit,
+  RecoverApprovalResponse,
   RecoverEstimateResponse,
   RecoverRequest,
   RetentionLockStatus,
@@ -34,6 +35,7 @@ import type {
   StopProtectionRequest,
   StopProtectionStatus,
   UploadReconciliationResponse,
+  UploadResponse,
   VaultBilledCost,
   VaultBucketStatus,
   VaultCloudUsage,
@@ -72,7 +74,7 @@ export function vaultApi(vaultId: number) {
     details: (path: string) => get<ArchiveListItem>(owned(`files/detail?path=${encodeURIComponent(path)}`)),
     versions: (path: string) => get<FileVersionsResponse>(owned(`files/versions?path=${encodeURIComponent(path)}`)),
     fileJobs: (path: string, beforeId?: number) => get<FileJobHistoryResponse>(owned(`files/jobs?path=${encodeURIComponent(path)}${beforeId ? `&before_id=${beforeId}` : ""}`)),
-    replaceCloudOnlyConflict: (path: string) => send<JsonObjectResponse>("POST", owned("files/cloud-only-conflict/replace"), { path }),
+    replaceCloudOnlyConflict: (path: string) => send<FileOperationResponse>("POST", owned("files/cloud-only-conflict/replace"), { path }),
 
     policy: () => get<OperationPolicy>(owned("operation-policy")),
     updatePolicy: (policy: Partial<OperationPolicy>) => send<OperationPolicy>("PUT", owned("operation-policy"), policy),
@@ -105,14 +107,14 @@ export function vaultApi(vaultId: number) {
     /** Cancel one group of Jobs of `action`, e.g. a pending Delayed Cloud Deletion before it starts. */
     cancelJobGroup: (groupId: string | number, action: string) => send<JobCancelResponse>("POST", owned("jobs/cancel"), { group_id: groupId, action }),
     /** Restore Approval of one held recover request (#533). */
-    approveRecover: (groupId: string) => send<JsonObjectResponse>("POST", owned("recover/approve"), { group_id: groupId }),
+    approveRecover: (groupId: string) => send<RecoverApprovalResponse>("POST", owned("recover/approve"), { group_id: groupId }),
 
     estimate: (payload: unknown) => send<RecoverEstimateResponse>("POST", owned("recover/estimate"), payload),
     action: (action: "recover" | "free-space", payload: RecoverRequest | FileAction) => send<FileOperationResponse>("POST", owned(action), payload),
 
     /** Upload one item, or the whole Vault with `path: ""`; `request_id` makes a retry idempotent. */
     upload: (payload: { path: string; is_directory?: boolean; request_id?: string }) =>
-      send<{ admission?: BulkUploadAdmissionResponse }>("POST", owned("upload"), payload),
+      send<UploadResponse>("POST", owned("upload"), payload),
     uploadAdmission: (groupId: string) => get<BulkUploadAdmissionResponse>(owned(`upload/admissions/${groupId}`)),
     reconcileUpload: (payload: { path: string; remediation_id?: string }) => send<UploadReconciliationResponse>("POST", owned("upload/reconcile"), payload),
     /** Cancels every Upload of the Vault still waiting to start. */
@@ -121,7 +123,7 @@ export function vaultApi(vaultId: number) {
 
     cloudDeletionSettings: () => get<CloudDeletionSettings>("/api/cloud-deletion"),
     previewCloudDeletion: (payload: Record<string, unknown>) => send<CloudDeletionPreview>("POST", owned("cloud-deletion/preview"), payload),
-    cloudPurge: (payload: Record<string, unknown>) => send<JsonObjectResponse>("POST", owned("cloud-purge"), payload),
+    cloudPurge: (payload: Record<string, unknown>) => send<CloudPurgeResponse>("POST", owned("cloud-purge"), payload),
 
     bucket: () => get<VaultBucketStatus>(owned("bucket")),
     retryBucket: () => send<VaultBucketStatus>("POST", owned("bucket/retry")),
