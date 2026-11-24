@@ -19,6 +19,7 @@ from app import storage
 from app.services.archive_versions import ArchiveVersions
 from app.services.local_copies import LocalCopies
 from app.services import directory_aggregates as aggregates
+from app.services import vault_locks
 from tests.stress_profile import stress_file_count
 from tests.upload_support import claimed_job_row, job_row, queue_upload
 from tests import catalog_probe
@@ -1083,7 +1084,7 @@ class AggregateDeadlockTests(FrostVaultTestCase):
             rollup = original(connection, vault_id, directory)
             # Committed after the read, before the flush writes and locks.
             with self.database.connect() as writer:
-                aggregates.lock_vaults_in_order(writer, [2])
+                vault_locks.lock_vaults_in_order(writer, [2])
                 writer.execute("UPDATE files SET local_size=local_size+1")
                 aggregates.mark_path_dirty(writer, 2, "0/a.bin")
             return rollup

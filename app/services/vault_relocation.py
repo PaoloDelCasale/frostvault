@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..errors import DomainError
-from . import bulk_upload_admission, source_directories, source_layout, source_identity, write_access
+from . import bulk_upload_admission, source_directories, source_layout, source_identity, vault_locks, write_access
 from .directory_aggregates import request_vault_rebuild
 from .job_queue import TERMINAL_JOB_STATUSES
 from .audit_events import record_audit_event
@@ -360,9 +360,9 @@ def _upgrade_legacy_root_identity(row: dict[str, Any]) -> str:
                 return "unmatched"
         except VaultRelocationError:
             return "deferred"
-        before = connection.execute(
-            "SELECT * FROM vaults WHERE id=%s FOR NO KEY UPDATE", (vault_id,),
-        ).fetchone()
+        before = vault_locks.lock_vault(
+            connection, vault_id, vault_locks.NO_KEY_UPDATE, columns="*",
+        )
         # The replaced value joins the retired ones: immutable proofs pinned
         # with it (or with an older one) keep naming this root.
         updated = connection.execute(
@@ -670,9 +670,9 @@ def _reconnect_vault_root(
     source_directories.lock_vault_root_allocation(connection)
     # The admission fence of lock_vault, but a Vault already waiting for its
     # Reconnect (a failed earlier attempt, a metadata restore) may reconnect.
-    vault = connection.execute(
-        "SELECT * FROM vaults WHERE id=%s FOR NO KEY UPDATE", (vault_id,),
-    ).fetchone()
+    vault = vault_locks.lock_vault(
+        connection, vault_id, vault_locks.NO_KEY_UPDATE, columns="*",
+    )
     if vault is None:
         raise VaultRelocationError("not_found")
     if vault["lifecycle"] not in {"active", "reconnect_required"} or vault.get("root_released_at"):

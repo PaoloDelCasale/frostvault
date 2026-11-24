@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Sequence
 
 from ..i18n import DEFAULT_LOCALE, translate
+from . import vault_locks
 
 APPROVED_MESSAGE = (
     "High-impact restore approved; RestoreObject cannot be cancelled after AWS accepts it"
@@ -145,6 +146,6 @@ def sweep_expired(connection: Any, *, now: str) -> int:
     ).fetchall()
     count = 0
     for vault in vaults:
-        connection.execute("SELECT id FROM vaults WHERE id=%s FOR UPDATE", (vault["vault_id"],))
+        vault_locks.lock_vault(connection, vault["vault_id"], vault_locks.UPDATE)
         count += expire_pending(connection, vault_id=vault["vault_id"], now=now)
     return count

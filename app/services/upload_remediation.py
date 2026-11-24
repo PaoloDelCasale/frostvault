@@ -38,6 +38,7 @@ from time import monotonic
 from typing import Any
 
 from . import root_pins
+from . import vault_locks
 from . import upload_provenance as provenance
 from .job_queue import OPEN_JOB_SQL, open_job_sql
 from .upload_retry import UPLOAD_RETRY_MAX_ATTEMPTS
@@ -491,8 +492,7 @@ def _refusal_reason(connection: Any, episode_id: Any) -> str:
 
 
 def _lock_vault(connection: Any, vault_id: int) -> dict[str, Any]:
-    vault = connection.execute("SELECT * FROM vaults WHERE id=%s FOR NO KEY UPDATE",
-                               (vault_id,)).fetchone()
+    vault = vault_locks.lock_vault(connection, vault_id, vault_locks.NO_KEY_UPDATE, columns="*")
     if vault is None or vault["lifecycle"] != "active":
         raise provenance.UploadBlocked("vault_suspended")
     return vault
@@ -616,9 +616,9 @@ def sweep(db: Any, stamp: Any = None) -> int:
             with db() as connection:
                 connection.execute("SET LOCAL lock_timeout='100ms'")
                 connection.execute("SET LOCAL statement_timeout='2s'")
-                vault = connection.execute(
-                    "SELECT * FROM vaults WHERE id=%s FOR NO KEY UPDATE SKIP LOCKED",
-                    (candidate["id"],)).fetchone()
+                vault = vault_locks.lock_vault(
+                    connection, candidate["id"], vault_locks.NO_KEY_UPDATE,
+                    columns="*", skip_locked=True)
                 if not vault:
                     continue
                 rows = connection.execute(

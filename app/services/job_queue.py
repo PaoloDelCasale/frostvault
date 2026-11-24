@@ -37,6 +37,7 @@ from typing import Any, Callable, Mapping, Sequence
 from ..i18n import DEFAULT_LOCALE, format_message_params, translate
 from . import metrics as metrics_service
 from . import notifications as notification_service
+from . import vault_locks
 from .database_retry import owned_connection, retry_database_unit
 from .shutdown import OperationCancelled, shutdown_state
 from .upload_retry import upload_retry_delay_seconds
@@ -1743,7 +1744,7 @@ class QueueRunner:
         held = status in JOB_LEASE_HELD_STATUSES
         previous_status = None
         action = None
-        vault_lock = "NO KEY UPDATE"
+        vault_lock = vault_locks.NO_KEY_UPDATE
         current = None
         if (held and claim_token
                 and remediation_suspension is None and remediation_reason is None):
@@ -1755,12 +1756,9 @@ class QueueRunner:
         if unbound_held:
             # ADR-0031: a held step changes no admission predicate. Keep Vault-first
             # order before locking Jobs or append-only aggregate dirty FK marks.
-            vault_lock = "KEY SHARE"
+            vault_lock = vault_locks.KEY_SHARE
         if not fenced_unit:
-            connection.execute(
-                f"SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR {vault_lock}",
-                (job_id,),
-            )
+            vault_locks.lock_job_vault(connection, job_id, vault_lock)
         if current is None:
             current = transition_subject(connection, job_id)
         if current is not None:
@@ -1856,7 +1854,7 @@ class QueueRunner:
             # Job to the unstarted set ('retrying') that cancel-pending and the
             # scheduler select, and moves a bound remediation episode; sharing
             # was not proven safe, and retries are rare.
-            connection.execute("SELECT id FROM vaults WHERE id=(SELECT vault_id FROM jobs WHERE id=%s) FOR NO KEY UPDATE", (job_id,))
+            vault_locks.lock_job_vault(connection, job_id, vault_locks.NO_KEY_UPDATE)
             current = connection.execute(
                 "SELECT action FROM jobs WHERE id=%s",
                 (job_id,),

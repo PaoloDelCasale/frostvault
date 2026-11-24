@@ -51,11 +51,11 @@ from .services.s3_preflight import check_bucket_readiness, failure_message_key, 
 from .services import cloud_preflight_gate
 from .services.catalog_audit import audit_vault_catalog
 from .services.directory_aggregates import (
-    lock_vaults_in_order,
     mark_path_dirty,
     process_directory_aggregate_maintenance,
     unit_dirty_marks,
 )
+from .services.vault_locks import lock_vaults_in_order, vault_lock_touch
 from .services.lifecycle_policies import sync_lifecycle_rules_for_bucket
 from .services import health as health_service
 from .services import metadata_backups as metadata_backup_service
@@ -4362,7 +4362,7 @@ def _process_free_space(job: dict[str, Any]) -> None:
             # Same lock order as admission: Vault, then Job. A concurrent policy
             # disable/extension or cancellation must win before this last check,
             # or wait until the already-authorized unlink has finished.
-            connection.execute("UPDATE vaults SET name=name WHERE id=%s", (job["vault_id"],))
+            vault_lock_touch(connection, job["vault_id"])
             ensure_job_claim_owned_in_transaction(connection, job, "Freeing local space claim was lost")
             fresh = _checked_local_release_target(job, connection=connection)
             if (

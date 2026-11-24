@@ -37,7 +37,6 @@ from .catalog_shared import (
     required_timestamp,
     revoke_deletion_consents,
     sha256_digest,
-    vault_lock_touch,
 )
 from .directory_aggregates import (
     mark_directory_dirty,
@@ -47,6 +46,7 @@ from .directory_aggregates import (
 )
 from .file_renames import awaiting_rename_analysis_sql
 from .protection_states import PROTECTED_SQL
+from .vault_locks import vault_lock_touch
 
 
 def _only_cloud_copy_sql(file_alias: str) -> str:

@@ -7,7 +7,7 @@ from typing import Any
 from ..database import transaction
 from ..errors import Conflict, NotFound
 from ..i18n import DEFAULT_LOCALE, translate
-from . import notifications
+from . import notifications, vault_locks
 
 _logger = logging.getLogger(__name__)
 
@@ -24,10 +24,9 @@ def set_paused(connection: Any, *, vault_id: int, paused: bool,
                locale: str = DEFAULT_LOCALE) -> dict[str, Any]:
     # FOR UPDATE conflicts with shared worker claims, without making every claim
     # or held progress step exclusive (ADR-0031/0033). Always Vault before Jobs.
-    vault = connection.execute(
-        "SELECT id, name, paused, lifecycle FROM vaults WHERE id=%s FOR UPDATE",
-        (vault_id,),
-    ).fetchone()
+    vault = vault_locks.lock_vault(
+        connection, vault_id, vault_locks.UPDATE, columns="id, name, paused, lifecycle",
+    )
     if vault is None:
         raise VaultNotFound("api.vault_not_found")
     # Stopping or tombstoned Vaults are not operational; a Vault waiting for
