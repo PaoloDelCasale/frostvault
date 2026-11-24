@@ -66,6 +66,7 @@ from .services import metrics as metrics_service
 # ``_verification_version_head`` are called only by ``_WorkerAdapter``, the
 # worker seam the Upload execution receives.
 from .services.s3 import (
+    ARCHIVE_RESTORE_REQUIRED,
     object_version_entries as _object_version_entries,
     verification_version_head as _verification_version_head,
     restore_header_state,
@@ -1433,7 +1434,7 @@ def _reconcile_restored_cloud(
         if not _cloud_scan_still_current(vault, scan_id):
             raise RuntimeError("Reconnect scan superseded")
         storage_class = str(item.get("StorageClass") or "STANDARD")
-        if storage_class in {"GLACIER", "DEEP_ARCHIVE"}:
+        if storage_class in ARCHIVE_RESTORE_REQUIRED:
             # Reading needs a cloud restore first; nothing is elected or
             # adopted without a proof, and the reconnect stays suspended.
             cold += 1

@@ -18,7 +18,7 @@ from .cost_estimates import estimate_storage_month, list_prices
 from .lifecycle_policies import load_vault_plan
 from .lifecycle_profiles import ALLOWED_TARGETS
 from . import s3
-from .s3 import restore_header_state
+from .s3 import restore_header_state, storage_class_requires_restore
 from .s3_copy import S3_SINGLE_COPY_MAX_BYTES
 from .job_queue import open_job_sql
 from .vault_paths import vault_object_prefix
@@ -48,7 +48,7 @@ def eligibility(row: dict[str, Any], target: str) -> str | None:
         return "unverified_or_unavailable"
     if target not in ALLOWED_TARGETS.get(current, ()):
         return "already_equal_or_colder"
-    if current in {"GLACIER", "DEEP_ARCHIVE"} and row.get("restore_state") != "available":
+    if storage_class_requires_restore(current) and row.get("restore_state") != "available":
         return "explicit_restore_required"
     return None
 
@@ -173,5 +173,5 @@ def check_source(target: str, head: dict[str, Any], current: dict[str, Any]) -> 
     observed = (head.get("StorageClass") or "STANDARD").upper()
     if target.upper() not in ALLOWED_TARGETS.get(observed, ()):
         raise MoveBlocked("api.vault_move.colder_only", storage_class=observed)
-    if observed in {"GLACIER", "DEEP_ARCHIVE"} and restore_header_state(head.get("Restore"))[0] != "available":
+    if storage_class_requires_restore(observed) and restore_header_state(head.get("Restore"))[0] != "available":
         raise MoveBlocked("api.vault_move.restore_first")
