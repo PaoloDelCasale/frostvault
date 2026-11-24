@@ -18,7 +18,7 @@ const preview = (overrides: Partial<CloudDeletionPreview> = {}): CloudDeletionPr
   eligible_count: 2163, eligible_bytes: 6_600_000_000, duplicate_count: 2149, duplicate_bytes: 6_270_000_000,
   no_local_copy_count: 14, no_local_copy_bytes: 330_000_000,
   skipped: { present_locally: 137496, pending_work: 0, pending_cleanup: 0, conflict: 0, not_verified: 0, no_exact_version: 0 },
-  skipped_count: 137496, ...overrides,
+  skipped_count: 137496, minimum_storage: null, retention_lock: null, ...overrides,
 });
 
 const folder = { type: "directory", name: "library", path: "library", state: "protected", item_count: 139659, total_size: 1, state_counts: { protected: 137496, cloud_only: 2163 }, available_actions: { upload: 0, recover: 2163, "free-space": 0, "cloud-purge": 2163 } };
@@ -160,7 +160,7 @@ describe("«Delete from cloud?» summary in Italian and English (#725)", () => {
       unmount();
       // «Only Cloud Duplicates» off: every eligible file, split into duplicates and only-in-cloud.
       render(<CloudPurgeDialog open onOpenChange={() => undefined} path={scope} vaultName="Immich" settings={null}
-        preview={preview({ duplicates_only: false, object_count: 1, duplicate_count: 1, eligible_count: 2, no_local_copy_count: 1, skipped: {} })}
+        preview={preview({ duplicates_only: false, object_count: 1, duplicate_count: 1, eligible_count: 2, no_local_copy_count: 1, skipped: { present_locally: 0, pending_work: 0, pending_cleanup: 0, conflict: 0, not_verified: 0, no_exact_version: 0 } })}
         t={tr} duplicatesOnly={false} onDuplicatesOnlyChange={() => undefined} onConfirm={() => undefined} />);
       expect(document.body.textContent).not.toMatch(/ui\./);
       expect(screen.getByTestId("cloud-purge-split")).toBeInTheDocument();

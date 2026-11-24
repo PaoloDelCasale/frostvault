@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, Path, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import MISSING, BaseModel, ConfigDict, Field, model_validator
 
-from ..api_models import JsonObjectResponse, response_model
+from ..api_models import passthrough
 from ..config import settings
 from ..i18n import DEFAULT_LOCALE, format_datetime, translate
 from ..database import db
@@ -38,6 +38,8 @@ from .deps import (
     require_recent_reauth,
     vault_in_path,
 )
+# Shared with the Vault's deletion and cleanup answers (ADR-0056).
+from .vaults import MinimumStorageDeletion, RetentionLockPreview
 
 
 router = APIRouter()
@@ -143,7 +145,323 @@ class CloudPurgeRequest(CloudDeletionPreviewRequest):
     fingerprint: str | None = Field(default=None, max_length=128)
 
 
-@router.get("/api/vaults/{vault_id}/jobs", response_model=response_model("JobsResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
+# -- Response models (ADR-0056) -------------------------------------------------
+#
+# A route's answer is declared with ``passthrough(Model)``: production neither
+# validates nor filters with it, the tests' HTTP client does. A field that is
+# not in every answer is ``MISSING`` by default, so the document says "optional"
+# without inventing a value. Every model is closed: the route or one service
+# function builds its keys from fixed column lists.
+
+type JobStatus = str
+type FileOperationAction = Annotated[
+    Literal["upload", "recover", "free-space", "storage-class", "cloud-purge", "rename"],
+    Field(description="Job / file-operation types (issue #67)."),
+]
+
+
+class UploadRemediation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    state: Literal["pending", "queued", "retrying", "blocked", "suspended", "cancelled", "resolved"]
+    reason: str | None
+    remedy: str
+    retry_count: int
+    due_at: str | None
+    can_resume: bool
+    current_job_id: int | None
+    resolved_by_job_id: int | None
+    resolved_at: str | None
+    archive_version_id: str | None
+    original_job_ids: list[int]
+
+
+class JobRecord(BaseModel):
+    # The Job list and a group's page add the request's columns; one Job's
+    # detail and a file's history do not.
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    path: str
+    action: FileOperationAction | str
+    status: JobStatus
+    message: str | None
+    message_key: str | None
+    message_params: str | None
+    requested_at: str
+    updated_at: str
+    group_id: str | None
+    group_path: str | None
+    total_bytes: int | None
+    transferred_bytes: int | None
+    archive_version_id: str | None
+    upload_reconcile_only: bool
+    remediation: UploadRemediation | None
+    pending_until: str | None | MISSING = MISSING
+    estimated_cost_eur: float | None | MISSING = MISSING
+    estimated_hours: float | None | MISSING = MISSING
+    restore_tier: str | None | MISSING = MISSING
+    restore_days: int | None | MISSING = MISSING
+    approved_at: str | None | MISSING = MISSING
+
+
+class JobGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    path: str
+    action: FileOperationAction | str
+    status: JobStatus
+    message: str | None
+    message_key: str | None
+    item_count: int
+    completed_count: int
+    failed_count: int
+    resolved_failed_count: int
+    unresolved_failed_count: int
+    cancelled_count: int
+    total_bytes: int
+    transferred_bytes: int
+    percent: int
+    updated_at: str
+    requested_at: str | None
+    pending_until: str | None
+    estimated_cost_eur: float | None
+    estimated_hours: float | None
+    restore_tier: str | None
+    restore_days: int | None
+    ready_by: str | None = Field(description="Expected end of the cloud restore: requested_at plus estimated_hours.")
+
+
+class JobsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[JobRecord]
+    groups: list[JobGroup]
+    locale: str
+    next_groups_before_id: int | None
+
+
+class FileJobHistoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[JobRecord]
+    next_before_id: int | None
+
+
+class ScanResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str
+    message_key: str
+    queued: bool = Field(description="True when the Vault is held by another operation: the scan waits and starts as soon as the Vault is free (#759).")
+    waiting_for: str | MISSING = Field(default=MISSING, description="The operation holding the Vault, when queued.")
+    waiting_since: str | MISSING = Field(default=MISSING, description="When that operation took the Vault, when queued.")
+
+
+class CatalogRevisionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    vault_id: int
+    revision: int
+    domains: list[str]
+    has_gap: bool
+    changed: bool
+
+
+class ArchiveVersionItem(BaseModel):
+    # ``FileListing.versions`` builds every key of a row, null when not recorded.
+    model_config = ConfigDict(extra="forbid")
+    upload_verification_requested: Literal["s3_checksum", "read_back"] | None
+    verification_method: Literal["s3_checksum", "read_back"] | None
+    verification_fallback_reason: str | None
+    verification_egress_bytes: int | None
+    created_at: str | None
+    id: str
+    object_key: str | None
+    recoverable: bool
+    size: int | None
+    storage_class: str | None
+    plaintext_sha256: str | None
+    verified_at: str | None
+    provider_version_id: str | None
+    integrity: str | None
+    availability: str | None
+    restore_state: str | None
+    restore_expiry: str | None
+    role: Literal["current", "pending"] = Field(description="Explicit reference of the file: Current or the replacement in progress (pending). Never inferred from ordering.")
+    availability_checked_at: str | None
+    not_selectable_reason: str | None
+    storage_class_since: str | None = Field(description="Class Entry: when the version entered storage_class (or expected_storage_class).")
+    storage_class_since_estimated: bool = Field(description="The Class Entry is estimated from created_at and the Storage Plan, not recorded.")
+    expected_storage_class: str | None = Field(description="The colder class the Storage Plan expects by now, while the transition is not observed yet.")
+    minimum_storage_until: str | None = Field(description="When the Minimum Storage Duration of the class ends; null for a class without one.")
+
+
+class UploadReconciliation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pending: bool
+    can_resume: bool
+    reason: str | None = Field(description="Bounded reconciliation reason, not an integrity outcome")
+    remedy: str | None
+
+
+class FileVersionsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    items: list[ArchiveVersionItem]
+    recoverable_count: int
+    default_archive_version_id: str | None
+    reconciliation: UploadReconciliation
+    remediations: list[UploadRemediation]
+    supported_restore_tiers: list[str]
+    default_restore_tier: str
+    default_restore_days: int
+
+
+class RestoreEstimate(BaseModel):
+    # A folder or a selection is priced per class: tier, days and the amounts.
+    model_config = ConfigDict(extra="forbid")
+    tier: str
+    days: int
+    estimated_cost_eur: float
+    estimated_hours: float
+    pricing_note: str | MISSING = MISSING
+    region: str | MISSING = MISSING
+    pricing_effective_at: str | None | MISSING = MISSING
+    assumptions: dict[str, Any] | MISSING = MISSING
+    restore_object_irreversible: bool | MISSING = MISSING
+
+
+class RecoverEstimateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    archive_version_id: str | None
+    requires_restore: bool
+    restore_object_irreversible: bool
+    high_impact: bool
+    estimate: RestoreEstimate | None
+    storage_class: str | None | MISSING = MISSING
+
+
+class BulkUploadAdmissionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    group_id: str
+    vault_id: int
+    path: str
+    status: Literal["pending", "completed", "cancelled", "invalidated"]
+    reason: str | None
+    requested_at: str
+    updated_at: str
+    origin: Literal["manual"]
+    verification_mode: Literal["s3_checksum", "read_back"]
+    selected_count: int = Field(ge=0)
+    processed_count: int = Field(ge=0)
+    admitted_count: int = Field(ge=0)
+    total_bytes: int = Field(ge=0)
+
+
+class UploadResponse(BaseModel):
+    # A folder is admitted in the background: no Job yet, the admission instead.
+    model_config = ConfigDict(extra="forbid")
+    group_id: str
+    job_ids: list[int]
+    item_count: int
+    total_bytes: int
+    message: str
+    message_key: str
+    admission: BulkUploadAdmissionResponse | MISSING = MISSING
+    archive_version_id: str | None | MISSING = MISSING
+    restore_tier: str | None | MISSING = MISSING
+    restore_days: int | None | MISSING = MISSING
+    estimated_cost_eur: float | None | MISSING = MISSING
+    estimated_hours: float | None | MISSING = MISSING
+
+
+class FileOperationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    group_id: str
+    job_ids: list[int]
+    item_count: int
+    total_bytes: int
+    archive_version_id: str | None
+    restore_tier: str | None
+    restore_days: int | None
+    estimated_cost_eur: float | None
+    estimated_hours: float | None
+    message: str
+    message_key: str
+    approval_required: bool | MISSING = Field(default=MISSING, description="A Recovery held for Restore Approval; only in a Recovery's answer.")
+
+
+class UploadReconciliationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_id: int
+    group_id: str
+
+
+class RetryFailedUploadsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    item_count: int
+
+
+class JobCancelResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str
+    cancelled_count: int
+    # A Delayed Cloud Deletion has no admission to stop.
+    stopped_admissions: int | MISSING = Field(default=MISSING, ge=0)
+
+
+class RecoverApprovalResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    group_id: str
+    job_ids: list[int]
+    message: str
+
+
+class CloudDeletionSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    purge_delay_seconds: Literal[604800]
+
+
+class CloudDeletionSkipped(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    present_locally: int
+    pending_work: int
+    pending_cleanup: int
+    conflict: int
+    not_verified: int
+    no_exact_version: int
+
+
+class CloudDeletionPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    object_count: int
+    version_count: int
+    delete_marker_count: int
+    byte_count: int
+    fingerprint: str
+    mode: Literal["exact", "selection"]
+    duplicates_only: bool
+    eligible_count: int
+    eligible_bytes: int
+    duplicate_count: int
+    duplicate_bytes: int
+    no_local_copy_count: int
+    no_local_copy_bytes: int
+    skipped: CloudDeletionSkipped
+    skipped_count: int
+    minimum_storage: MinimumStorageDeletion | None
+    retention_lock: RetentionLockPreview | None
+
+
+class CloudPurgeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    group_id: str
+    job_ids: list[int]
+    preview: CloudDeletionPreview
+    pending_until: str
+    status: Literal["pending_delay"]
+    message: str
+    message_key: str
+
+
+@router.get("/api/vaults/{vault_id}/jobs", response_model=passthrough(JobsResponse), responses=LOGICAL_PATH_ERROR_RESPONSES)
 def jobs(
     request: Request,
     vault: dict[str, Any] = Depends(vault_in_path),
@@ -167,7 +485,7 @@ def jobs(
                          groups_before_id=groups_before_id)
 
 
-@router.get("/api/vaults/{vault_id}/job-groups/{group_id}/jobs", response_model=response_model("FileJobHistoryResponse"))
+@router.get("/api/vaults/{vault_id}/job-groups/{group_id}/jobs", response_model=passthrough(FileJobHistoryResponse))
 def job_group_detail(
     request: Request, group_id: str,
     before_id: int | None = Query(default=None, ge=1),
@@ -181,7 +499,7 @@ def job_group_detail(
                           locale=_request_locale(request), before_id=before_id, limit=limit)
 
 
-@router.get("/api/vaults/{vault_id}/jobs/{job_id}", response_model=response_model("JobRecord"))
+@router.get("/api/vaults/{vault_id}/jobs/{job_id}", response_model=passthrough(JobRecord))
 def job_detail(request: Request, job_id: int, vault: dict[str, Any] = Depends(vault_in_path)):
     from ..services.job_queries import job_record
     with db() as connection:
@@ -192,7 +510,7 @@ def job_detail(request: Request, job_id: int, vault: dict[str, Any] = Depends(va
     return record
 
 
-@router.get("/api/vaults/{vault_id}/files/jobs", response_model=response_model("FileJobHistoryResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
+@router.get("/api/vaults/{vault_id}/files/jobs", response_model=passthrough(FileJobHistoryResponse), responses=LOGICAL_PATH_ERROR_RESPONSES)
 def file_job_history(request: Request, path: str = Query(), before_id: int | None = Query(default=None,ge=1),
                      limit: int = Query(default=50,ge=1,le=50), vault: dict[str, Any] = Depends(vault_in_path)):
     from ..services.job_queries import file_jobs
@@ -205,7 +523,7 @@ def file_job_history(request: Request, path: str = Query(), before_id: int | Non
     return history
 
 
-@router.post("/api/vaults/{vault_id}/scan", status_code=202, response_model=response_model("ScanResponse"))
+@router.post("/api/vaults/{vault_id}/scan", status_code=202, response_model=passthrough(ScanResponse))
 async def start_scan(
     request: Request,
     vault: dict[str, Any] = Depends(vault_in_path),
@@ -231,7 +549,7 @@ async def start_scan(
         "waiting_since": waiting["scan_waiting_since"]}
 
 
-@router.get("/api/vaults/{vault_id}/catalog/revision", response_model=response_model("CatalogRevisionResponse"))
+@router.get("/api/vaults/{vault_id}/catalog/revision", response_model=passthrough(CatalogRevisionResponse))
 def catalog_revision_snapshot(
     after_revision: int = Query(0, ge=0),
     vault: dict[str, Any] = Depends(vault_in_path),
@@ -324,7 +642,7 @@ async def catalog_events_stream(
 
 @router.get(
     "/api/vaults/{vault_id}/files/versions",
-    response_model=response_model("FileVersionsResponse"),
+    response_model=passthrough(FileVersionsResponse),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def file_versions(
@@ -356,7 +674,7 @@ def file_versions(
 
 @router.post(
     "/api/vaults/{vault_id}/recover/estimate",
-    response_model=response_model("RecoverEstimateResponse"),
+    response_model=passthrough(RecoverEstimateResponse),
     responses={**LOGICAL_PATH_ERROR_RESPONSES, **SCOPED_NOT_FOUND_RESPONSES},
 )
 def recover_estimate(
@@ -377,7 +695,7 @@ def recover_estimate(
 @router.post(
     "/api/vaults/{vault_id}/upload",
     status_code=202,
-    response_model=JsonObjectResponse,
+    response_model=passthrough(UploadResponse),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def upload(
@@ -400,7 +718,7 @@ def upload(
     return {**queued, **_api_message(request, "api.upload_started")}
 
 
-@router.get("/api/vaults/{vault_id}/upload/admissions/{group_id}", response_model=response_model("BulkUploadAdmissionResponse"))
+@router.get("/api/vaults/{vault_id}/upload/admissions/{group_id}", response_model=passthrough(BulkUploadAdmissionResponse))
 def upload_admission_status(group_id: uuid.UUID, _: dict[str, Any] = Depends(current_user),
                             vault: dict[str, Any] = Depends(vault_in_path)):
     from ..services import bulk_upload_admission
@@ -411,7 +729,7 @@ def upload_admission_status(group_id: uuid.UUID, _: dict[str, Any] = Depends(cur
     return result
 
 
-@router.post("/api/vaults/{vault_id}/upload/reconcile", status_code=202, response_model=response_model("UploadReconciliationResponse"), responses=LOGICAL_PATH_ERROR_RESPONSES)
+@router.post("/api/vaults/{vault_id}/upload/reconcile", status_code=202, response_model=passthrough(UploadReconciliationResponse), responses=LOGICAL_PATH_ERROR_RESPONSES)
 def reconcile_upload(action: UploadReconciliationAction, user: dict[str, Any] = Depends(current_user), vault: dict[str, Any] = Depends(vault_in_path)):
     """Exact resume only, including protected files for which upload returns 409.
 
@@ -455,7 +773,7 @@ def _names_no_vault(request: Request) -> None:
         raise Invalid("api.invalid_operation")
 
 
-@router.post("/api/upload/retry-failed", status_code=202, response_model=response_model("RetryFailedUploadsResponse"),
+@router.post("/api/upload/retry-failed", status_code=202, response_model=passthrough(RetryFailedUploadsResponse),
              dependencies=[Depends(_names_no_vault)])
 def retry_failed_uploads(_: dict[str, Any] = Depends(current_user)):
     """Every Vault of the installation, never the Session's choice."""
@@ -463,7 +781,7 @@ def retry_failed_uploads(_: dict[str, Any] = Depends(current_user)):
 
 
 @router.post("/api/vaults/{vault_id}/upload/retry-failed", status_code=202,
-             response_model=response_model("RetryFailedUploadsResponse"))
+             response_model=passthrough(RetryFailedUploadsResponse))
 def retry_failed_vault_uploads(vault_id: int = Path(ge=1), _: dict[str, Any] = Depends(current_user)):
     """One Vault's failed Uploads; any existing Vault, operational or not."""
     return _retry_failed_uploads(vault_id)
@@ -472,7 +790,7 @@ def retry_failed_vault_uploads(vault_id: int = Path(ge=1), _: dict[str, Any] = D
 @router.post(
     "/api/vaults/{vault_id}/files/cloud-only-conflict/replace",
     status_code=202,
-    response_model=JsonObjectResponse,
+    response_model=passthrough(FileOperationResponse),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def replace_cloud_only_copy(
@@ -614,7 +932,7 @@ class PendingUploadCancelAction(BaseModel):
 
 @router.post(
     "/api/vaults/{vault_id}/upload/cancel-pending",
-    response_model=response_model("JobCancelResponse"),
+    response_model=passthrough(JobCancelResponse),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def cancel_pending_uploads(
@@ -651,7 +969,7 @@ def cancel_pending_uploads(
     }
 
 
-@router.post("/api/vaults/{vault_id}/jobs/cancel", response_model=response_model("JobCancelResponse"))
+@router.post("/api/vaults/{vault_id}/jobs/cancel", response_model=passthrough(JobCancelResponse))
 def cancel_job(
     action: JobCancelAction,
     request: Request,
@@ -664,7 +982,7 @@ def cancel_job(
 @router.post(
     "/api/vaults/{vault_id}/recover",
     status_code=202,
-    response_model=JsonObjectResponse,
+    response_model=passthrough(FileOperationResponse),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def recover(
@@ -686,7 +1004,7 @@ def recover(
     return {**queued, **_api_message(request, "api.recovery_started")}
 
 
-@router.post("/api/vaults/{vault_id}/recover/approve", status_code=202, response_model=JsonObjectResponse)
+@router.post("/api/vaults/{vault_id}/recover/approve", status_code=202, response_model=passthrough(RecoverApprovalResponse))
 def approve_recover(
     action: RecoverApproveAction,
     user: dict[str, Any] = Depends(current_user),
@@ -715,7 +1033,7 @@ def approve_recover(
 @router.post(
     "/api/vaults/{vault_id}/free-space",
     status_code=202,
-    response_model=JsonObjectResponse,
+    response_model=passthrough(FileOperationResponse),
     responses=LOGICAL_PATH_ERROR_RESPONSES,
 )
 def free_space(
@@ -745,12 +1063,12 @@ def _cloud_deletion_selection(action: CloudDeletionPreviewRequest) -> dict[str, 
             "duplicates_only": action.duplicates_only}
 
 
-@router.get("/api/cloud-deletion", response_model=response_model("CloudDeletionSettings"))
+@router.get("/api/cloud-deletion", response_model=passthrough(CloudDeletionSettings))
 def cloud_deletion_settings(user: dict[str, Any] = Depends(current_user)):
     return {"purge_delay_seconds": cloud_deletion_service.DELETION_DELAY_SECONDS}
 
 
-@router.post("/api/vaults/{vault_id}/cloud-deletion/preview", response_model=response_model("CloudDeletionPreview"))
+@router.post("/api/vaults/{vault_id}/cloud-deletion/preview", response_model=passthrough(CloudDeletionPreview))
 def preview_cloud_deletion(
     action: CloudDeletionPreviewRequest,
     vault: dict[str, Any] = Depends(vault_in_path),
@@ -763,7 +1081,7 @@ def preview_cloud_deletion(
     }
 
 
-@router.post("/api/vaults/{vault_id}/cloud-purge", status_code=202, response_model=JsonObjectResponse)
+@router.post("/api/vaults/{vault_id}/cloud-purge", status_code=202, response_model=passthrough(CloudPurgeResponse))
 def cloud_purge(
     action: CloudPurgeRequest,
     request: Request,

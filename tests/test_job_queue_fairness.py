@@ -14,10 +14,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
 from watchfiles import Change
 
-from app import main, storage
+from app import storage
 from app.catalog import ArchiveCatalog
 from app.services.job_admission import JobAdmission
 from app.services import health, notifications, vault_relocation
@@ -958,7 +957,7 @@ class CancelPendingHttpTests(QueueFixture):
         self.assertEqual(state, "queued")
 
     def test_unauthenticated_and_csrf_less_requests_are_refused(self):
-        anonymous = TestClient(main.app, client=("127.0.0.1", 50001))
+        anonymous = self.http_client(client=("127.0.0.1", 50001))
         self.assertIn(anonymous.post("/api/vaults/2/upload/cancel-pending", json={"path": ""}).status_code, {401, 403})
         self.assertEqual(
             self.client.post("/api/vaults/2/upload/cancel-pending", json={"path": ""}).status_code,

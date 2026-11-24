@@ -4,23 +4,28 @@ import unittest
 import uuid
 from unittest.mock import Mock, patch
 
-from fastapi.testclient import TestClient
 from app import main
 from app.routes.deps import current_user, vault_in_path
 from app.services import bulk_upload_admission as bulk
 from app.services import job_admission
+from tests.fixtures import http_client
 
 
 class BulkUploadApiTests(unittest.TestCase):
     def setUp(self):
-        self.client = TestClient(main.app)
+        self.client = http_client()
         main.app.dependency_overrides[current_user] = lambda: {"id": 1}
         main.app.dependency_overrides[vault_in_path] = lambda: {"id": 9}
         self.addCleanup(main.app.dependency_overrides.clear)
 
     def test_bulk_returns_202_without_catalog_enumeration_or_filesystem_or_background_task(self):
         group = str(uuid.uuid4())
-        admission = {"group_id": group, "status": "pending", "admitted_count": 0, "total_bytes": 0}
+        # The whole public status, as ``bulk_upload_admission.public_status`` answers it.
+        admission = {"group_id": group, "vault_id": 9, "path": "photos", "status": "pending",
+                     "reason": None, "requested_at": "2026-11-24T00:00:00+00:00",
+                     "updated_at": "2026-11-24T00:00:00+00:00", "origin": "manual",
+                     "verification_mode": "s3_checksum", "selected_count": 3,
+                     "processed_count": 0, "admitted_count": 0, "total_bytes": 0}
         @contextmanager
         def db():
             yield Mock()
@@ -35,7 +40,11 @@ class BulkUploadApiTests(unittest.TestCase):
         self.assertEqual(response.headers["cache-control"], "no-store")
 
     def test_single_file_keeps_existing_synchronous_admission(self):
-        with patch.object(job_admission, "queue_jobs", return_value={"group_id": "old", "item_count": 1}) as queue, \
+        # The whole answer of ``job_admission.queue_jobs`` for one upload.
+        queued = {"group_id": "old", "job_ids": [7], "item_count": 1, "total_bytes": 5,
+                  "archive_version_id": None, "restore_tier": None, "restore_days": None,
+                  "estimated_cost_eur": None, "estimated_hours": None}
+        with patch.object(job_admission, "queue_jobs", return_value=queued) as queue, \
                 patch.object(bulk, "create", side_effect=AssertionError("bulk single file")):
             response = self.client.post("/api/vaults/9/upload", json={"path": "photo.jpg"})
         self.assertEqual(response.status_code, 202)

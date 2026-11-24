@@ -1802,6 +1802,73 @@ export interface components {
     schemas: {
         /** ArchiveListItem */
         ArchiveListItem: components["schemas"]["VaultFileListItem"] | components["schemas"]["DirectoryListItem"];
+        /** ArchiveVersionItem */
+        ArchiveVersionItem: {
+            /** Upload Verification Requested */
+            upload_verification_requested: ("s3_checksum" | "read_back") | null;
+            /** Verification Method */
+            verification_method: ("s3_checksum" | "read_back") | null;
+            /** Verification Fallback Reason */
+            verification_fallback_reason: string | null;
+            /** Verification Egress Bytes */
+            verification_egress_bytes: number | null;
+            /** Created At */
+            created_at: string | null;
+            /** Id */
+            id: string;
+            /** Object Key */
+            object_key: string | null;
+            /** Recoverable */
+            recoverable: boolean;
+            /** Size */
+            size: number | null;
+            /** Storage Class */
+            storage_class: string | null;
+            /** Plaintext Sha256 */
+            plaintext_sha256: string | null;
+            /** Verified At */
+            verified_at: string | null;
+            /** Provider Version Id */
+            provider_version_id: string | null;
+            /** Integrity */
+            integrity: string | null;
+            /** Availability */
+            availability: string | null;
+            /** Restore State */
+            restore_state: string | null;
+            /** Restore Expiry */
+            restore_expiry: string | null;
+            /**
+             * Role
+             * @description Explicit reference of the file: Current or the replacement in progress (pending). Never inferred from ordering.
+             * @enum {string}
+             */
+            role: "current" | "pending";
+            /** Availability Checked At */
+            availability_checked_at: string | null;
+            /** Not Selectable Reason */
+            not_selectable_reason: string | null;
+            /**
+             * Storage Class Since
+             * @description Class Entry: when the version entered storage_class (or expected_storage_class).
+             */
+            storage_class_since: string | null;
+            /**
+             * Storage Class Since Estimated
+             * @description The Class Entry is estimated from created_at and the Storage Plan, not recorded.
+             */
+            storage_class_since_estimated: boolean;
+            /**
+             * Expected Storage Class
+             * @description The colder class the Storage Plan expects by now, while the transition is not observed yet.
+             */
+            expected_storage_class: string | null;
+            /**
+             * Minimum Storage Until
+             * @description When the Minimum Storage Duration of the class ends; null for a class without one.
+             */
+            minimum_storage_until: string | null;
+        };
         AuthMethod: string | null;
         /**
          * BilledCategories
@@ -1953,32 +2020,56 @@ export interface components {
             /** Admitted Files */
             admitted_files: number;
         };
+        /** BulkUploadAdmissionResponse */
         BulkUploadAdmissionResponse: {
+            /** Group Id */
             group_id: string;
+            /** Vault Id */
             vault_id: number;
+            /** Path */
             path: string;
-            /** @enum {string} */
+            /**
+             * Status
+             * @enum {string}
+             */
             status: "pending" | "completed" | "cancelled" | "invalidated";
+            /** Reason */
             reason: string | null;
+            /** Requested At */
             requested_at: string;
+            /** Updated At */
             updated_at: string;
-            /** @enum {string} */
+            /**
+             * Origin
+             * @constant
+             */
             origin: "manual";
-            /** @enum {string} */
+            /**
+             * Verification Mode
+             * @enum {string}
+             */
             verification_mode: "s3_checksum" | "read_back";
+            /** Selected Count */
             selected_count: number;
+            /** Processed Count */
             processed_count: number;
+            /** Admitted Count */
             admitted_count: number;
+            /** Total Bytes */
             total_bytes: number;
         };
+        /** CatalogRevisionResponse */
         CatalogRevisionResponse: {
-            changed: boolean;
-            domains: string[];
-            has_gap: boolean;
-            revision: number;
+            /** Vault Id */
             vault_id: number;
-        } & {
-            [key: string]: unknown;
+            /** Revision */
+            revision: number;
+            /** Domains */
+            domains: string[];
+            /** Has Gap */
+            has_gap: boolean;
+            /** Changed */
+            changed: boolean;
         };
         /** CleanupAmount */
         CleanupAmount: {
@@ -2077,36 +2168,42 @@ export interface components {
              */
             state?: string;
         };
+        /** CloudDeletionPreview */
         CloudDeletionPreview: {
-            byte_count: number;
-            delete_marker_count: number;
-            duplicate_bytes: number;
-            duplicate_count: number;
-            duplicates_only: boolean;
-            eligible_bytes: number;
-            eligible_count: number;
-            fingerprint: string;
-            /** @enum {string} */
-            mode: "exact" | "selection";
-            no_local_copy_bytes: number;
-            no_local_copy_count: number;
+            /** Object Count */
             object_count: number;
-            skipped: {
-                present_locally?: number;
-                pending_work?: number;
-                pending_cleanup?: number;
-                conflict?: number;
-                not_verified?: number;
-                no_exact_version?: number;
-            } & {
-                [key: string]: number;
-            };
-            skipped_count: number;
+            /** Version Count */
             version_count: number;
-            minimum_storage?: components["schemas"]["MinimumStorageDeletion"] | null;
-            retention_lock?: components["schemas"]["RetentionLockPreview"] | null;
-        } & {
-            [key: string]: unknown;
+            /** Delete Marker Count */
+            delete_marker_count: number;
+            /** Byte Count */
+            byte_count: number;
+            /** Fingerprint */
+            fingerprint: string;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "exact" | "selection";
+            /** Duplicates Only */
+            duplicates_only: boolean;
+            /** Eligible Count */
+            eligible_count: number;
+            /** Eligible Bytes */
+            eligible_bytes: number;
+            /** Duplicate Count */
+            duplicate_count: number;
+            /** Duplicate Bytes */
+            duplicate_bytes: number;
+            /** No Local Copy Count */
+            no_local_copy_count: number;
+            /** No Local Copy Bytes */
+            no_local_copy_bytes: number;
+            skipped: components["schemas"]["CloudDeletionSkipped"];
+            /** Skipped Count */
+            skipped_count: number;
+            minimum_storage: components["schemas"]["MinimumStorageDeletion"] | null;
+            retention_lock: components["schemas"]["RetentionLockPreview"] | null;
         };
         /**
          * CloudDeletionPreviewRequest
@@ -2135,9 +2232,28 @@ export interface components {
              */
             duplicates_only?: boolean;
         };
+        /** CloudDeletionSettings */
         CloudDeletionSettings: {
-            /** @constant */
+            /**
+             * Purge Delay Seconds
+             * @constant
+             */
             purge_delay_seconds: 604800;
+        };
+        /** CloudDeletionSkipped */
+        CloudDeletionSkipped: {
+            /** Present Locally */
+            present_locally: number;
+            /** Pending Work */
+            pending_work: number;
+            /** Pending Cleanup */
+            pending_cleanup: number;
+            /** Conflict */
+            conflict: number;
+            /** Not Verified */
+            not_verified: number;
+            /** No Exact Version */
+            no_exact_version: number;
         };
         /** CloudOnlyReplacementAction */
         CloudOnlyReplacementAction: {
@@ -2181,6 +2297,25 @@ export interface components {
             reason: string;
             /** Fingerprint */
             fingerprint?: string | null;
+        };
+        /** CloudPurgeResponse */
+        CloudPurgeResponse: {
+            /** Group Id */
+            group_id: string;
+            /** Job Ids */
+            job_ids: number[];
+            preview: components["schemas"]["CloudDeletionPreview"];
+            /** Pending Until */
+            pending_until: string;
+            /**
+             * Status
+             * @constant
+             */
+            status: "pending_delay";
+            /** Message */
+            message: string;
+            /** Message Key */
+            message_key: string;
         };
         /** CloudUsageDay */
         CloudUsageDay: {
@@ -2451,9 +2586,47 @@ export interface components {
             /** Restore Days */
             restore_days?: number | null;
         };
+        /** FileJobHistoryResponse */
         FileJobHistoryResponse: {
+            /** Items */
             items: components["schemas"]["JobRecord"][];
+            /** Next Before Id */
             next_before_id: number | null;
+        };
+        /**
+         * @description Job / file-operation types (issue #67).
+         * @enum {string}
+         */
+        FileOperationAction: "upload" | "recover" | "free-space" | "storage-class" | "cloud-purge" | "rename";
+        /** FileOperationResponse */
+        FileOperationResponse: {
+            /** Group Id */
+            group_id: string;
+            /** Job Ids */
+            job_ids: number[];
+            /** Item Count */
+            item_count: number;
+            /** Total Bytes */
+            total_bytes: number;
+            /** Archive Version Id */
+            archive_version_id: string | null;
+            /** Restore Tier */
+            restore_tier: string | null;
+            /** Restore Days */
+            restore_days: number | null;
+            /** Estimated Cost Eur */
+            estimated_cost_eur: number | null;
+            /** Estimated Hours */
+            estimated_hours: number | null;
+            /** Message */
+            message: string;
+            /** Message Key */
+            message_key: string;
+            /**
+             * Approval Required
+             * @description A Recovery held for Restore Approval; only in a Recovery's answer.
+             */
+            approval_required?: boolean;
         };
         /**
          * FileRecovery
@@ -2489,18 +2662,25 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** FileVersionsResponse */
         FileVersionsResponse: {
-            reconciliation?: components["schemas"]["UploadReconciliation"];
-            remediations?: components["schemas"]["UploadRemediation"][];
-            default_archive_version_id: string | null;
-            default_restore_days: number;
-            default_restore_tier: string;
-            items: components["schemas"]["ArchiveVersionItem"][];
+            /** Path */
             path: string;
+            /** Items */
+            items: components["schemas"]["ArchiveVersionItem"][];
+            /** Recoverable Count */
             recoverable_count: number;
+            /** Default Archive Version Id */
+            default_archive_version_id: string | null;
+            reconciliation: components["schemas"]["UploadReconciliation"];
+            /** Remediations */
+            remediations: components["schemas"]["UploadRemediation"][];
+            /** Supported Restore Tiers */
             supported_restore_tiers: string[];
-        } & {
-            [key: string]: unknown;
+            /** Default Restore Tier */
+            default_restore_tier: string;
+            /** Default Restore Days */
+            default_restore_days: number;
         };
         /** FilesResponse */
         FilesResponse: {
@@ -2660,48 +2840,122 @@ export interface components {
             /** Action */
             action: string;
         };
+        /** JobCancelResponse */
         JobCancelResponse: {
-            stopped_admissions?: number;
-            cancelled_count: number;
+            /** Message */
             message: string;
-            message_key?: string;
-        } & {
-            [key: string]: unknown;
+            /** Cancelled Count */
+            cancelled_count: number;
+            /** Stopped Admissions */
+            stopped_admissions?: number;
         };
-        JobRecord: {
-            remediation?: components["schemas"]["UploadRemediation"] | null;
-            remediation_rejection?: string | null;
-            archive_version_id?: string | null;
-            upload_reconcile_only?: boolean;
-            action: components["schemas"]["FileOperationAction"] | string;
-            approved_at?: string | null;
-            estimated_cost_eur?: number | null;
-            estimated_hours?: number | null;
-            group_id?: string | null;
-            group_path?: string | null;
-            id: number;
-            message?: string | null;
-            message_key?: string | null;
-            message_params?: unknown;
+        /** JobGroup */
+        JobGroup: {
+            /** Id */
+            id: string;
+            /** Path */
             path: string;
-            pending_until?: string | null;
-            requested_at?: string;
-            restore_days?: number | null;
-            restore_tier?: string | null;
+            /** Action */
+            action: components["schemas"]["FileOperationAction"] | string;
             status: components["schemas"]["JobStatus"];
-            total_bytes?: number | null;
-            transferred_bytes?: number | null;
-            updated_at?: string;
-        } & {
-            [key: string]: unknown;
+            /** Message */
+            message: string | null;
+            /** Message Key */
+            message_key: string | null;
+            /** Item Count */
+            item_count: number;
+            /** Completed Count */
+            completed_count: number;
+            /** Failed Count */
+            failed_count: number;
+            /** Resolved Failed Count */
+            resolved_failed_count: number;
+            /** Unresolved Failed Count */
+            unresolved_failed_count: number;
+            /** Cancelled Count */
+            cancelled_count: number;
+            /** Total Bytes */
+            total_bytes: number;
+            /** Transferred Bytes */
+            transferred_bytes: number;
+            /** Percent */
+            percent: number;
+            /** Updated At */
+            updated_at: string;
+            /** Requested At */
+            requested_at: string | null;
+            /** Pending Until */
+            pending_until: string | null;
+            /** Estimated Cost Eur */
+            estimated_cost_eur: number | null;
+            /** Estimated Hours */
+            estimated_hours: number | null;
+            /** Restore Tier */
+            restore_tier: string | null;
+            /** Restore Days */
+            restore_days: number | null;
+            /**
+             * Ready By
+             * @description Expected end of the cloud restore: requested_at plus estimated_hours.
+             */
+            ready_by: string | null;
         };
+        /** JobRecord */
+        JobRecord: {
+            /** Id */
+            id: number;
+            /** Path */
+            path: string;
+            /** Action */
+            action: components["schemas"]["FileOperationAction"] | string;
+            status: components["schemas"]["JobStatus"];
+            /** Message */
+            message: string | null;
+            /** Message Key */
+            message_key: string | null;
+            /** Message Params */
+            message_params: string | null;
+            /** Requested At */
+            requested_at: string;
+            /** Updated At */
+            updated_at: string;
+            /** Group Id */
+            group_id: string | null;
+            /** Group Path */
+            group_path: string | null;
+            /** Total Bytes */
+            total_bytes: number | null;
+            /** Transferred Bytes */
+            transferred_bytes: number | null;
+            /** Archive Version Id */
+            archive_version_id: string | null;
+            /** Upload Reconcile Only */
+            upload_reconcile_only: boolean;
+            remediation: components["schemas"]["UploadRemediation"] | null;
+            /** Pending Until */
+            pending_until?: string | null;
+            /** Estimated Cost Eur */
+            estimated_cost_eur?: number | null;
+            /** Estimated Hours */
+            estimated_hours?: number | null;
+            /** Restore Tier */
+            restore_tier?: string | null;
+            /** Restore Days */
+            restore_days?: number | null;
+            /** Approved At */
+            approved_at?: string | null;
+        };
+        JobStatus: string;
+        /** JobsResponse */
         JobsResponse: {
-            next_groups_before_id?: number | null;
-            groups: components["schemas"]["JobGroup"][];
+            /** Items */
             items: components["schemas"]["JobRecord"][];
-            locale?: string;
-        } & {
-            [key: string]: unknown;
+            /** Groups */
+            groups: components["schemas"]["JobGroup"][];
+            /** Locale */
+            locale: string;
+            /** Next Groups Before Id */
+            next_groups_before_id: number | null;
         };
         /**
          * JsonObjectResponse
@@ -3272,6 +3526,15 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** RecoverApprovalResponse */
+        RecoverApprovalResponse: {
+            /** Group Id */
+            group_id: string;
+            /** Job Ids */
+            job_ids: number[];
+            /** Message */
+            message: string;
+        };
         /** RecoverApproveAction */
         RecoverApproveAction: {
             /** Group Id */
@@ -3298,16 +3561,21 @@ export interface components {
             /** Selection */
             selection?: components["schemas"]["RecoverySelectionItem"][] | null;
         };
+        /** RecoverEstimateResponse */
         RecoverEstimateResponse: {
-            archive_version_id: string | null;
-            estimate: components["schemas"]["RestoreEstimate"] | null;
-            high_impact: boolean;
+            /** Path */
             path: string;
+            /** Archive Version Id */
+            archive_version_id: string | null;
+            /** Requires Restore */
             requires_restore: boolean;
+            /** Restore Object Irreversible */
             restore_object_irreversible: boolean;
+            /** High Impact */
+            high_impact: boolean;
+            estimate: components["schemas"]["RestoreEstimate"] | null;
+            /** Storage Class */
             storage_class?: string | null;
-        } & {
-            [key: string]: unknown;
         };
         /** RecoverRequest */
         RecoverRequest: {
@@ -3365,6 +3633,29 @@ export interface components {
              * @default false
              */
             is_directory?: boolean;
+        };
+        /** RestoreEstimate */
+        RestoreEstimate: {
+            /** Tier */
+            tier: string;
+            /** Days */
+            days: number;
+            /** Estimated Cost Eur */
+            estimated_cost_eur: number;
+            /** Estimated Hours */
+            estimated_hours: number;
+            /** Pricing Note */
+            pricing_note?: string;
+            /** Region */
+            region?: string;
+            /** Pricing Effective At */
+            pricing_effective_at?: string | null;
+            /** Assumptions */
+            assumptions?: {
+                [key: string]: unknown;
+            };
+            /** Restore Object Irreversible */
+            restore_object_irreversible?: boolean;
         };
         /** RetainedVersions */
         RetainedVersions: {
@@ -3436,20 +3727,32 @@ export interface components {
             mode: "GOVERNANCE" | null;
             retained: components["schemas"]["RetainedVersions"] | null;
         };
+        /** RetryFailedUploadsResponse */
         RetryFailedUploadsResponse: {
+            /** Item Count */
             item_count: number;
         };
+        /** ScanResponse */
         ScanResponse: {
+            /** Message */
             message: string;
+            /** Message Key */
             message_key: string;
-            /** @description True when the Vault is held by another operation: the scan waits and starts as soon as the Vault is free (#759). */
+            /**
+             * Queued
+             * @description True when the Vault is held by another operation: the scan waits and starts as soon as the Vault is free (#759).
+             */
             queued: boolean;
-            /** @description The operation holding the Vault, when queued. */
+            /**
+             * Waiting For
+             * @description The operation holding the Vault, when queued.
+             */
             waiting_for?: string;
-            /** @description When that operation took the Vault, when queued. */
+            /**
+             * Waiting Since
+             * @description When that operation took the Vault, when queued.
+             */
             waiting_since?: string;
-        } & {
-            [key: string]: unknown;
         };
         /** ServerPriority */
         ServerPriority: {
@@ -3762,6 +4065,20 @@ export interface components {
             /** Average Bytes Per Second */
             average_bytes_per_second: number | null;
         };
+        /** UploadReconciliation */
+        UploadReconciliation: {
+            /** Pending */
+            pending: boolean;
+            /** Can Resume */
+            can_resume: boolean;
+            /**
+             * Reason
+             * @description Bounded reconciliation reason, not an integrity outcome
+             */
+            reason: string | null;
+            /** Remedy */
+            remedy: string | null;
+        };
         /** UploadReconciliationAction */
         UploadReconciliationAction: {
             /** Path */
@@ -3774,9 +4091,68 @@ export interface components {
             /** Remediation Id */
             remediation_id?: string | null;
         };
+        /** UploadReconciliationResponse */
         UploadReconciliationResponse: {
+            /** Job Id */
             job_id: number;
+            /** Group Id */
             group_id: string;
+        };
+        /** UploadRemediation */
+        UploadRemediation: {
+            /** Id */
+            id: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "pending" | "queued" | "retrying" | "blocked" | "suspended" | "cancelled" | "resolved";
+            /** Reason */
+            reason: string | null;
+            /** Remedy */
+            remedy: string;
+            /** Retry Count */
+            retry_count: number;
+            /** Due At */
+            due_at: string | null;
+            /** Can Resume */
+            can_resume: boolean;
+            /** Current Job Id */
+            current_job_id: number | null;
+            /** Resolved By Job Id */
+            resolved_by_job_id: number | null;
+            /** Resolved At */
+            resolved_at: string | null;
+            /** Archive Version Id */
+            archive_version_id: string | null;
+            /** Original Job Ids */
+            original_job_ids: number[];
+        };
+        /** UploadResponse */
+        UploadResponse: {
+            /** Group Id */
+            group_id: string;
+            /** Job Ids */
+            job_ids: number[];
+            /** Item Count */
+            item_count: number;
+            /** Total Bytes */
+            total_bytes: number;
+            /** Message */
+            message: string;
+            /** Message Key */
+            message_key: string;
+            admission?: components["schemas"]["BulkUploadAdmissionResponse"];
+            /** Archive Version Id */
+            archive_version_id?: string | null;
+            /** Restore Tier */
+            restore_tier?: string | null;
+            /** Restore Days */
+            restore_days?: number | null;
+            /** Estimated Cost Eur */
+            estimated_cost_eur?: number | null;
+            /** Estimated Hours */
+            estimated_hours?: number | null;
         };
         /**
          * UploadThroughput
@@ -4473,114 +4849,6 @@ export interface components {
                 [key: string]: unknown;
             };
         };
-        ArchiveVersionItem: {
-            /** @enum {string|null} */
-            upload_verification_requested?: "s3_checksum" | "read_back" | null;
-            /** @enum {string|null} */
-            verification_method?: "s3_checksum" | "read_back" | null;
-            verification_fallback_reason?: string | null;
-            verification_egress_bytes?: number | null;
-            created_at?: string | null;
-            id: string;
-            object_key?: string | null;
-            recoverable: boolean;
-            size?: number | null;
-            storage_class?: string | null;
-            verified_at?: string | null;
-            provider_version_id?: string | null;
-            integrity?: string | null;
-            availability?: string | null;
-            /**
-             * @description Explicit reference of the file: Current or the replacement in progress (pending). Never inferred from ordering.
-             * @enum {string}
-             */
-            role: "current" | "pending";
-            availability_checked_at?: string | null;
-            not_selectable_reason?: string | null;
-            /** @description Class Entry: when the version entered storage_class (or expected_storage_class). */
-            storage_class_since?: string | null;
-            /** @description The Class Entry is estimated from created_at and the Storage Plan, not recorded. */
-            storage_class_since_estimated?: boolean;
-            /** @description The colder class the Storage Plan expects by now, while the transition is not observed yet. */
-            expected_storage_class?: string | null;
-            /** @description When the Minimum Storage Duration of the class ends; null for a class without one. */
-            minimum_storage_until?: string | null;
-        } & {
-            [key: string]: unknown;
-        };
-        /**
-         * @description Job / file-operation types (issue #67).
-         * @enum {string}
-         */
-        FileOperationAction: "upload" | "recover" | "free-space" | "storage-class" | "cloud-purge" | "rename";
-        FileOperationResponse: {
-            archive_version_id?: string | null;
-            estimated_cost_eur?: number | null;
-            estimated_hours?: number | null;
-            group_id: string;
-            item_count?: number;
-            job_ids?: number[];
-            message?: string;
-            message_key?: string;
-            preview?: components["schemas"]["CloudDeletionPreview"];
-            restore_days?: number | null;
-            restore_tier?: string | null;
-            total_bytes?: number;
-        } & {
-            [key: string]: unknown;
-        };
-        UploadRemediation: {
-            id: string;
-            /** @enum {string} */
-            state: "pending" | "queued" | "retrying" | "blocked" | "suspended" | "cancelled" | "resolved";
-            phase: string;
-            reason: string | null;
-            remedy: string;
-            retry_count: number;
-            due_at: string;
-            can_resume: boolean;
-            current_job_id: number | null;
-            resolved_by_job_id: number | null;
-            resolved_at: string | null;
-            archive_version_id: string | null;
-            original_job_ids: number[];
-        };
-        UploadReconciliation: {
-            pending: boolean;
-            can_resume: boolean;
-            /** @description Bounded reconciliation reason, not an integrity outcome */
-            reason: string | null;
-            remedy: string | null;
-        };
-        JobGroup: {
-            action: components["schemas"]["FileOperationAction"] | string;
-            cancelled_count: number;
-            completed_count: number;
-            estimated_cost_eur?: number | null;
-            estimated_hours?: number | null;
-            failed_count: number;
-            resolved_failed_count?: number;
-            unresolved_failed_count?: number;
-            id: string;
-            item_count: number;
-            message?: string | null;
-            message_key?: string | null;
-            path: string;
-            pending_until?: string | null;
-            percent: number;
-            restore_days?: number | null;
-            restore_tier?: string | null;
-            status: components["schemas"]["JobStatus"];
-            total_bytes: number;
-            transferred_bytes: number;
-            updated_at?: string;
-            requested_at?: string | null;
-            /** @description Expected end of the cloud restore: requested_at plus estimated_hours. */
-            ready_by?: string | null;
-        } & {
-            [key: string]: unknown;
-        };
-        JobStatus: string;
         LifecycleGuidedProfile: {
             transitions: components["schemas"]["LifecycleTransition"][];
         };
@@ -4590,21 +4858,6 @@ export interface components {
         LifecycleTransition: {
             days: number;
             storage_class: string;
-        } & {
-            [key: string]: unknown;
-        };
-        RestoreEstimate: {
-            assumptions?: {
-                [key: string]: unknown;
-            };
-            days: number;
-            estimated_cost_eur: number;
-            estimated_hours: number;
-            pricing_effective_at?: string | null;
-            pricing_note?: string;
-            region: string;
-            restore_object_irreversible?: boolean;
-            tier: string;
         } & {
             [key: string]: unknown;
         };
@@ -6537,7 +6790,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["UploadResponse"];
                 };
             };
             /** @description The logical path is empty, absolute, or traverses outside the Vault */
@@ -6690,7 +6943,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["FileOperationResponse"];
                 };
             };
             /** @description The logical path is empty, absolute, or traverses outside the Vault */
@@ -6795,7 +7048,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["FileOperationResponse"];
                 };
             };
             /** @description The logical path is empty, absolute, or traverses outside the Vault */
@@ -6830,7 +7083,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["RecoverApprovalResponse"];
                 };
             };
             /** @description Validation Error */
@@ -6865,7 +7118,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["FileOperationResponse"];
                 };
             };
             /** @description The logical path is empty, absolute, or traverses outside the Vault */
@@ -6955,7 +7208,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonObjectResponse"];
+                    "application/json": components["schemas"]["CloudPurgeResponse"];
                 };
             };
             /** @description Validation Error */

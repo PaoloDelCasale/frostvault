@@ -36,7 +36,7 @@ from app.services.vault_relocation import enroll_vault_root_identity
 from app.services.vaults import VAULT_ROW_SQL
 from app.services.upload_snapshot import UploadSnapshot
 from tests.catalog_support import queue_rename_job
-from tests.fixtures import FrostVaultTestCase, seed_vault
+from tests.fixtures import FrostVaultTestCase, http_client, seed_vault
 from tests.upload_provenance_provider import VersionedProvider
 from tests.upload_support import claimed_job_row, job_row
 from app.services import job_queue
@@ -116,7 +116,6 @@ class UploadProvenanceWorkerCase(FrostVaultTestCase):
         return result["job_id"]
 
     def http_client(self):
-        from fastapi.testclient import TestClient
         from app.main import app
         from app.routes.deps import current_user, vault_in_path
         with self.database.connect() as connection:
@@ -128,7 +127,7 @@ class UploadProvenanceWorkerCase(FrostVaultTestCase):
             app.dependency_overrides.clear()
             app.dependency_overrides.update(previous)
         self.addCleanup(restore)
-        client = TestClient(app)  # No lifespan/background services or native server.
+        client = http_client()  # No lifespan/background services or native server.
         self.addCleanup(client.close)
         return client
 
