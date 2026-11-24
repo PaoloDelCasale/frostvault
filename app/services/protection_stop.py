@@ -100,11 +100,14 @@ def stop_protection(connection: Any, *, vault_id: int, actor: str,
                     cloud_disposition: str, confirmation: str, reason: str) -> dict[str, Any]:
     source_directories.lock_vault_root_allocation(connection)
     vault = cloud_deletion.lock_vault(connection, vault_id)
+    if vault["lifecycle"] == "tombstone":
+        # Like every operation addressed to a Vault (#829): a Tombstone is not found.
+        raise NotFound("api.protected_vault_not_found")
     if confirmation != vault["name"]:
         raise cloud_deletion.ConfirmationRequired("api.confirmation_required")
     if cloud_disposition not in {"keep", "delete"} or not reason.strip():
         raise StopRefused("api.stop_protection.choose_disposition")
-    if vault["lifecycle"] in {"stopping", "tombstone"}:
+    if vault["lifecycle"] == "stopping":
         group_id = _stop_group(connection, vault_id)
         existing = "delete" if group_id else "keep"
         if existing == cloud_disposition:

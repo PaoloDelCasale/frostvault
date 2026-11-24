@@ -204,6 +204,13 @@ class VaultManagementErrors(ApiErrorCase):
              409, problem("api.vault_creation_cancel.not_provisioning")),
             ("POST", "/api/vaults/1/stop-protection", {**stop, "confirmation": "wrong"},
              422, problem("api.confirmation_required")),
+            # #829: like the other operations addressed to a Vault, a Tombstone is
+            # not found (it was a 202).
+            ("POST", "/api/vaults/2/stop-protection", {**stop, "confirmation": "Old"},
+             404, problem("api.protected_vault_not_found")),
+            ("POST", "/api/vaults/2/stop-protection",
+             {**stop, "cloud_disposition": "delete", "confirmation": "Old"},
+             404, problem("api.protected_vault_not_found")),
             ("POST", "/api/vaults/3/stop-protection", {**stop, "confirmation": "New"},
              409, problem("api.stop_protection.bucket_creating")),
             ("POST", "/api/vaults/1/stop-protection/cancel-deletion", X,
@@ -229,7 +236,9 @@ class VaultManagementErrors(ApiErrorCase):
 
     def test_vault_deletion_request(self) -> None:
         from app.services import vault_deletion
-        preview = {"vault_id": 2, "bucket": "bucket", "prefix": "p/", "objects": 0,
+        with self.database.connect() as connection:
+            own = connection.execute("SELECT uuid FROM vaults WHERE id=2").fetchone()["uuid"]
+        preview = {"vault_id": 2, "bucket": "bucket", "prefix": f"vaults/{own}/", "objects": 0,
                    "versions": 0, "bytes": 0}
         url = "/api/vaults/2/vault-deletion"
         with patch.object(vault_deletion, "preview", return_value=preview), \
@@ -238,8 +247,12 @@ class VaultManagementErrors(ApiErrorCase):
                        422, problem("api.vault_deletion.confirmation"))
             self.check("POST", url, {"confirmation": "Old", "reason": " "},
                        409, problem("api.vault_deletion.reason"))
+            # #829: the bucket of an older Vault is shared, and the refusal says so.
             self.check("POST", url, {"confirmation": "Old", "reason": "r", "delete_bucket": True},
-                       409, problem("api.vault_deletion.refused"))
+                       409, problem("api.vault_deletion.shared_bucket"))
+            with patch.dict(preview, prefix="p/"):
+                self.check("POST", url, {"confirmation": "Old", "reason": "r"},
+                           409, problem("api.vault_deletion.refused"))
             with self.database.connect() as connection:
                 seed_job(connection, vault_id=2, status="queued")
             self.check("POST", url, {"confirmation": "Old", "reason": "r"},
@@ -795,6 +808,22 @@ class JobErrors(ApiErrorCase):
                        503, problem("api.reconcile.volume_unavailable"))
         self.check("POST", "/api/vaults/1/recover/approve", {"group_id": NO_GROUP},
                    409, problem("api.recover_approval.none_waiting"))
+
+    def test_a_group_id_is_a_uuid(self) -> None:
+        # #829: a group id that is not a UUID was a 500; now the request validation's 422.
+        for suffix, body in (("recover/approve", {}), ("jobs/cancel", {"action": "upload"})):
+            for group_id in ("not-a-uuid", "", "1" * 64):
+                with self.subTest(suffix=suffix, group_id=group_id):
+                    response = self.client.post(f"/api/vaults/1/{suffix}",
+                                                json={**body, "group_id": group_id})
+                    self.assertEqual(response.status_code, 422, response.text)
+                    self.assertEqual([error["loc"] for error in response.json()["detail"]],
+                                     [["body", "group_id"]])
+            schema = self.client.app.openapi()["paths"][f"/api/vaults/{{vault_id}}/{suffix}"]
+            reference = schema["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+            model = self.client.app.openapi()["components"]["schemas"][reference.rsplit("/", 1)[1]]
+            self.assertEqual(model["properties"]["group_id"], {"type": "string", "format": "uuid",
+                                                               "title": "Group Id"})
 
     def test_admission_refusals(self) -> None:
         from app.services import job_admission
